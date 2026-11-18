@@ -12,12 +12,14 @@ import {
   PerspectiveCamera,
   Scene,
   Sphere,
+  Vector2,
   Vector3,
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { GlyphAtlas } from './atlas';
 import { CardLayer } from './cards';
+import { Underpaint, UNDERPAINT_LAYER } from './underpaint';
 
 export const BACKGROUND = new Color(0x090c13);
 
@@ -27,6 +29,8 @@ export class Viewer {
   readonly camera = new PerspectiveCamera(35, 1, 0.01, 100);
   readonly controls: OrbitControls;
   readonly cards: CardLayer;
+  /** Faint colour wash behind the glyphs, taken from the scene. */
+  readonly underpaint: Underpaint;
   private body: Mesh<BufferGeometry, MeshBasicMaterial>;
   private dirty = true;
   private raf = 0;
@@ -44,10 +48,15 @@ export class Viewer {
     container.appendChild(this.renderer.domElement);
     atlas.texture.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
 
-    this.body = new Mesh(new BufferGeometry(), new MeshBasicMaterial({ color: BACKGROUND }));
+    this.renderer.autoClear = false; // draw() clears (or the underpaint paints the background)
+    // Opaque bodies only write depth: they hide what is behind them, and the
+    // background (or the underpaint wash) shows where they are.
+    this.body = new Mesh(new BufferGeometry(), new MeshBasicMaterial({ color: BACKGROUND, colorWrite: false }));
     this.body.visible = false;
+    this.body.layers.enable(UNDERPAINT_LAYER);
     this.cards = new CardLayer(atlas);
-    this.scene.add(this.body, this.cards.mesh);
+    this.underpaint = new Underpaint(this.cards);
+    this.scene.add(this.body, this.cards.mesh, this.underpaint.cardMesh);
 
     this.camera.position.set(3, 2, 5);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -131,9 +140,26 @@ export class Viewer {
     this.dirty = true;
   }
 
-  /** Render now and count pixels that differ from the background (for tests). */
-  coverage(): number {
+  /** Draw one frame: background (or underpaint wash), then the glyphs. */
+  private draw(): void {
+    if (this.underpaint.enabled) {
+      this.underpaint.render(this.renderer, this.scene, this.camera, this.cards, this.background);
+    } else {
+      this.renderer.setRenderTarget(null);
+      this.renderer.clear();
+    }
     this.renderer.render(this.scene, this.camera);
+  }
+
+  /**
+   * Render now and count pixels that differ from the background (for tests).
+   * Measured without the underpaint, so it counts glyphs, not the wash.
+   */
+  coverage(): number {
+    const wash = this.underpaint.enabled;
+    this.underpaint.enabled = false;
+    this.draw();
+    this.underpaint.enabled = wash;
     const gl = this.renderer.getContext();
     const w = gl.drawingBufferWidth;
     const h = gl.drawingBufferHeight;
@@ -160,7 +186,7 @@ export class Viewer {
    * the bottom row up), used by the visual regression tests.
    */
   thumbnail(w = 48, h = 36): number[] {
-    this.renderer.render(this.scene, this.camera);
+    this.draw();
     const gl = this.renderer.getContext();
     const W = gl.drawingBufferWidth;
     const H = gl.drawingBufferHeight;
@@ -190,6 +216,7 @@ export class Viewer {
     canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
     this.controls.dispose();
     this.cards.dispose();
+    this.underpaint.dispose();
     this.body.geometry.dispose();
     this.body.material.dispose();
     this.renderer.dispose();
@@ -217,6 +244,8 @@ export class Viewer {
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
     this.renderer.setSize(w, h, false);
+    const db = this.renderer.getDrawingBufferSize(new Vector2());
+    this.underpaint.setSize(db.x, db.y);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.requestRender();
@@ -249,7 +278,7 @@ export class Viewer {
     }
     if (moved || this.dirty) {
       this.dirty = false;
-      this.renderer.render(this.scene, this.camera);
+      this.draw();
     }
   };
 

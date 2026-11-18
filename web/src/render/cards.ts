@@ -120,7 +120,7 @@ export const CALM: Environment = {
  */
 export type CardMode = 'blend' | 'coverage';
 
-const vertexShader = /* glsl */ `
+export const vertexShader = /* glsl */ `
 uniform vec2 uGrid;
 uniform vec2 uInset;
 uniform vec3 uSunDir;
@@ -142,6 +142,7 @@ uniform float uRain;
 uniform float uLeaves;
 uniform vec3 uRainBox;
 uniform vec3 uLeafBox;  // min x, min z, size
+uniform float uUnder;   // 1 in the underpaint pass (particles stay out of it)
 
 attribute vec3 iCenter;
 attribute vec3 iU;
@@ -188,6 +189,10 @@ void main() {
   vec3 V = iV;
   float alphaMul = 1.0;
 
+  if (uUnder > 0.5 && (rain || leaf)) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
   if (rain) {
     // Seeds live in a box that wraps round the camera: rain everywhere.
     vec3 fall = vec3(uWind.x * ws * 9.0, -14.0, uWind.y * ws * 9.0) * uTime;
@@ -376,6 +381,7 @@ export class CardLayer {
         uLeaves: { value: 0 },
         uRainBox: { value: new Vector3(36, 24, 36) },
         uLeafBox: { value: new Vector3(0, 0, 1) },
+        uUnder: { value: 0 },
       },
     });
     this.mesh = new Mesh(emptyGeometry(), material);

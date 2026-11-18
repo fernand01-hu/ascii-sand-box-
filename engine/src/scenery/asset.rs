@@ -32,6 +32,10 @@ pub struct Sprite {
     pub normal: Vec3,
     pub size: f32,
     pub mat: Mat,
+    /// How many original sprites this one stands for (>1 after level-of-detail
+    /// thinning). The skinner makes thinned foliage more opaque, so a sparse
+    /// distant crown still reads as solid.
+    pub thin: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -69,7 +73,7 @@ impl Asset {
     }
 
     pub fn sprite(&mut self, pos: Vec3, axis: Vec3, size: f32, mat: Mat, normal: Option<Vec3>) {
-        self.sprites.push(Sprite { pos, axis: unit(axis), normal: normal.map(unit).unwrap_or(Vec3::ZERO), size, mat });
+        self.sprites.push(Sprite { pos, axis: unit(axis), normal: normal.map(unit).unwrap_or(Vec3::ZERO), size, mat, thin: 1.0 });
     }
 
     pub fn surfel(&mut self, pos: Vec3, normal: Vec3, spacing: f32, mat: Mat) {
@@ -122,7 +126,7 @@ impl Asset {
                 .sprites
                 .iter()
                 .filter(|_| rng.next_f32() < f)
-                .map(|s| Sprite { size: s.size * grow, ..*s })
+                .map(|s| Sprite { size: s.size * grow, thin: s.thin / f, ..*s })
                 .collect(),
             surfels: self
                 .surfels

@@ -228,13 +228,21 @@ pub struct Skinner<'a> {
     foliage: Vec<usize>,
     /// Add opaque bodies (rock meshes, trunk tubes) for the next objects.
     pub solids_on: bool,
+    /// The next pushed foliage card is a thinned stand-in: no shadow ramp.
+    no_ramp: bool,
+}
+
+/// Opacity of one card that stands in for `n` cards of opacity `a`
+/// (the chance that at least one of them would have covered a point).
+pub fn opaque(a: f32, n: f32) -> f32 {
+    (1.0 - (1.0 - a.clamp(0.0, 1.0)).powf(n.max(1.0))).min(1.0)
 }
 
 impl<'a> Skinner<'a> {
     pub fn new(glyphs: &'a Glyphs, g: f32, aspect: f32, seed: u64) -> Skinner<'a> {
         let mut rng = Pcg32::new(seed, 0x5c1e);
         let bark = BarkPattern::new(&mut rng);
-        Skinner { g, aspect, glyphs, rng, bark, cards: Vec::new(), solids: Vec::new(), occluders: Vec::new(), foliage: Vec::new(), solids_on: true }
+        Skinner { g, aspect, glyphs, rng, bark, cards: Vec::new(), solids: Vec::new(), occluders: Vec::new(), foliage: Vec::new(), solids_on: true, no_ramp: false }
     }
 
     pub fn card_count(&self) -> usize {
@@ -243,7 +251,7 @@ impl<'a> Skinner<'a> {
 
     #[allow(clippy::too_many_arguments)]
     pub fn push(&mut self, c: Vec3, u: Vec3, v: Vec3, alb: [f32; 3], alpha: f32, glyph: u32, mat: Mat, mode: CardMode) {
-        if mat.is_crown_foliage() {
+        if mat.is_crown_foliage() && !self.no_ramp {
             self.foliage.push(self.card_count());
         }
         let start = self.cards.len();
@@ -292,19 +300,29 @@ impl<'a> Skinner<'a> {
             }
         }
         self.cards.truncate((start + cap) * STRIDE);
-        let grow = ((n as f32 / cap as f32).powf(0.25)).min(1.6);
+        let r = n as f32 / cap as f32;
+        let grow = r.powf(0.25).min(1.6);
+        // Foliage keeps the area it covered: half as many leaves, sqrt(2) as big.
+        let grow_leaf = r.sqrt().min(2.2);
+        let keep_ramp = r < 1.5;
         self.foliage.retain(|&i| i < start);
         for i in start..start + cap {
             let base = i * STRIDE;
             let high = self.cards[base + layout::GLYPH] as u32 / MATERIAL_SHIFT;
             let (mat, mode) = (high % MAX_MATERIALS, high / MAX_MATERIALS);
+            let leaf = Mat::ALL[mat as usize].is_crown_foliage();
             if mode != CardMode::Solid as u32 && mode < CardMode::GroundLean as u32 {
+                let gr = if leaf { grow_leaf } else { grow };
                 for k in layout::U..layout::V + 3 {
-                    self.cards[base + k] *= grow;
+                    self.cards[base + k] *= gr;
                 }
             }
-            if Mat::ALL[mat as usize].is_crown_foliage() {
-                self.foliage.push(i);
+            if leaf {
+                let a = &mut self.cards[base + layout::COLOR + 3];
+                *a = opaque(*a, r);
+                if keep_ramp {
+                    self.foliage.push(i);
+                }
             }
         }
     }
@@ -368,9 +386,14 @@ impl<'a> Skinner<'a> {
                     (side, CardMode::BillboardV)
                 };
                 let alb = self.albedo(s.mat, pl.tint);
-                let alpha = self.alpha(s.mat);
+                // Fewer leaves -> each one more opaque (and no light "shade"
+                // glyphs), so a thinned crown keeps its body.
+                let thin = s.thin * k.powf(md.keep);
+                let alpha = opaque(self.alpha(s.mat), thin);
                 let glyph = self.glyph(s.mat);
+                self.no_ramp = thin > 1.5;
                 self.push(c, u * (sz * self.aspect), axis * sz, alb, alpha, glyph, s.mat, mode);
+                self.no_ramp = false;
             }
         }
     }
