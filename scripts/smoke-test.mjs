@@ -7,13 +7,13 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
-import init, { CardConfig, Engine, cardStride } from '../web/src/pkg/ascii_engine.js';
+import init, { CardConfig, Engine, cardStride, generatePine, pineCharset } from '../web/src/pkg/ascii_engine.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 await init({ module_or_path: readFileSync(join(root, 'web/src/pkg/ascii_engine_bg.wasm')) });
 
 const STRIDE = cardStride();
-assert.equal(STRIDE, 14, 'renderer expects 14 floats per card');
+assert.equal(STRIDE, 16, 'renderer expects 16 floats per card');
 
 const config = (patch = {}) => {
   const c = new CardConfig();
@@ -113,6 +113,23 @@ test('invalid settings are rejected', () => {
     assert.throws(() => engine.generate(c), undefined, JSON.stringify(patch));
     c.free();
   }
+});
+
+test('procedural pine', () => {
+  const t = performance.now();
+  const cards = generatePine(23, 0.64);
+  console.log(`       ${cards.length / STRIDE} cards in ${(performance.now() - t).toFixed(0)} ms`);
+  assert.equal(cards.length % STRIDE, 0);
+  assert.ok(cards.length / STRIDE > 50_000);
+  const glyphs = [...pineCharset()].length;
+  for (let i = 0; i < cards.length; i += STRIDE) {
+    for (let k = 0; k < STRIDE; k++) assert.ok(Number.isFinite(cards[i + k]));
+    const g = cards[i + 13];
+    assert.ok(g % 1024 < glyphs && g >= 1024 && g < 7 * 1024, `glyph slot ${g}`);
+    assert.ok(cards[i + 14] >= 0 && cards[i + 14] <= 1 && cards[i + 15] >= 0 && cards[i + 15] <= 1);
+  }
+  assert.deepEqual(generatePine(23, 0.64), cards, 'same seed must give the same tree');
+  assert.throws(() => generatePine(23, 0));
 });
 
 test('generate without a mesh fails cleanly', () => {

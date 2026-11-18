@@ -1,7 +1,7 @@
 // Runs the Rust/WASM engine off the main thread so heavy work never freezes
 // the page. Requests are processed strictly in order.
 
-import init, { CardConfig, Engine, cardStride } from '../pkg/ascii_engine.js';
+import init, { CardConfig, Engine, cardStride, generatePine, pineCharset, pineSunDir } from '../pkg/ascii_engine.js';
 import wasmUrl from '../pkg/ascii_engine_bg.wasm?url';
 import type { CardSettings, WorkerRequest, WorkerResponse } from './protocol';
 
@@ -22,6 +22,21 @@ ctx.onmessage = (e) => {
 async function handle(req: WorkerRequest): Promise<void> {
   try {
     const engine = await ready;
+    if (req.kind === 'pine') {
+      const t0 = performance.now();
+      const cards = generatePine(req.seed >>> 0, req.glyphAspect);
+      const generateMs = performance.now() - t0;
+      const stride = cardStride();
+      const [x = 0, y = 1, z = 0] = pineSunDir();
+      ctx.postMessage(
+        {
+          kind: 'result', id: req.id, mesh: null, cards, stride, count: cards.length / stride,
+          timings: { loadMs: 0, generateMs }, charset: pineCharset(), sunDir: [x, y, z],
+        },
+        [cards.buffer],
+      );
+      return;
+    }
     let mesh = null;
     let loadMs = 0;
     if (req.kind === 'load') {

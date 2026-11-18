@@ -2,7 +2,8 @@
 //!
 //! Every card is one character on a small flat quad in 3D:
 //!   centre C, horizontal edge U, vertical edge V (full lengths, not halves),
-//!   albedo RGB, opacity, glyph index into the atlas.
+//!   albedo RGB, opacity, glyph (atlas index + 1024 * material id),
+//!   sun visibility, sky visibility (0..1, baked shadows; 1 = unshadowed).
 //!
 //! Points are sampled by area with a stratified CDF walk, so every triangle
 //! receives almost exactly its fair share of cards (much more even than plain
@@ -14,7 +15,7 @@ use crate::rng::Pcg32;
 use std::fmt;
 
 /// Floats per card in the output buffer.
-pub const STRIDE: usize = 14;
+pub const STRIDE: usize = 16;
 pub const MAX_CARDS: u32 = 2_000_000;
 
 /// Offsets inside one card record.
@@ -24,6 +25,14 @@ pub mod layout {
     pub const V: usize = 6;
     pub const COLOR: usize = 9; // r, g, b, alpha
     pub const GLYPH: usize = 13;
+    pub const LIGHT: usize = 14; // sun visibility, sky visibility
+}
+
+/// The glyph slot packs the material id above the atlas index.
+pub const MATERIAL_SHIFT: u32 = 1024;
+
+pub fn pack_glyph(glyph: u32, material: u32) -> f32 {
+    (glyph + material * MATERIAL_SHIFT) as f32
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -176,6 +185,8 @@ pub fn generate(mesh: &Mesh, p: &CardParams) -> Result<Vec<f32>, ParamError> {
         card[layout::COLOR + 2] = (p.color[2] * shade).clamp(0.0, 1.0);
         card[layout::COLOR + 3] = alpha;
         card[layout::GLYPH] = glyph;
+        card[layout::LIGHT] = 1.0;
+        card[layout::LIGHT + 1] = 1.0;
     }
     Ok(out)
 }
@@ -194,7 +205,7 @@ pub fn upright_frame(normal: Vec3) -> (Vec3, Vec3) {
     (u, v)
 }
 
-fn write3(card: &mut [f32], at: usize, v: Vec3) {
+pub fn write3(card: &mut [f32], at: usize, v: Vec3) {
     card[at] = v.x;
     card[at + 1] = v.y;
     card[at + 2] = v.z;

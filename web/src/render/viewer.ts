@@ -74,7 +74,30 @@ export class Viewer {
     this.body.geometry.dispose();
     this.body.geometry = g;
     this.body.visible = true;
+    this.cards.setMode('blend');
+    this.controls.maxPolarAngle = Math.PI;
     this.frame(g.boundingSphere ?? new Sphere(new Vector3(0, 1, 0), 1.5));
+    this.requestRender();
+  }
+
+  /**
+   * Show a procedural scene that has no solid body (e.g. the pine): cards only,
+   * order-independent transparency, camera placed explicitly, and the orbit
+   * kept above the ground.
+   */
+  setFreeScene(target: Vector3, eye: Vector3): void {
+    this.body.visible = false;
+    this.cards.setMode('coverage');
+    const dist = eye.distanceTo(target);
+    this.controls.target.copy(target);
+    this.camera.position.copy(eye);
+    this.camera.near = dist / 200;
+    this.camera.far = dist * 20;
+    this.camera.updateProjectionMatrix();
+    this.controls.minDistance = dist * 0.15;
+    this.controls.maxDistance = dist * 3;
+    this.controls.maxPolarAngle = Math.PI * 0.495; // don't orbit under the ground
+    this.controls.update();
     this.requestRender();
   }
 

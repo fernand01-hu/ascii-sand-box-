@@ -166,3 +166,27 @@ impl Engine {
         cards::generate(mesh, &config.into()).map_err(|e| JsError::new(&e.to_string()))
     }
 }
+
+pub mod pine;
+
+/// Every character the procedural pine uses, in atlas order.
+#[wasm_bindgen(js_name = pineCharset)]
+pub fn pine_charset() -> String {
+    pine::charset()
+}
+
+/// The procedural pine from `pine_ascii.py` as card records (`cardStride()` floats each).
+#[wasm_bindgen(js_name = generatePine)]
+pub fn generate_pine(seed: u32, glyph_aspect: f32) -> Result<Vec<f32>, JsError> {
+    if !(glyph_aspect > 0.0 && glyph_aspect.is_finite()) {
+        return Err(JsError::new("glyph_aspect must be a positive number"));
+    }
+    Ok(pine::generate(seed, glyph_aspect))
+}
+
+/// Sun direction the pine's shadows were baked with; the renderer must match it.
+#[wasm_bindgen(js_name = pineSunDir)]
+pub fn pine_sun_dir() -> Vec<f32> {
+    let s = pine::sun_dir();
+    vec![s.x, s.y, s.z]
+}

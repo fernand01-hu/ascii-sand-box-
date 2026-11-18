@@ -1,7 +1,7 @@
-// All cards are one InstancedMesh-style draw: a unit quad instanced once per
-// card, with the card data read straight from the engine's Float32Array.
-// Lighting runs per card in the vertex shader, so moving the camera or the
-// sun is free; only changing the cards themselves touches the CPU.
+// All cards are one instanced draw: a unit quad instanced once per card, with
+// the card data read straight from the engine's Float32Array. Lighting runs
+// per card in the vertex shader, so moving the camera or the sun is free;
+// only changing the cards themselves touches the CPU.
 
 import {
   BufferAttribute,
@@ -13,24 +13,20 @@ import {
   ShaderMaterial,
   Vector2,
   Vector3,
+  Vector4,
 } from 'three';
 import type { GlyphAtlas } from './atlas';
 
 /** Must match `cards::STRIDE` / `cards::layout` in the Rust engine. */
-export const CARD_STRIDE = 14;
+export const CARD_STRIDE = 16;
+/** Must match `cards::MATERIAL_SHIFT`: glyph slot = atlas index + 1024 * material. */
+const MATERIAL_SHIFT = 1024;
 
 export interface Lighting {
   sunDir: Vector3;
   sunColor: Vector3;
   skyColor: Vector3;
   glintColor: Vector3;
-  /** Specular glint strength and sharpness. */
-  spec: number;
-  shininess: number;
-  /** Light passing through cards lit from behind. */
-  translucency: number;
-  /** Wrapped diffuse: how far light bends past the terminator. */
-  wrap: number;
 }
 
 export const DEFAULT_LIGHTING: Lighting = {
@@ -38,11 +34,47 @@ export const DEFAULT_LIGHTING: Lighting = {
   sunColor: new Vector3(1.3, 0.92, 0.58),
   skyColor: new Vector3(0.46, 0.52, 0.8),
   glintColor: new Vector3(1.0, 0.86, 0.62),
-  spec: 0.25,
-  shininess: 18,
-  translucency: 0.15,
-  wrap: 0.25,
 };
+
+/**
+ * Per-material shading, indexed by the material id packed in each card.
+ *   spec, shininess  Blinn-Phong glint
+ *   trans            light passing through cards lit from behind
+ *   wrap             wrapped diffuse
+ *   billboard        0 none, 1 spin around V to face the viewer, 2 spin around U
+ *   twist            random spin away from facing (radians, +-)
+ *   alphaLit         extra opacity where sunlit ("lit = crisp" needles)
+ *   haze             fade toward the haze colour with distance (ground)
+ */
+export interface MaterialDef {
+  spec: number;
+  shininess: number;
+  trans: number;
+  wrap: number;
+  billboard: 0 | 1 | 2;
+  twist: number;
+  alphaLit: number;
+  haze?: number;
+}
+
+export const MATERIALS: MaterialDef[] = [
+  /* 0 mesh   */ { spec: 0.25, shininess: 18, trans: 0.15, wrap: 0.25, billboard: 0, twist: 0, alphaLit: 0 },
+  /* 1 needle */ { spec: 0.45, shininess: 28, trans: 0.45, wrap: 0.25, billboard: 1, twist: 0.55, alphaLit: 0.8 },
+  /* 2 tip    */ { spec: 0.4, shininess: 20, trans: 0.5, wrap: 0.25, billboard: 1, twist: 0.8, alphaLit: 0 },
+  /* 3 wood   */ { spec: 0.12, shininess: 10, trans: 0, wrap: 0.25, billboard: 2, twist: 0.9, alphaLit: 0 },
+  /* 4 bark   */ { spec: 0.08, shininess: 12, trans: 0, wrap: 0.1, billboard: 0, twist: 0, alphaLit: 0 },
+  /* 5 grass  */ { spec: 0.2, shininess: 14, trans: 0.3, wrap: 0.25, billboard: 1, twist: 0.7, alphaLit: 0, haze: 1 },
+  /* 6 soil   */ { spec: 0.1, shininess: 14, trans: 0, wrap: 0.25, billboard: 0, twist: 0, alphaLit: 0, haze: 1 },
+  /* 7 spare  */ { spec: 0.25, shininess: 18, trans: 0, wrap: 0.25, billboard: 0, twist: 0, alphaLit: 0 },
+];
+
+/**
+ * blend:    classic alpha blending, no depth writes. Right for cards lying on
+ *           an opaque body that hides everything behind it.
+ * coverage: alpha-to-coverage with depth writes. Order-independent, so free
+ *           standing scenes (foliage) look right from every angle unsorted.
+ */
+export type CardMode = 'blend' | 'coverage';
 
 const vertexShader = /* glsl */ `
 uniform vec2 uGrid;
@@ -51,26 +83,59 @@ uniform vec3 uSunDir;
 uniform vec3 uSunColor;
 uniform vec3 uSkyColor;
 uniform vec3 uGlintColor;
-uniform float uSpec;
-uniform float uShininess;
-uniform float uTrans;
-uniform float uWrap;
 uniform float uDepthBias;
+uniform vec4 uMatA[8]; // spec, shininess, trans, wrap
+uniform vec4 uMatB[8]; // billboard, twist, alphaLit, haze
+uniform float uAlphaGain;
+uniform vec3 uHazeColor;
+uniform float uHazeDist;
 
 attribute vec3 iCenter;
 attribute vec3 iU;
 attribute vec3 iV;
 attribute vec4 iColor;
 attribute float iGlyph;
+attribute vec2 iLight; // sun, sky visibility
 
 varying vec2 vUv;
 varying vec3 vColor;
 varying float vAlpha;
 
+float hash(vec3 p) {
+  return fract(sin(dot(p, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
+}
+
 void main() {
-  vec3 world = iCenter + iU * position.x + iV * position.y;
+  float mat = floor((iGlyph + 0.5) / ${MATERIAL_SHIFT.toFixed(1)});
+  float glyph = iGlyph - mat * ${MATERIAL_SHIFT.toFixed(1)};
+  int m = int(mat);
+  vec4 A = uMatA[m];
+  vec4 B = uMatB[m];
+
   vec3 toCam = normalize(cameraPosition - iCenter);
-  vec3 N = normalize(cross(iU, iV));
+  vec3 U = iU;
+  vec3 V = iV;
+  // Billboards keep their axis but turn round it to face the viewer, then
+  // twist away by a fixed per-card amount so they don't all line up.
+  float tw = (hash(iCenter) - 0.5) * 2.0 * B.y;
+  if (B.x > 0.5 && B.x < 1.5) {
+    vec3 axis = normalize(iV);
+    vec3 side = cross(axis, toCam);
+    if (dot(side, side) > 1e-8) {
+      side = normalize(side);
+      U = (side * cos(tw) + cross(side, axis) * sin(tw)) * length(iU);
+    }
+  } else if (B.x > 1.5) {
+    vec3 axis = normalize(iU);
+    vec3 side = cross(toCam, axis);
+    if (dot(side, side) > 1e-8) {
+      side = normalize(side);
+      V = (side * cos(tw) + cross(axis, side) * sin(tw)) * length(iV);
+    }
+  }
+
+  vec3 world = iCenter + U * position.x + V * position.y;
+  vec3 N = normalize(cross(U, V));
   float facing = dot(N, toCam);
 
   // Light the side we can see. Seen from behind (e.g. an STL with flipped
@@ -78,20 +143,25 @@ void main() {
   float flip = facing < 0.0 ? -1.0 : 1.0;
   N *= flip;
 
+  float ts = iLight.x;
+  float tk = iLight.y;
   float ndl = dot(N, uSunDir);
-  float diff = clamp((ndl + uWrap) / (1.0 + uWrap), 0.0, 1.0);
+  float diff = clamp((ndl + A.w) / (1.0 + A.w), 0.0, 1.0);
   float back = clamp(-ndl, 0.0, 1.0);
-  float spec = pow(clamp(dot(N, normalize(uSunDir + toCam)), 0.0, 1.0), uShininess) * step(0.0, ndl);
-  float sky = 0.55 + 0.45 * N.y;
-  vec3 rad = iColor.rgb * (uSunColor * (1.25 * diff + uTrans * back) + 0.5 * sky * uSkyColor + 0.03)
-           + uSpec * spec * uGlintColor;
+  float spec = pow(clamp(dot(N, normalize(uSunDir + toCam)), 0.0, 1.0), A.y) * step(0.0, ndl);
+  float hemi = 0.55 + 0.45 * N.y;
+  vec3 rad = iColor.rgb * (ts * uSunColor * (1.25 * diff + A.z * back) + 0.5 * tk * hemi * uSkyColor + 0.03)
+           + A.x * spec * ts * uGlintColor;
   vColor = 1.0 - exp(-2.2 * rad);
+  // Distance haze (ground), as in the script: far ground melts into the dusk.
+  float hz = B.w * pow(clamp(length(cameraPosition - iCenter) / uHazeDist, 0.0, 1.0), 0.65);
+  vColor = mix(vColor, uHazeColor, hz);
 
   // Cards seen almost edge-on become slivers: fade them out instead of streaking.
-  vAlpha = iColor.a * smoothstep(0.02, 0.25, abs(facing));
+  vAlpha = min(1.0, (iColor.a + B.z * ts * diff) * uAlphaGain) * smoothstep(0.02, 0.25, abs(facing));
 
-  float row = floor((iGlyph + 0.5) / uGrid.x);
-  float col = iGlyph - row * uGrid.x;
+  float row = floor((glyph + 0.5) / uGrid.x);
+  float col = glyph - row * uGrid.x;
   vec2 cuv = vec2(flip > 0.0 ? uv.x : 1.0 - uv.x, 1.0 - uv.y);
   vUv = (vec2(col, row) + mix(uInset, 1.0 - uInset, cuv)) / uGrid;
 
@@ -129,28 +199,58 @@ export class CardLayer {
         uAtlas: { value: atlas.texture },
         uGrid: { value: new Vector2(atlas.cols, atlas.rows) },
         uInset: { value: new Vector2(...atlas.inset) },
-        uSunDir: { value: lighting.sunDir.clone().normalize() },
-        uSunColor: { value: lighting.sunColor.clone() },
-        uSkyColor: { value: lighting.skyColor.clone() },
-        uGlintColor: { value: lighting.glintColor.clone() },
-        uSpec: { value: lighting.spec },
-        uShininess: { value: lighting.shininess },
-        uTrans: { value: lighting.translucency },
-        uWrap: { value: lighting.wrap },
+        uSunDir: { value: new Vector3() },
+        uSunColor: { value: new Vector3() },
+        uSkyColor: { value: new Vector3() },
+        uGlintColor: { value: new Vector3() },
         uDepthBias: { value: 0.75 },
+        uMatA: { value: MATERIALS.map((m) => new Vector4(m.spec, m.shininess, m.trans, m.wrap)) },
+        uMatB: { value: MATERIALS.map((m) => new Vector4(m.billboard, m.twist, m.alphaLit, m.haze ?? 0)) },
+        uAlphaGain: { value: 1 },
+        uHazeColor: { value: new Vector3(120 / 255, 112 / 255, 140 / 255) },
+        uHazeDist: { value: 110 }, // same falloff as the script
       },
-      transparent: true,
-      blending: NormalBlending,
-      depthTest: true,
-      depthWrite: false,
     });
     this.mesh = new Mesh(emptyGeometry(), material);
     this.mesh.frustumCulled = false; // positions come from instance data, not the base quad
     this.mesh.renderOrder = 1; // after the opaque body
+    this.setLighting(lighting);
+    this.setMode('blend');
   }
 
   get cardCount(): number {
     return this.count;
+  }
+
+  setAtlas(atlas: GlyphAtlas): void {
+    const u = this.mesh.material.uniforms;
+    u.uAtlas!.value = atlas.texture;
+    (u.uGrid!.value as Vector2).set(atlas.cols, atlas.rows);
+    (u.uInset!.value as Vector2).set(...atlas.inset);
+  }
+
+  setLighting(l: Lighting): void {
+    const u = this.mesh.material.uniforms;
+    (u.uSunDir!.value as Vector3).copy(l.sunDir).normalize();
+    (u.uSunColor!.value as Vector3).copy(l.sunColor);
+    (u.uSkyColor!.value as Vector3).copy(l.skyColor);
+    (u.uGlintColor!.value as Vector3).copy(l.glintColor);
+  }
+
+  /** See `CardMode`. `depthBias` is in card heights (0 for scenes with no body). */
+  setMode(mode: CardMode, depthBias = mode === 'blend' ? 0.75 : 0): void {
+    const m = this.mesh.material;
+    const coverage = mode === 'coverage';
+    m.transparent = !coverage;
+    m.blending = NormalBlending;
+    m.depthWrite = coverage;
+    m.depthTest = true;
+    m.alphaToCoverage = coverage;
+    m.uniforms.uDepthBias!.value = depthBias;
+    // Coverage turns partial alpha into fewer covered samples, which reads
+    // dimmer than blending; a gain brings the density back in line.
+    m.uniforms.uAlphaGain!.value = coverage ? 1.6 : 1;
+    m.needsUpdate = true;
   }
 
   /** Replace all cards. `data` holds `stride` floats per card. */
@@ -168,6 +268,7 @@ export class CardLayer {
       geometry.setAttribute('iV', new InterleavedBufferAttribute(buf, 3, 6));
       geometry.setAttribute('iColor', new InterleavedBufferAttribute(buf, 4, 9));
       geometry.setAttribute('iGlyph', new InterleavedBufferAttribute(buf, 1, 13));
+      geometry.setAttribute('iLight', new InterleavedBufferAttribute(buf, 2, 14));
     }
     geometry.instanceCount = count;
     this.mesh.geometry.dispose(); // frees the previous GPU buffers

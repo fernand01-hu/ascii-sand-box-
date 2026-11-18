@@ -33,11 +33,16 @@ export interface EngineResult {
   stride: number;
   count: number;
   timings: { loadMs: number; generateMs: number };
+  /** Procedural scenes only: the characters their glyph indices refer to. */
+  charset?: string;
+  /** Procedural scenes only: the sun direction their shadows were baked with. */
+  sunDir?: [number, number, number];
 }
 
 export type WorkerRequest =
   | { kind: 'load'; id: number; bytes: ArrayBuffer; zUp: boolean; settings: CardSettings }
-  | { kind: 'generate'; id: number; settings: CardSettings };
+  | { kind: 'generate'; id: number; settings: CardSettings }
+  | { kind: 'pine'; id: number; seed: number; glyphAspect: number };
 
 export type WorkerResponse =
   | ({ kind: 'result'; id: number } & EngineResult)

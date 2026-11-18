@@ -28,6 +28,11 @@ export class EngineClient {
     return this.send({ kind: 'generate', id: this.nextId++, settings });
   }
 
+  /** Build the procedural pine from the original Python script. */
+  pine(seed: number, glyphAspect: number): Promise<EngineResult> {
+    return this.send({ kind: 'pine', id: this.nextId++, seed, glyphAspect });
+  }
+
   dispose(): void {
     this.disposed = true;
     this.worker.terminate();

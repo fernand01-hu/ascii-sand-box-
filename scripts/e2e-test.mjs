@@ -67,9 +67,19 @@ try {
   await page.goto(url, { waitUntil: 'load' });
 
   const models = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];
+  await step('procedural pine renders as the opening scene', async () => {
+    await waitSettled('procedural-pine');
+    const s = await state();
+    assert.equal(s.status, 'ready', s.error ?? '');
+    assert.ok(s.cards > 50_000);
+    const cov = await page.evaluate(() => window.__ascii.coverage());
+    assert.ok(cov > 0.05, `only ${(cov * 100).toFixed(2)}% of pixels drawn`);
+    await page.screenshot({ path: join(outDir, '0-procedural-pine.png') });
+  });
+
   for (const [i, model] of models.entries()) {
     await step(`model ${model} renders`, async () => {
-      if (i > 0) await page.keyboard.press(String(i + 1));
+      await page.keyboard.press(String(i + 1));
       await waitSettled(model);
       const s = await state();
       assert.equal(s.status, 'ready', s.error ?? '');
@@ -128,6 +138,14 @@ try {
     const s = await state();
     assert.equal(s.model, 'ziggurat.stl');
     assert.equal(s.status, 'ready');
+  });
+
+  await step('switching back to the pine after a mesh works', async () => {
+    await page.keyboard.press('5');
+    await waitSettled('procedural-pine');
+    assert.equal((await state()).status, 'ready');
+    const cov = await page.evaluate(() => window.__ascii.coverage());
+    assert.ok(cov > 0.05);
   });
 
   await step('resize keeps rendering', async () => {
