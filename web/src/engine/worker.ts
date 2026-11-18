@@ -86,6 +86,13 @@ async function handle(req: WorkerRequest): Promise<void> {
         const cards = scene.takeCards();
         const positions = scene.takeBody();
         const normals = scene.takeBodyNormals();
+        const heights = scene.takeHeights();
+        const [gn = 0, gsize = 0, wlevel = NaN] = scene.walkInfo();
+        const waterMask = scene.takeWaterMask();
+        const colliders = scene.takeColliders();
+        const walk = heights.length
+          ? { heights, n: gn, size: gsize, water: Number.isNaN(wlevel) ? null : wlevel, waterMask, colliders }
+          : undefined;
         const [tx = 0, ty = 0, tz = 0, ex = 0, ey = 0, ez = 10, fov = 40] = scene.camera();
         const e = scene.env();
         const day = (e[0] ?? 0) > 0.5;
@@ -99,6 +106,7 @@ async function handle(req: WorkerRequest): Promise<void> {
             mesh: { positions, normals, triangles: positions.length / 9, dropped: 0 },
             timings: { loadMs: 0, generateMs }, sunDir: [sx, sy, sz], materials, materialFloats: wasm.materialFloats(),
             camera: { target: [tx, ty, tz], eye: [ex, ey, ez], fov },
+            walk,
             env: {
               day,
               windDir: [e[1] ?? 1, e[2] ?? 0],
@@ -106,7 +114,7 @@ async function handle(req: WorkerRequest): Promise<void> {
               rainBox: [e[6] ?? 36, e[7] ?? 24, e[8] ?? 36],
             },
           },
-          [cards.buffer, positions.buffer, normals.buffer, materials.buffer],
+          [cards.buffer, positions.buffer, normals.buffer, materials.buffer, heights.buffer, waterMask.buffer, colliders.buffer],
         );
       } finally {
         scene.free();

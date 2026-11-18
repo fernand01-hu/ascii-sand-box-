@@ -589,6 +589,11 @@ impl Terrain {
         unit(Vec3::new(-hx, 2.0 * e, -hz))
     }
 
+    /// Lake mask on the height grid (1 = water), empty without a lake.
+    pub fn water_mask(&self) -> &[u8] {
+        &self.mask
+    }
+
     pub fn is_water(&self, x: f32, z: f32) -> bool {
         if self.mask.is_empty() {
             return false;

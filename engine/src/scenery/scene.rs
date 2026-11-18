@@ -71,6 +71,14 @@ pub struct SceneOut {
     pub leaf_box: [f32; 3],
     pub placed: usize,
     pub variants: usize,
+    /// For walking: the terrain heightfield (n x n over size metres),
+    /// lake level and mask, and colliders (x, z, radius, top y).
+    pub heights: Vec<f32>,
+    pub grid_n: usize,
+    pub grid_size: f32,
+    pub water: Option<f32>,
+    pub water_mask: Vec<u8>,
+    pub colliders: Vec<[f32; 4]>,
 }
 
 /// The original's default camera: a raised viewpoint near the front edge,
@@ -147,6 +155,37 @@ pub fn build_scene(preset: ScenePreset, seed: u32, glyph_aspect: f32) -> SceneOu
     let half_box = 45.0;
     landscape::leaves(&mut sk, &t, &view, 900, half_box, seed);
 
+    // Colliders for walking: trunks, rocks, big bushes.
+    let mut colliders = Vec::new();
+    for p in &sc.placed {
+        let a = &sc.library.assets[p.asset];
+        let (lo, hi) = a.bounds();
+        let s = p.pl.scale;
+        let (x, z) = (p.pl.pos.x, p.pl.pos.z);
+        let top = p.pl.pos.y + hi.y * s;
+        match p.kind {
+            super::scatter::Kind::Tree(_) => {
+                let r = a.wood.iter().filter(|w| w.level == 0 && w.p0.y < 1.0).map(|w| w.r).fold(0.0, f32::max);
+                if r > 0.0 {
+                    colliders.push([x, z, r * s + 0.05, top]);
+                }
+            }
+            super::scatter::Kind::Rock(_) => {
+                let r = (hi.x - lo.x).max(hi.z - lo.z) * s * 0.4;
+                if r > 0.15 {
+                    colliders.push([x, z, r, top]);
+                }
+            }
+            super::scatter::Kind::Bush(_) => {
+                let w = (hi.x - lo.x).max(hi.z - lo.z) * s;
+                if w > 1.2 {
+                    colliders.push([x, z, w * 0.3, top]);
+                }
+            }
+            super::scatter::Kind::Plant(_) => {}
+        }
+    }
+
     let mut body = t.body(2.5, 0.08);
     body.append(&mut sk.solids);
     let _ = Placement::at(Vec3::ZERO);
@@ -161,6 +200,12 @@ pub fn build_scene(preset: ScenePreset, seed: u32, glyph_aspect: f32) -> SceneOu
         day,
         wind: wind_dir(),
         leaf_box: [target.x - half_box, target.z - half_box, half_box * 2.0],
+        grid_n: t.n,
+        grid_size: t.size,
+        water: t.water,
+        water_mask: t.water_mask().to_vec(),
+        colliders,
+        heights: t.h.clone(),
     }
 }
 
@@ -192,6 +237,9 @@ mod tests {
             assert!(modes[CardMode::Emissive as usize] > 20_000, "sky present");
             assert!(modes[CardMode::Rain as usize] == 7000 && modes[CardMode::Drift as usize] == 900);
             assert!(s.placed > 200);
+            assert_eq!(s.heights.len(), s.grid_n * s.grid_n);
+            assert!(!s.colliders.is_empty() && s.colliders.iter().all(|c| c.iter().all(|v| v.is_finite()) && c[2] > 0.0));
+            assert_eq!(s.water.is_some(), !s.water_mask.is_empty());
         }
     }
 }

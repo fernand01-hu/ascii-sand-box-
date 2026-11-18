@@ -52,8 +52,20 @@ export interface EngineResult {
   materialFloats?: number;
   /** Procedural scenes: time of day, wind direction, particle boxes. */
   env?: SceneEnv;
+  /** Landscapes: terrain, water and colliders for the player physics. */
+  walk?: WalkData;
   /** Render chunks (see engine/chunks.ts): CHUNK_FLOATS per chunk. */
   chunks?: Float32Array;
+}
+
+export interface WalkData {
+  heights: Float32Array;
+  n: number;
+  size: number;
+  water: number | null;
+  waterMask: Uint8Array;
+  /** x, z, radius, top y per collider. */
+  colliders: Float32Array;
 }
 
 export interface SceneEnv {

@@ -24,6 +24,7 @@ const PINE_MATERIALS: MaterialDef[] = [
 export function showPine(app: App, seed = PINE_SEED): Promise<void> {
   return app.run(PINE_SCENE, () => app.engine.testbed({ scene: 'pine', seed, glyphAspect: glyphAspect() }), (res) => {
     if (!res.sunDir) throw new Error('pine scene came back without its sun direction');
+    app.leaveScene();
     app.resetEnvironment(false);
     const v = app.viewer;
     v.cards.setAtlas(app.atlasFor(res.charset));

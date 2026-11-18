@@ -268,10 +268,21 @@ export class Viewer {
     this.requestRender();
   }
 
+  /** Called every frame with the time step (s) while set; e.g. the player. */
+  onFrame: ((dt: number) => void) | null = null;
+  private lastFrame = performance.now();
+
   private loop = (): void => {
     this.raf = requestAnimationFrame(this.loop);
     if (this.contextLost) return;
-    const moved = this.controls.update(); // keeps damping going after the mouse is released
+    const now = performance.now();
+    const dt = Math.min((now - this.lastFrame) / 1000, 0.1);
+    this.lastFrame = now;
+    if (this.onFrame) {
+      this.onFrame(dt);
+      this.dirty = true;
+    }
+    const moved = this.controls.enabled && this.controls.update(); // keeps damping going
     if (this.animate && this.frozenTime === null) {
       this.cards.setTime((performance.now() - this.clockStart) / 1000);
       this.dirty = true;

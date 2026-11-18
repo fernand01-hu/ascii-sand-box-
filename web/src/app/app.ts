@@ -7,6 +7,8 @@ import type { CardSettings, EngineResult, GalleryCategory, ScenePreset } from '.
 import { createGlyphAtlas, glyphAspect, type GlyphAtlas } from '../render/atlas';
 import { CALM, DEFAULT_LIGHTING, SURFACE_MATERIAL, type Environment, type Lighting, type MaterialDef } from '../render/cards';
 import { BACKGROUND } from '../render/viewer';
+import { Player } from './player';
+import type { WalkData } from '../engine/protocol';
 
 /** Lighting of the scenery `dusk` preset (light.py): stronger sky, no hemisphere falloff. */
 export const SCENERY_LIGHTING: Omit<Lighting, 'sunDir'> = {
@@ -92,6 +94,8 @@ export interface AppState {
   skipped: number;
   /** Current weather (wind, rain, blown leaves: 0..1). */
   weather: { wind: number; rain: number; leaves: number };
+  /** Walking through the scene as a player (first person). */
+  playing: boolean;
 }
 
 export class App {
@@ -109,7 +113,11 @@ export class App {
     error: null,
     skipped: 0,
     weather: { wind: 0, rain: 0, leaves: 0 },
+    playing: false,
   };
+  /** The player while in play mode. */
+  player: Player | null = null;
+  private walk: WalkData | null = null;
   private env: Environment = { ...CALM };
   private atlas: GlyphAtlas;
   // Only the most recent request may update the scene.
@@ -170,6 +178,50 @@ export class App {
     this.viewer.requestRender();
   }
 
+  /**
+   * Walk through the current landscape in first person: WASD / arrows,
+   * Shift to run, Space to jump, mouse to look (click to capture it).
+   * Gravity keeps you on the ground; trunks, rocks, steep slopes and the
+   * lake stop you.
+   */
+  play(): boolean {
+    if (!this.walk || this.player) return false;
+    const v = this.viewer;
+    const cam = v.camera;
+    const t = v.controls.target;
+    const yaw = Math.atan2(-(t.x - cam.position.x), -(t.z - cam.position.z));
+    const world = { ...this.walk, waterMask: this.walk.waterMask };
+    this.player = new Player(world, { x: cam.position.x, z: cam.position.z, yaw }, v.renderer.domElement);
+    v.controls.enabled = false;
+    cam.near = 0.05;
+    cam.updateProjectionMatrix();
+    const player = this.player;
+    v.onFrame = (dt) => player.update(dt, cam);
+    player.placeCamera(cam);
+    this.state.playing = true;
+    v.requestRender();
+    return true;
+  }
+
+  /** Back to orbiting, around a point in front of where the player stood. */
+  stopPlaying(): void {
+    const p = this.player;
+    if (!p) return;
+    const v = this.viewer;
+    v.onFrame = null;
+    p.dispose();
+    this.player = null;
+    const cam = v.camera;
+    const dir = cam.getWorldDirection(cam.position.clone());
+    v.controls.target.copy(cam.position).addScaledVector(dir, 20);
+    v.controls.enabled = true;
+    cam.near = 0.2;
+    cam.updateProjectionMatrix();
+    v.controls.update();
+    this.state.playing = false;
+    v.requestRender();
+  }
+
   /** Calm weather, no fog, default background. */
   resetEnvironment(animate: boolean, background = DUSK_BACKGROUND): void {
     this.env = { ...CALM };
@@ -180,6 +232,7 @@ export class App {
 
   loadBytes(bytes: ArrayBuffer, name: string): Promise<void> {
     return this.run(name, () => this.engine.load(bytes, this.settings), (res) => {
+      this.leaveScene();
       if (!res.mesh) throw new Error('engine returned no mesh');
       this.resetEnvironment(false);
       const v = this.viewer;
@@ -205,6 +258,7 @@ export class App {
     const name = `gallery-${category}`;
     return this.run(name, () => this.engine.gallery(category, seed, glyphAspect()), (res) => {
       if (!res.camera || !res.materials || !res.sunDir || !res.mesh) throw new Error('gallery result is incomplete');
+      this.leaveScene();
       this.resetEnvironment(false);
       const v = this.viewer;
       v.cards.setAtlas(this.atlasFor(res.charset));
@@ -228,6 +282,8 @@ export class App {
     const name = `scene-${preset}`;
     return this.run(name, () => this.engine.scene(preset, seed, glyphAspect()), (res) => {
       if (!res.camera || !res.materials || !res.sunDir || !res.mesh || !res.env) throw new Error('scene result is incomplete');
+      this.leaveScene();
+      this.walk = res.walk ?? null;
       const day = res.env.day;
       this.resetEnvironment(true, day ? DAY_BACKGROUND : DUSK_BACKGROUND);
       const haze: [number, number, number] = day ? [176 / 255, 194 / 255, 214 / 255] : [74 / 255, 72 / 255, 104 / 255];
@@ -249,6 +305,12 @@ export class App {
       Object.assign(this.state, { triangles: res.mesh.triangles, dropped: 0, glyphPx: 0 });
       console.info(`[ascii] ${name} seed ${seed}: ${res.count} cards, ${res.mesh.triangles} body triangles, ${res.timings.generateMs.toFixed(0)} ms`);
     });
+  }
+
+  /** Stop playing and forget the walkable world (a new scene replaces it). */
+  leaveScene(): void {
+    this.stopPlaying();
+    this.walk = null;
   }
 
   async loadUrl(url: string, name = url.split('/').pop() ?? url): Promise<void> {

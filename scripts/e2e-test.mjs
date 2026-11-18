@@ -195,6 +195,54 @@ try {
     for (const [deg, c] of results) assert.ok(c > front * 0.6, `at ${deg} degrees only ${(c * 100).toFixed(0)}% drawn (front ${(front * 100).toFixed(0)}%)`);
   });
 
+  await step('player: walks on the ground, never through it, stays out of the lake, collides', async () => {
+    // The lake scene is loaded; its camera looks across the water.
+    assert.equal(await page.evaluate(() => window.__ascii.play()), true);
+    const r = await page.evaluate(() => {
+      const a = window.__ascii;
+      const out = {};
+      // 1. Walk (and run) toward the lake: must stop at the shore.
+      out.toLake = a.playSteps({ forward: 1, run: true }, 12);
+      // 2. Walk around in several directions over hills.
+      out.walks = [0, 1.6, 3.1, 4.7].map((yaw) => a.playSteps({ forward: 1, yaw }, 4));
+      // 3. Jump: up, then back down onto the ground.
+      const g0 = a.playSteps({}, 0.5);
+      const up = a.playSteps({ jump: true }, 0.25);
+      const p = a.app.player.physics;
+      out.jumpHeight = up.y - p.height(up.x, up.z);
+      out.landed = a.playSteps({}, 2);
+      out.landedClearance = out.landed.y - p.height(out.landed.x, out.landed.z);
+      // 4. Walk straight into the nearest collider (trunk / rock).
+      const s = a.app.player.state;
+      const c = p.world.colliders;
+      let best = -1, bd = Infinity;
+      for (let i = 0; i < c.length; i += 4) {
+        const d = Math.hypot(c[i] - s.x, c[i + 1] - s.z);
+        if (d < bd && d > c[i + 2] + 1 && c[i + 3] > s.y + 2) { bd = d; best = i; }
+      }
+      if (best >= 0) {
+        // Teleport next to it on dry land, then walk into it.
+        s.x = c[best] + (c[best + 2] + 2.5); s.z = c[best + 1]; s.y = p.height(s.x, s.z); s.vx = s.vy = s.vz = 0;
+        const yaw = Math.atan2(-(c[best] - s.x), -(c[best + 1] - s.z));
+        a.playSteps({ forward: 1, yaw }, 3);
+        out.gap = Math.hypot(s.x - c[best], s.z - c[best + 1]) - c[best + 2];
+      }
+      out.minClearance = Math.min(out.toLake.minClearance, ...out.walks.map((w) => w.minClearance), out.landed.minClearance);
+      out.inWater = out.toLake.inWater || out.walks.some((w) => w.inWater);
+      return out;
+    });
+    console.log(`       to lake moved ${r.toLake.moved.toFixed(1)} m, walks ${r.walks.map((w) => w.moved.toFixed(1)).join('/')} m, ` +
+      `jump ${r.jumpHeight.toFixed(2)} m, min clearance ${r.minClearance.toFixed(4)} m, gap to collider ${r.gap?.toFixed(2)} m`);
+    assert.ok(r.minClearance >= -1e-3, 'the player went below the ground');
+    assert.equal(r.inWater, false, 'the player walked into the lake');
+    assert.ok(r.walks.some((w) => w.moved > 5), 'the player should be able to walk');
+    assert.ok(r.jumpHeight > 0.5, 'jumping lifts the player');
+    assert.ok(Math.abs(r.landedClearance) < 1e-3, 'the player lands back on the ground');
+    assert.ok(r.gap !== undefined && r.gap > 0.3, 'the player walked through a trunk or rock');
+    await page.screenshot({ path: join(outDir, '16c-first-person.png') });
+    await page.evaluate(() => window.__ascii.stopPlaying());
+  });
+
   await step('wind moves the scene over time; calm air does not', async () => {
     const at = (t) => page.evaluate((t) => { window.__ascii.freezeTime(t); return window.__ascii.thumbnail(); }, t);
     const diff = (a, b) => a.reduce((s, v, i) => s + Math.abs(v - b[i]), 0) / a.length;

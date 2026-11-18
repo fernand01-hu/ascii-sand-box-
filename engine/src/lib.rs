@@ -203,6 +203,17 @@ pub struct SceneryScene {
     camera: Vec<f32>,
     glyph: f32,
     env: Vec<f32>,
+    walk: Option<Walk>,
+}
+
+/// What the player physics needs from a landscape.
+struct Walk {
+    heights: Vec<f32>,
+    n: u32,
+    size: f32,
+    water: f32,
+    water_mask: Vec<u8>,
+    colliders: Vec<f32>,
 }
 
 #[wasm_bindgen]
@@ -232,6 +243,29 @@ impl SceneryScene {
     /// Glyph height in metres.
     pub fn glyph(&self) -> f32 {
         self.glyph
+    }
+
+    /// Terrain heights for walking (row-major n x n), empty for galleries.
+    #[wasm_bindgen(js_name = takeHeights)]
+    pub fn take_heights(&mut self) -> Vec<f32> {
+        self.walk.as_mut().map_or_else(Vec::new, |w| std::mem::take(&mut w.heights))
+    }
+
+    /// n, size (metres), water level (NaN without a lake).
+    #[wasm_bindgen(js_name = walkInfo)]
+    pub fn walk_info(&self) -> Vec<f32> {
+        self.walk.as_ref().map_or_else(Vec::new, |w| vec![w.n as f32, w.size, w.water])
+    }
+
+    #[wasm_bindgen(js_name = takeWaterMask)]
+    pub fn take_water_mask(&mut self) -> Vec<u8> {
+        self.walk.as_mut().map_or_else(Vec::new, |w| std::mem::take(&mut w.water_mask))
+    }
+
+    /// Colliders: x, z, radius, top y per entry.
+    #[wasm_bindgen(js_name = takeColliders)]
+    pub fn take_colliders(&mut self) -> Vec<f32> {
+        self.walk.as_mut().map_or_else(Vec::new, |w| std::mem::take(&mut w.colliders))
     }
 
     /// daytime (0/1), wind direction x, z, leaf box min x, min z, size,
@@ -272,6 +306,14 @@ pub fn build_scene(preset: &str, seed: u32, glyph_aspect: f32) -> Result<Scenery
         camera: vec![s.target.x, s.target.y, s.target.z, s.eye.x, s.eye.y, s.eye.z, s.fov],
         glyph: 0.0,
         env: vec![f32::from(s.day), s.wind[0], s.wind[1], s.leaf_box[0], s.leaf_box[1], s.leaf_box[2], rb[0], rb[1], rb[2]],
+        walk: Some(Walk {
+            heights: s.heights,
+            n: s.grid_n as u32,
+            size: s.grid_size,
+            water: s.water.unwrap_or(f32::NAN),
+            water_mask: s.water_mask,
+            colliders: s.colliders.iter().flatten().copied().collect(),
+        }),
     })
 }
 
@@ -294,6 +336,7 @@ pub fn build_gallery(category: &str, seed: u32, glyph_aspect: f32) -> Result<Sce
         camera: vec![s.target.x, s.target.y, s.target.z, s.eye.x, s.eye.y, s.eye.z, s.fov],
         glyph: s.glyph,
         env: vec![0.0, w[0], w[1], 0.0, 0.0, 0.0, rb[0], rb[1], rb[2]],
+        walk: None,
     })
 }
 
