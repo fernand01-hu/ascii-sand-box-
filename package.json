@@ -1,0 +1,26 @@
+{
+  "name": "ascii-scene",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "wasm": "wasm-pack build engine --target web --release --out-dir ../web/src/pkg --no-pack",
+    "models": "node scripts/make-models.mjs",
+    "dev": "npm run wasm && vite",
+    "build": "npm run wasm && tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test:rust": "cargo test --release --manifest-path engine/Cargo.toml",
+    "test:wasm": "node scripts/smoke-test.mjs",
+    "test:e2e": "node scripts/e2e-test.mjs",
+    "test": "npm run test:rust && npm run build && npm run test:wasm && npm run test:e2e"
+  },
+  "dependencies": {
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0",
+    "puppeteer-core": "^25.18.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  }
+}
