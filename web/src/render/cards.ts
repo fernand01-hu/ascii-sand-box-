@@ -11,11 +11,7 @@
 import {
   BufferAttribute,
   Group,
-  PerspectiveCamera,
   Sphere,
-  type Camera,
-  type Material,
-  type WebGLRenderer,
   InstancedBufferGeometry,
   InstancedInterleavedBuffer,
   InterleavedBufferAttribute,
@@ -150,7 +146,6 @@ uniform float uLeaves;
 uniform vec3 uRainBox;
 uniform vec3 uLeafBox;  // min x, min z, size
 uniform float uUnder;   // 1 in the underpaint pass (particles stay out of it)
-uniform float uThin;    // level of detail: this chunk draws 1 card in uThin
 
 attribute vec3 iCenter;
 attribute vec3 iU;
@@ -285,18 +280,7 @@ void main() {
     alphaMul *= mix(0.75 + 0.25 * sin(3.14159 * ph), sin(3.14159 * ph), smoothstep(0.3, 0.8, C.y));
   }
 
-  // Level of detail: a thinned chunk's cards stand in for the ones not drawn,
-  // so they get more opaque and a little bigger. The budget still leaves ~2
-  // glyph-sized cards per screen cell, so they must not grow much: glyphs
-  // keep their on-screen size, there are just fewer layers of them.
-  float thinA = 1.0;
-  if (uThin > 1.0 && !(emissive || rain || leaf)) {
-    float g = min(pow(uThin, 0.2), 1.35);
-    U *= g;
-    V *= g;
-    thinA = uThin;
-  }
-  float baseA = 1.0 - pow(1.0 - clamp(iColor.a, 0.0, 0.999), thinA);
+  float baseA = iColor.a;
 
   vec3 world = center + sway + U * position.x + V * position.y;
   vec3 N = normalize(cross(U, V));
@@ -335,7 +319,11 @@ void main() {
     float hz = B.w * pow(clamp(dist / uHazeDist, 0.0, 1.0), 0.65);
     vColor = mix(vColor, uHazeColor, hz);
     // Cards seen almost edge-on become slivers: fade them out instead of streaking.
-    vAlpha = min(1.0, (baseA + B.z * ts * diff) * uAlphaGain) * smoothstep(0.02, 0.25, abs(facing)) * alphaMul;
+    // Foliage seen edge-on keeps most of its opacity (a crown has leaves at
+    // every angle; fading them all out left holes). Other cards fade.
+    float edge = smoothstep(0.02, 0.25, abs(facing));
+    if (C.x > 0.3) edge = max(edge, 0.7);
+    vAlpha = min(1.0, (baseA + B.z * ts * diff) * uAlphaGain) * edge * alphaMul;
   }
   // Scene haze: far things melt into the sky colour (thicker in the rain).
   if (uFog.y > 0.0 && C.z > 0.5) {
@@ -383,19 +371,9 @@ export class CardLayer {
   /** All chunk meshes; add this to the scene. */
   readonly group = new Group();
   readonly material: ShaderMaterial;
-  /**
-   * Level of detail on/off, and its budget in cards per glyph-sized screen
-   * cell: like the original's character budget, `lodNear` closer than 25 m,
-   * falling to `lodFar` beyond 90 m, so distance reads as sparser.
-   */
-  lod = true;
-  lodNear = 3.2;
-  lodFar = 1.8;
-  /** On-screen glyph height (CSS px) the budget is measured in. */
-  glyphPx = 15;
   private chunks: Chunk[] = [];
   private count = 0;
-  /** Cards actually submitted in the last frame (after culling and LOD). */
+  /** Cards actually submitted in the last frame (after frustum culling). */
   drawn = 0;
 
   constructor(atlas: GlyphAtlas, lighting: Lighting = DEFAULT_LIGHTING) {
@@ -427,7 +405,6 @@ export class CardLayer {
         uRainBox: { value: new Vector3(36, 24, 36) },
         uLeafBox: { value: new Vector3(0, 0, 1) },
         uUnder: { value: 0 },
-        uThin: { value: 1 },
       },
     });
     this.setLighting(lighting);
@@ -536,48 +513,21 @@ export class CardLayer {
       geometry.instanceCount = count;
       const lo = new Vector3(lx, ly, lz);
       const hi = new Vector3(hx, hy, hz);
-      // Margin: card size (cards can grow up to 2.5x with LOD) plus wind sway.
-      const r = lo.distanceTo(hi) / 2 + size * 3 + 1;
+      // Margin: card size plus wind sway.
+      const r = lo.distanceTo(hi) / 2 + size + 1;
       geometry.boundingSphere = new Sphere(lo.clone().add(hi).multiplyScalar(0.5), r);
       const mesh = new Mesh(geometry, this.material);
       const chunk: Chunk = { mesh, count, global: global > 0.5, lo, hi };
       // Global chunks (sky dome, rain round the camera, blown leaves) always draw.
       mesh.frustumCulled = !chunk.global;
       mesh.renderOrder = 1; // after the opaque body
-      mesh.onBeforeRender = (renderer, _scene, camera, _geometry, material) => this.applyLod(chunk, renderer, camera, material);
+      mesh.onBeforeRender = () => {
+        this.drawn += chunk.count;
+      };
       this.chunks.push(chunk);
       this.group.add(mesh);
     }
     this.count = total;
-  }
-
-  /** Per-frame level of detail for one chunk, from its size on screen. */
-  private applyLod(chunk: Chunk, renderer: WebGLRenderer, camera: Camera, material: Material): void {
-    let n = chunk.count;
-    if (this.lod && !chunk.global && camera instanceof PerspectiveCamera) {
-      const p = camera.position;
-      const c = chunk.lo.clone().add(chunk.hi).multiplyScalar(0.5);
-      const e = chunk.hi.clone().sub(chunk.lo).multiplyScalar(0.5);
-      // Distance from the eye to the chunk's box.
-      const q = new Vector3(Math.max(Math.abs(p.x - c.x) - e.x, 0), Math.max(Math.abs(p.y - c.y) - e.y, 0), Math.max(Math.abs(p.z - c.z) - e.z, 0));
-      const d = Math.max(q.length(), 1);
-      const height = renderer.domElement.clientHeight || 700;
-      const ppm = height / 2 / Math.tan((camera.fov * Math.PI) / 360) / d;
-      const span = 2 * Math.hypot(e.x, e.z);
-      const area = span * ppm * Math.max(2 * e.y, 0.35 * span) * ppm;
-      const glyphArea = this.glyphPx * this.glyphPx * 0.62;
-      const t = Math.min(1, Math.max(0, (90 - d) / 65));
-      const budget = this.lodFar + (this.lodNear - this.lodFar) * t * t * (3 - 2 * t);
-      const allowed = (budget * area) / glyphArea;
-      n = Math.max(1, Math.min(chunk.count, Math.ceil(allowed)));
-    }
-    chunk.mesh.geometry.instanceCount = n;
-    this.drawn += n;
-    const m = material as ShaderMaterial;
-    if (m.uniforms?.uThin) {
-      m.uniforms.uThin.value = chunk.count / n;
-      m.uniformsNeedUpdate = true;
-    }
   }
 
   private clear(): void {

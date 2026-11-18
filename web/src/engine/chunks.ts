@@ -1,9 +1,7 @@
 // Spatial chunks for render-time culling and level of detail.
 //
-// Cards are grouped into square ground cells (CHUNK_SIZE metres). Inside each
-// chunk the order is shuffled, so drawing only the first part of a chunk is
-// a uniform random thinning of it: the renderer draws fewer cards for chunks
-// that are small on screen and skips chunks outside the view entirely.
+// Cards are grouped into square ground cells (CHUNK_SIZE metres); the renderer
+// skips chunks outside the view entirely (frustum culling).
 // Sky, rain and blown leaves go in one "global" chunk that is always drawn
 // in full. Runs in the worker.
 

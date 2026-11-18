@@ -105,7 +105,7 @@ export class Underpaint {
     this.material = new ShaderMaterial({
       vertexShader,
       fragmentShader: solidFragment,
-      uniforms: { ...cards.material.uniforms, uUnder: { value: 1 }, uThin: { value: 1 }, uUnderAlpha: { value: this.cardAlpha } },
+      uniforms: { ...cards.material.uniforms, uUnder: { value: 1 }, uUnderAlpha: { value: this.cardAlpha } },
       depthTest: true,
       depthWrite: true,
       alphaToCoverage: true,

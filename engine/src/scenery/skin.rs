@@ -557,13 +557,9 @@ impl<'a> Skinner<'a> {
             let t = ts + self.rng.uniform(-0.03, 0.03);
             let slot = self.cards[base + layout::GLYPH] as u32;
             let high = slot / MATERIAL_SHIFT;
-            let swap = if t < 0.2 && self.rng.chance(0.75) {
-                Some(self.glyphs.dim.pick(&mut self.rng))
-            } else if t < 0.45 && self.rng.chance(0.6) {
-                Some(self.glyphs.mid.pick(&mut self.rng))
-            } else {
-                None
-            };
+            // Only the mid-weight ramp (: ; - ~ +): the dot glyphs read as
+            // holes and made crowns look transparent.
+            let swap = if t < 0.35 && self.rng.chance(0.3) { Some(self.glyphs.mid.pick(&mut self.rng)) } else { None };
             if let Some(g) = swap {
                 self.cards[base + layout::GLYPH] = (g + high * MATERIAL_SHIFT) as f32;
                 // Lift shaded colours so the sparse characters stay visible.

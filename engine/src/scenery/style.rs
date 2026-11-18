@@ -50,7 +50,7 @@ const fn m(chars: &'static str, albedo: [f32; 3]) -> Material {
 }
 
 const fn foliage(x: Material) -> Material {
-    Material { spec: 0.4, shin: 24.0, trans: 0.45, wrap: 0.25, alpha: (0.78, 1.0), keep: 2.0, flex: 0.5, ..x }
+    Material { spec: 0.4, shin: 24.0, trans: 0.45, wrap: 0.25, alpha: (0.88, 1.0), keep: 1.3, flex: 0.5, ..x }
 }
 
 const fn accent(x: Material) -> Material {
