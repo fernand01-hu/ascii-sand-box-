@@ -12,6 +12,14 @@ engine/          Rust engine, compiled to WebAssembly
   src/mesh.rs      cleanup, Z-up -> Y-up, normalization, crease-aware normals
   src/cards.rs     stratified area sampling, card frames, glyph/colour picks
   src/rng.rs       seeded PCG32 (same seed = same scene, everywhere)
+  src/noise.rs     3D cellular + value noise for the glyph rules
+  src/scenery/     procedural assets, ported from the `scenery` Python package:
+                   rocks, plants (fern, hostas, elephant ear, rhubarb, grass,
+                   reeds, wildflowers), bushes (7 kinds), trees (pine, spruce,
+                   oak, birch, maple, dead), material table, skinning to cards,
+                   baked shadows (occlusion grid), gallery sheets
+  src/testbed/     test scenes only (the pine from pine_ascii.py), feature `testbed`
+  tests/           scenery statistics checked against the Python reference
   src/lib.rs       WASM bindings (Engine, CardConfig)
 web/
   src/engine/      Web Worker running the WASM engine + promise client
@@ -33,4 +41,8 @@ npm test           # Rust unit tests, typecheck + build, WASM smoke test, headle
 ```
 
 In the viewer: drag to orbit, wheel to zoom, right-drag to pan.
-Dev shortcuts: keys `1`-`4` switch test models, drop an `.stl` on the page to load it.
+Dev shortcuts (dev/test builds only): keys `1`-`4` test models, `5` testbed pine,
+`6`-`9` scenery galleries (rocks, plants, bushes, trees), drop an `.stl` to load it.
+
+Visual references for the e2e test live in `tests/golden/`; after an intended
+visual change, check `test-results/` and run `UPDATE_GOLDEN=1 npm run test:e2e`.

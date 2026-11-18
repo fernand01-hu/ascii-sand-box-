@@ -153,6 +153,39 @@ test('generate without a mesh fails cleanly', () => {
   fresh.free();
 });
 
+for (const category of ['rocks', 'plants', 'bushes', 'trees']) {
+  test(`scenery gallery: ${category}`, () => {
+    const t = performance.now();
+    const scene = wasm.buildGallery(category, 1, 0.64);
+    const cards = scene.takeCards();
+    const body = scene.takeBody();
+    const cam = scene.camera();
+    scene.free();
+    const ms = performance.now() - t;
+    const n = cards.length / STRIDE;
+    console.log(`       ${n} cards, ${body.length / 9} solid triangles, ${ms.toFixed(0)} ms`);
+    assert.ok(n > 10_000 && n < 1_500_000);
+    assert.equal(cam.length, 7);
+    const glyphs = [...wasm.sceneryCharset()].length;
+    const materials = wasm.sceneryMaterials().length / 8;
+    const modes = [0, 0, 0, 0];
+    for (let i = 0; i < cards.length; i += STRIDE) {
+      for (let k = 0; k < STRIDE; k++) assert.ok(Number.isFinite(cards[i + k]), `card ${i / STRIDE} field ${k}`);
+      const slot = cards[i + 13];
+      const high = Math.floor(slot / 1024);
+      assert.ok(slot % 1024 < glyphs, `glyph ${slot % 1024}`);
+      assert.ok(high % 64 < materials, `material ${high % 64}`);
+      modes[Math.floor(high / 64)]++;
+    }
+    assert.ok(modes[1] > 0, 'billboards present');
+    if (category === 'rocks') assert.ok(modes[3] > 0 && body.length > 0, 'rocks are solid');
+  });
+}
+test('scenery rejects bad input', () => {
+  assert.throws(() => wasm.buildGallery('volcanoes', 1, 0.64), /unknown gallery/);
+  assert.throws(() => wasm.buildGallery('trees', 1, 0));
+});
+
 test('testbed: procedural pine', () => {
   assert.ok('generatePine' in wasm, 'run `npm run wasm:testbed` first');
   const t = performance.now();

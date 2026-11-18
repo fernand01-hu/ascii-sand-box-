@@ -62,8 +62,18 @@ export class Viewer {
     this.raf = requestAnimationFrame(this.loop);
   }
 
-  /** Replace the model body and frame the camera on it. */
+  /** Replace the model body and frame the camera on it (STL models). */
   setMesh(positions: Float32Array, normals: Float32Array): void {
+    const g = this.setBody(positions, normals);
+    this.cards.setMode('blend');
+    this.controls.maxPolarAngle = Math.PI;
+    this.camera.fov = 35;
+    this.frame(g.boundingSphere ?? new Sphere(new Vector3(0, 1, 0), 1.5));
+    this.requestRender();
+  }
+
+  /** Opaque body drawn in the background colour: it only hides what is behind it. */
+  private setBody(positions: Float32Array, normals: Float32Array): BufferGeometry {
     if (positions.length === 0 || positions.length % 9 !== 0 || normals.length !== positions.length) {
       throw new Error('mesh buffers are empty or inconsistent');
     }
@@ -74,20 +84,23 @@ export class Viewer {
     this.body.geometry.dispose();
     this.body.geometry = g;
     this.body.visible = true;
-    this.cards.setMode('blend');
-    this.controls.maxPolarAngle = Math.PI;
-    this.frame(g.boundingSphere ?? new Sphere(new Vector3(0, 1, 0), 1.5));
-    this.requestRender();
+    return g;
   }
 
   /**
-   * Show a procedural scene that has no solid body (e.g. the pine): cards only,
-   * order-independent transparency, camera placed explicitly, and the orbit
-   * kept above the ground.
+   * Show a free-standing procedural scene (foliage, scenery): order-independent
+   * transparency, camera placed explicitly, orbit kept above the ground.
+   * `body` (optional) is an opaque occluder, e.g. rocks and trunks.
    */
-  setFreeScene(target: Vector3, eye: Vector3): void {
-    this.body.visible = false;
-    this.cards.setMode('coverage');
+  setFreeScene(target: Vector3, eye: Vector3, opts: { fov?: number; body?: { positions: Float32Array; normals: Float32Array } } = {}): void {
+    if (opts.body && opts.body.positions.length > 0) {
+      this.setBody(opts.body.positions, opts.body.normals);
+      this.cards.setMode('coverage', 0.75); // cards must win against the body they sit on
+    } else {
+      this.body.visible = false;
+      this.cards.setMode('coverage');
+    }
+    this.camera.fov = opts.fov ?? 35;
     const dist = eye.distanceTo(target);
     this.controls.target.copy(target);
     this.camera.position.copy(eye);

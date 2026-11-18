@@ -45,7 +45,14 @@ export interface EngineResult {
   timings: { loadMs: number; generateMs: number };
   /** Scenes with baked shadows: the sun direction they were baked with. */
   sunDir?: [number, number, number];
+  /** Procedural scenes: suggested camera (vertical fov in degrees). */
+  camera?: { target: [number, number, number]; eye: [number, number, number]; fov: number };
+  /** Procedural scenes: shader material table, 8 floats per material id. */
+  materials?: Float32Array;
 }
+
+export type GalleryCategory = 'rocks' | 'plants' | 'bushes' | 'trees';
+export const GALLERY_CATEGORIES: GalleryCategory[] = ['rocks', 'plants', 'bushes', 'trees'];
 
 /** Test scenes, only available in dev/test builds (see web/src/testbed). */
 export interface TestbedRequest {
@@ -57,7 +64,8 @@ export interface TestbedRequest {
 export type WorkerRequest =
   | { kind: 'load'; id: number; bytes: ArrayBuffer; zUp: boolean; settings: CardSettings }
   | { kind: 'generate'; id: number; settings: CardSettings }
-  | ({ kind: 'testbed'; id: number } & TestbedRequest);
+  | ({ kind: 'testbed'; id: number } & TestbedRequest)
+  | { kind: 'gallery'; id: number; category: GalleryCategory; seed: number; glyphAspect: number };
 
 export type WorkerResponse =
   | ({ kind: 'result'; id: number } & EngineResult)

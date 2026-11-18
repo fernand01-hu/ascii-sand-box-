@@ -23,7 +23,7 @@ for (const f of [...wasm, ...js]) {
   }
 }
 const engineJs = js.map((f) => readFileSync(join(dist, f), 'utf8')).join('\n');
-for (const needed of ['loadStl', 'normalizeCharset']) {
+for (const needed of ['loadStl', 'normalizeCharset', 'buildGallery', 'sceneryMaterials']) {
   if (!engineJs.includes(needed)) problems.push(`production bundle is missing engine export "${needed}"`);
 }
 

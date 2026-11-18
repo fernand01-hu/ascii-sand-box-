@@ -13,6 +13,7 @@ pub mod math;
 pub mod mesh;
 pub mod noise;
 pub mod rng;
+pub mod scenery;
 pub mod stl;
 
 #[cfg(feature = "testbed")]
@@ -189,6 +190,95 @@ impl Engine {
         let params = config.to_params(charset).map_err(|e| JsError::new(&e.to_string()))?;
         cards::generate(mesh, &params).map_err(|e| JsError::new(&e.to_string()))
     }
+}
+
+// ---- scenery assets -------------------------------------------------------------
+
+/// A built scenery scene: cards, an opaque body and a suggested camera.
+#[wasm_bindgen]
+pub struct SceneryScene {
+    cards: Vec<f32>,
+    body: Vec<f32>,
+    body_normals: Vec<f32>,
+    camera: Vec<f32>,
+    glyph: f32,
+}
+
+#[wasm_bindgen]
+impl SceneryScene {
+    /// Card records (`cardStride()` floats each). Moves the buffer out.
+    #[wasm_bindgen(js_name = takeCards)]
+    pub fn take_cards(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.cards)
+    }
+
+    /// Opaque body triangles (9 floats each) that hide what is behind them.
+    #[wasm_bindgen(js_name = takeBody)]
+    pub fn take_body(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.body)
+    }
+
+    #[wasm_bindgen(js_name = takeBodyNormals)]
+    pub fn take_body_normals(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.body_normals)
+    }
+
+    /// target xyz, eye xyz, vertical fov in degrees.
+    pub fn camera(&self) -> Vec<f32> {
+        self.camera.clone()
+    }
+
+    /// Glyph height in metres.
+    pub fn glyph(&self) -> f32 {
+        self.glyph
+    }
+}
+
+/// A gallery sheet of procedural assets: "rocks", "plants", "bushes" or "trees".
+#[wasm_bindgen(js_name = buildGallery)]
+pub fn build_gallery(category: &str, seed: u32, glyph_aspect: f32) -> Result<SceneryScene, JsError> {
+    let cat = scenery::gallery::Category::parse(category)
+        .ok_or_else(|| JsError::new(&format!("unknown gallery {category:?} (rocks, plants, bushes, trees)")))?;
+    if !(glyph_aspect > 0.0 && glyph_aspect.is_finite()) {
+        return Err(JsError::new("glyph_aspect must be a positive number"));
+    }
+    let s = scenery::gallery::build_gallery(cat, seed, glyph_aspect);
+    let mut body = Vec::with_capacity(s.body.len() * 9);
+    let mut body_normals = Vec::with_capacity(s.body.len() * 9);
+    for t in &s.body {
+        let n = (t[1] - t[0]).cross(t[2] - t[0]).try_normalize().unwrap_or(math::Vec3::Y);
+        for v in t {
+            body.extend_from_slice(&[v.x, v.y, v.z]);
+            body_normals.extend_from_slice(&[n.x, n.y, n.z]);
+        }
+    }
+    Ok(SceneryScene {
+        cards: s.cards,
+        body,
+        body_normals,
+        camera: vec![s.target.x, s.target.y, s.target.z, s.eye.x, s.eye.y, s.eye.z, s.fov],
+        glyph: s.glyph,
+    })
+}
+
+/// Every character scenery uses, in atlas order.
+#[wasm_bindgen(js_name = sceneryCharset)]
+pub fn scenery_charset() -> String {
+    scenery::style::charset()
+}
+
+/// Shader material table: 8 floats per material (spec, shininess, trans,
+/// wrap, billboard, twist, alphaLit, haze), indexed by material id.
+#[wasm_bindgen(js_name = sceneryMaterials)]
+pub fn scenery_materials() -> Vec<f32> {
+    scenery::skin::material_table()
+}
+
+/// Sun direction scenery shadows are baked with.
+#[wasm_bindgen(js_name = scenerySunDir)]
+pub fn scenery_sun_dir() -> Vec<f32> {
+    let s = scenery::light::sun_dir();
+    vec![s.x, s.y, s.z]
 }
 
 // ---- testbed scenes (dev/test builds only) ------------------------------------

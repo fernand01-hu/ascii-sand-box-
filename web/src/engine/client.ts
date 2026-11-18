@@ -1,7 +1,7 @@
 // Promise-based front end for the engine worker. Restarts the worker by
 // itself if the WASM instance ever crashes.
 
-import type { CardSettings, EngineResult, TestbedRequest, WorkerRequest, WorkerResponse } from './protocol';
+import type { CardSettings, EngineResult, GalleryCategory, TestbedRequest, WorkerRequest, WorkerResponse } from './protocol';
 
 /** Thrown for requests the worker skipped because a newer one replaced them. */
 export class SupersededError extends Error {
@@ -34,6 +34,11 @@ export class EngineClient {
   /** Regenerate cards for the current mesh with new settings. */
   generate(settings: CardSettings): Promise<EngineResult> {
     return this.send({ kind: 'generate', id: this.nextId++, settings });
+  }
+
+  /** Build a gallery sheet of procedural scenery assets. */
+  gallery(category: GalleryCategory, seed: number, glyphAspect: number): Promise<EngineResult> {
+    return this.send({ kind: 'gallery', id: this.nextId++, category, seed, glyphAspect });
   }
 
   /** Build a test scene (dev/test builds only). */

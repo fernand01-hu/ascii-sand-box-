@@ -19,14 +19,28 @@ import type { GlyphAtlas } from './atlas';
 
 /** Must match `cards::STRIDE` / `cards::layout` in the Rust engine. */
 export const CARD_STRIDE = 16;
-/** Must match `cards::MATERIAL_SHIFT`: glyph slot = atlas index + 1024 * material. */
+/**
+ * Glyph slot = atlas index + 1024 * (material + 64 * mode). Must match
+ * `cards::MATERIAL_SHIFT` and `scenery::skin::pack` in the Rust engine.
+ * mode 0 uses the material's own billboard setting; 1 billboard round V,
+ * 2 billboard round U, 3 solid (fixed, back faces not drawn).
+ */
 const MATERIAL_SHIFT = 1024;
+/** Size of the shader's material table. */
+export const MAX_MATERIALS = 64;
 
 export interface Lighting {
   sunDir: Vector3;
   sunColor: Vector3;
   skyColor: Vector3;
   glintColor: Vector3;
+  /** Tone curve: colour = 1 - exp(-exposure * radiance). Default 2.2. */
+  exposure?: number;
+  /** Sky light strength (default 0.5) and constant ambient (default 0.03). */
+  skyGain?: number;
+  ambient?: number;
+  /** 1: sky light falls off on downward-facing cards; 0: uniform. Default 1. */
+  hemi?: number;
 }
 
 export const DEFAULT_LIGHTING: Lighting = {
@@ -57,9 +71,6 @@ export interface MaterialDef {
   haze?: number;
 }
 
-/** Max materials per scene (size of the shader's material table). */
-export const MAX_MATERIALS = 8;
-
 /** Material 0: cards lying on a model's surface. */
 export const SURFACE_MATERIAL: MaterialDef = {
   spec: 0.25, shininess: 18, trans: 0.15, wrap: 0.25, billboard: 0, twist: 0, alphaLit: 0,
@@ -81,8 +92,9 @@ uniform vec3 uSunColor;
 uniform vec3 uSkyColor;
 uniform vec3 uGlintColor;
 uniform float uDepthBias;
-uniform vec4 uMatA[8]; // spec, shininess, trans, wrap
-uniform vec4 uMatB[8]; // billboard, twist, alphaLit, haze
+uniform vec4 uMatA[${MAX_MATERIALS}]; // spec, shininess, trans, wrap
+uniform vec4 uMatB[${MAX_MATERIALS}]; // billboard, twist, alphaLit, haze
+uniform vec4 uTone; // exposure, sky gain, ambient, hemi
 uniform float uAlphaGain;
 uniform vec3 uHazeColor;
 uniform float uHazeDist;
@@ -103,11 +115,15 @@ float hash(vec3 p) {
 }
 
 void main() {
-  float mat = floor((iGlyph + 0.5) / ${MATERIAL_SHIFT.toFixed(1)});
-  float glyph = iGlyph - mat * ${MATERIAL_SHIFT.toFixed(1)};
-  int m = int(min(mat, 7.0));
+  float high = floor((iGlyph + 0.5) / ${MATERIAL_SHIFT.toFixed(1)});
+  float glyph = iGlyph - high * ${MATERIAL_SHIFT.toFixed(1)};
+  float cardMode = floor((high + 0.5) / ${MAX_MATERIALS.toFixed(1)});
+  float mat = high - cardMode * ${MAX_MATERIALS.toFixed(1)};
+  int m = int(min(mat, ${(MAX_MATERIALS - 1).toFixed(1)}));
   vec4 A = uMatA[m];
   vec4 B = uMatB[m];
+  bool solid = cardMode > 2.5;
+  float billboard = solid ? 0.0 : (cardMode > 0.5 ? cardMode : B.x);
 
   vec3 toCam = normalize(cameraPosition - iCenter);
   vec3 U = iU;
@@ -115,14 +131,14 @@ void main() {
   // Billboards keep their axis but turn round it to face the viewer, then
   // twist away by a fixed per-card amount so they don't all line up.
   float tw = (hash(iCenter) - 0.5) * 2.0 * B.y;
-  if (B.x > 0.5 && B.x < 1.5) {
+  if (billboard > 0.5 && billboard < 1.5) {
     vec3 axis = normalize(iV);
     vec3 side = cross(axis, toCam);
     if (dot(side, side) > 1e-8) {
       side = normalize(side);
       U = (side * cos(tw) + cross(side, axis) * sin(tw)) * length(iU);
     }
-  } else if (B.x > 1.5) {
+  } else if (billboard > 1.5) {
     vec3 axis = normalize(iU);
     vec3 side = cross(toCam, axis);
     if (dot(side, side) > 1e-8) {
@@ -134,6 +150,11 @@ void main() {
   vec3 world = iCenter + U * position.x + V * position.y;
   vec3 N = normalize(cross(U, V));
   float facing = dot(N, toCam);
+  if (solid && facing < 0.0) {
+    // Back face of an opaque surface (far side of a rock or trunk): skip it.
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
 
   // Light the side we can see. Seen from behind (e.g. an STL with flipped
   // winding) the glyph is also un-mirrored below, so text always reads right.
@@ -146,10 +167,10 @@ void main() {
   float diff = clamp((ndl + A.w) / (1.0 + A.w), 0.0, 1.0);
   float back = clamp(-ndl, 0.0, 1.0);
   float spec = pow(clamp(dot(N, normalize(uSunDir + toCam)), 0.0, 1.0), A.y) * step(0.0, ndl);
-  float hemi = 0.55 + 0.45 * N.y;
-  vec3 rad = iColor.rgb * (ts * uSunColor * (1.25 * diff + A.z * back) + 0.5 * tk * hemi * uSkyColor + 0.03)
+  float hemi = mix(1.0, 0.55 + 0.45 * N.y, uTone.w);
+  vec3 rad = iColor.rgb * (ts * uSunColor * (1.25 * diff + A.z * back) + uTone.y * tk * hemi * uSkyColor + uTone.z)
            + A.x * spec * ts * uGlintColor;
-  vColor = 1.0 - exp(-2.2 * rad);
+  vColor = 1.0 - exp(-uTone.x * rad);
   // Distance haze (ground), as in the script: far ground melts into the dusk.
   float hz = B.w * pow(clamp(length(cameraPosition - iCenter) / uHazeDist, 0.0, 1.0), 0.65);
   vColor = mix(vColor, uHazeColor, hz);
@@ -203,6 +224,7 @@ export class CardLayer {
         uDepthBias: { value: 0.75 },
         uMatA: { value: Array.from({ length: MAX_MATERIALS }, () => new Vector4()) },
         uMatB: { value: Array.from({ length: MAX_MATERIALS }, () => new Vector4()) },
+        uTone: { value: new Vector4(2.2, 0.5, 0.03, 1) },
         uAlphaGain: { value: 1 },
         uHazeColor: { value: new Vector3(120 / 255, 112 / 255, 140 / 255) },
         uHazeDist: { value: 110 }, // same falloff as the script
@@ -248,6 +270,7 @@ export class CardLayer {
     (u.uSunColor!.value as Vector3).copy(l.sunColor);
     (u.uSkyColor!.value as Vector3).copy(l.skyColor);
     (u.uGlintColor!.value as Vector3).copy(l.glintColor);
+    (u.uTone!.value as Vector4).set(l.exposure ?? 2.2, l.skyGain ?? 0.5, l.ambient ?? 0.03, l.hemi ?? 1);
   }
 
   /** See `CardMode`. `depthBias` is in card heights (0 for scenes with no body). */

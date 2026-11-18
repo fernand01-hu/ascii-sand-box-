@@ -59,13 +59,39 @@ async function pump(): Promise<void> {
  *  else is pointless as soon as any newer request exists. */
 function isSuperseded(req: WorkerRequest, newer: WorkerRequest[]): boolean {
   if (newer.length === 0) return false;
-  if (req.kind === 'load') return newer.some((r) => r.kind === 'load' || r.kind === 'testbed');
+  if (req.kind === 'load') return newer.some((r) => r.kind !== 'generate');
   return true;
 }
 
 async function handle(req: WorkerRequest): Promise<void> {
   try {
     const engine = await ready;
+    if (req.kind === 'gallery') {
+      const t0 = performance.now();
+      const scene = wasm.buildGallery(req.category, req.seed >>> 0, req.glyphAspect);
+      try {
+        const cards = scene.takeCards();
+        const positions = scene.takeBody();
+        const normals = scene.takeBodyNormals();
+        const [tx = 0, ty = 0, tz = 0, ex = 0, ey = 0, ez = 10, fov = 40] = scene.camera();
+        const [sx = 0, sy = 1, sz = 0] = wasm.scenerySunDir();
+        const generateMs = performance.now() - t0;
+        const stride = wasm.cardStride();
+        const materials = wasm.sceneryMaterials();
+        ctx.postMessage(
+          {
+            kind: 'result', id: req.id, cards, stride, count: cards.length / stride, charset: wasm.sceneryCharset(),
+            mesh: { positions, normals, triangles: positions.length / 9, dropped: 0 },
+            timings: { loadMs: 0, generateMs }, sunDir: [sx, sy, sz], materials,
+            camera: { target: [tx, ty, tz], eye: [ex, ey, ez], fov },
+          },
+          [cards.buffer, positions.buffer, normals.buffer, materials.buffer],
+        );
+      } finally {
+        scene.free();
+      }
+      return;
+    }
     if (req.kind === 'testbed') {
       // TESTBED is a build-time constant, so production drops this import entirely.
       if (TESTBED) {

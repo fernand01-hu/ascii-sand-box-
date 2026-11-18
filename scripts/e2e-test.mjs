@@ -27,6 +27,7 @@ const UPDATE = process.env.UPDATE_GOLDEN === '1';
 const GOLDEN_TOLERANCE = 1.5; // unchanged builds measure 0.00
 /** Smallest acceptable on-screen glyph height at the default framing (CSS px). */
 const MIN_GLYPH_PX = 8;
+// Key 6-9 galleries are numbered after the five model screenshots.
 
 const chrome = [process.env.CHROME_PATH, '/usr/bin/google-chrome', '/usr/bin/chromium', '/snap/bin/chromium',
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'].find((p) => p && existsSync(p));
@@ -138,6 +139,30 @@ try {
     await matchesGolden('5-testbed-pine');
   });
 
+  for (const [i, category] of ['rocks', 'plants', 'bushes', 'trees'].entries()) {
+    await step(`scenery gallery ${category}: renders and matches reference`, async () => {
+      await page.keyboard.press(String(6 + i));
+      await waitSettled(`gallery-${category}`);
+      const s = await state();
+      assert.equal(s.status, 'ready', s.error ?? '');
+      assert.ok(s.cards > 10_000);
+      assert.ok((await coverage()) > 0.1);
+      const name = `${6 + i}-gallery-${category}`;
+      await page.screenshot({ path: join(outDir, `${name}.png`) });
+      await matchesGolden(name);
+    });
+  }
+
+  await step('orbiting round the trees keeps them solid and readable', async () => {
+    await page.mouse.move(500, 400);
+    await page.mouse.down();
+    await page.mouse.move(820, 380, { steps: 16 });
+    await page.mouse.up();
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.ok((await coverage()) > 0.1);
+    await page.screenshot({ path: join(outDir, '9b-trees-orbited.png') });
+  });
+
   await step('mouse orbit and zoom keep rendering', async () => {
     await page.keyboard.press('1');
     await waitSettled('torus-knot.stl');
@@ -149,7 +174,7 @@ try {
     await new Promise((r) => setTimeout(r, 1200)); // let damping settle
     const cov = await coverage();
     assert.ok(cov > 0.03, `only ${(cov * 100).toFixed(2)}% of pixels drawn after orbit`);
-    await page.screenshot({ path: join(outDir, '6-orbited.png') });
+    await page.screenshot({ path: join(outDir, '10-orbited.png') });
   });
 
   await step('zooming all the way in never puts the camera inside the model', async () => {
@@ -163,7 +188,7 @@ try {
     await new Promise((r) => setTimeout(r, 1500));
     const cov = await coverage();
     assert.ok(cov > 0.03, `only ${(cov * 100).toFixed(2)}% of pixels drawn at full zoom`);
-    await page.screenshot({ path: join(outDir, '7-closeup.png') });
+    await page.screenshot({ path: join(outDir, '11-closeup.png') });
   });
 
   await step('broken file reports an error and keeps the old model on screen', async () => {
@@ -196,7 +221,7 @@ try {
     await page.setViewport({ width: 420, height: 760 });
     await new Promise((r) => setTimeout(r, 300));
     assert.ok((await coverage()) > 0.03);
-    await page.screenshot({ path: join(outDir, '8-narrow.png') });
+    await page.screenshot({ path: join(outDir, '12-narrow.png') });
   });
 
   await step('no errors or warnings in the console', async () => {

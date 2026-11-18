@@ -1,10 +1,34 @@
 // The product core: one viewer, one engine worker, and the logic that turns
 // engine results into what's on screen. No debug or test code lives here.
 
+import { Vector3 } from 'three';
 import { EngineClient, SupersededError } from '../engine/client';
-import type { CardSettings, EngineResult } from '../engine/protocol';
+import type { CardSettings, EngineResult, GalleryCategory } from '../engine/protocol';
 import { createGlyphAtlas, glyphAspect, type GlyphAtlas } from '../render/atlas';
-import { DEFAULT_LIGHTING, SURFACE_MATERIAL } from '../render/cards';
+import { DEFAULT_LIGHTING, SURFACE_MATERIAL, type Lighting, type MaterialDef } from '../render/cards';
+
+/** Lighting of the scenery `dusk` preset (light.py): stronger sky, no hemisphere falloff. */
+export const SCENERY_LIGHTING: Omit<Lighting, 'sunDir'> = {
+  sunColor: new Vector3(1.3, 0.92, 0.58),
+  skyColor: new Vector3(0.46, 0.52, 0.8),
+  glintColor: new Vector3(1.0, 0.86, 0.62),
+  exposure: 3.0,
+  skyGain: 0.95,
+  ambient: 0.05,
+  hemi: 0,
+};
+
+/** Engine material table (8 floats per material) -> shader material defs. */
+export function materialsFromTable(t: Float32Array): MaterialDef[] {
+  const out: MaterialDef[] = [];
+  for (let i = 0; i + 8 <= t.length; i += 8) {
+    out.push({
+      spec: t[i]!, shininess: t[i + 1]!, trans: t[i + 2]!, wrap: t[i + 3]!,
+      billboard: (t[i + 4]! | 0) as 0 | 1 | 2, twist: t[i + 5]!, alphaLit: t[i + 6]!, haze: t[i + 7]!,
+    });
+  }
+  return out;
+}
 import { Viewer } from '../render/viewer';
 
 export const DEFAULT_CHARSET = ':-=+*xoO#%&8@BMW'; // light to dense, same as the engine's
@@ -120,6 +144,25 @@ export class App {
         `[ascii] ${name}: ${res.mesh.triangles} triangles (${res.mesh.dropped} dropped), ${res.count} cards, ` +
           `load ${res.timings.loadMs.toFixed(1)} ms, cards ${res.timings.generateMs.toFixed(1)} ms`,
       );
+    });
+  }
+
+  /** A gallery sheet of procedural scenery assets (rocks, plants, bushes, trees). */
+  showGallery(category: GalleryCategory, seed = 1): Promise<void> {
+    const name = `gallery-${category}`;
+    return this.run(name, () => this.engine.gallery(category, seed, glyphAspect()), (res) => {
+      if (!res.camera || !res.materials || !res.sunDir || !res.mesh) throw new Error('gallery result is incomplete');
+      const v = this.viewer;
+      v.cards.setAtlas(this.atlasFor(res.charset));
+      v.cards.setMaterials(materialsFromTable(res.materials));
+      v.cards.setLighting({ ...SCENERY_LIGHTING, sunDir: new Vector3(...res.sunDir) });
+      v.setCards(res.cards, res.stride);
+      v.setFreeScene(new Vector3(...res.camera.target), new Vector3(...res.camera.eye), {
+        fov: res.camera.fov,
+        body: res.mesh.positions.length ? { positions: res.mesh.positions, normals: res.mesh.normals } : undefined,
+      });
+      Object.assign(this.state, { triangles: res.mesh.triangles, dropped: 0, glyphPx: 0 });
+      console.info(`[ascii] ${name} seed ${seed}: ${res.count} cards, ${res.mesh.triangles} solid triangles, ${res.timings.generateMs.toFixed(0)} ms`);
     });
   }
 
