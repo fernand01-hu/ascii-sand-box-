@@ -38,6 +38,14 @@ pub enum CardMode {
     Rain = 5,
     /// Blowing leaf: the shader carries it along the wind, tumbling.
     Drift = 6,
+    /// Ground mark stored flat on the surface (U x V = surface normal); the
+    /// shader tilts it toward the *current* camera every frame so glyphs
+    /// never flatten into slivers or sink into the ground, from any angle.
+    /// Lit with the true surface normal.
+    GroundLean = 7,
+    /// Water glyph stored flat (U x V = up, U = flow direction); the shader
+    /// tilts it 35-60 degrees toward the current camera. Colour as given.
+    WaterLean = 8,
 }
 
 /// Material ids fit below this (the shader table has 64 rows).
@@ -290,7 +298,7 @@ impl<'a> Skinner<'a> {
             let base = i * STRIDE;
             let high = self.cards[base + layout::GLYPH] as u32 / MATERIAL_SHIFT;
             let (mat, mode) = (high % MAX_MATERIALS, high / MAX_MATERIALS);
-            if mode != CardMode::Solid as u32 {
+            if mode != CardMode::Solid as u32 && mode < CardMode::GroundLean as u32 {
                 for k in layout::U..layout::V + 3 {
                     self.cards[base + k] *= grow;
                 }
@@ -505,7 +513,8 @@ impl<'a> Skinner<'a> {
         for i in 0..n {
             let card = &mut self.cards[i * STRIDE..(i + 1) * STRIDE];
             let mode = (card[layout::GLYPH] as u32 / MATERIAL_SHIFT) / MAX_MATERIALS;
-            if mode >= CardMode::Emissive as u32 {
+            let lit = mode < CardMode::Emissive as u32 || mode == CardMode::GroundLean as u32;
+            if !lit {
                 continue;
             }
             let c = Vec3::new(card[0], card[1], card[2]);

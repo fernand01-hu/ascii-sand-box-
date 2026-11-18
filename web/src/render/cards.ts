@@ -29,7 +29,9 @@ export const CARD_STRIDE = 16;
  * `cards::MATERIAL_SHIFT` and `scenery::skin::pack` in the Rust engine.
  * mode 0 uses the material's own billboard setting; 1 billboard round V,
  * 2 billboard round U, 3 solid (back faces not drawn), 4 emissive (colour
- * as given: sky, water), 5 rain particle, 6 blown-leaf particle.
+ * as given: sky), 5 rain particle, 6 blown-leaf particle, 7 ground mark and
+ * 8 water glyph: stored flat on the surface and leaned toward the *current*
+ * camera every frame, so they read from any viewing angle.
  */
 const MATERIAL_SHIFT = 1024;
 /** Size of the shader's material table. */
@@ -171,10 +173,12 @@ void main() {
   vec4 B = uMatB[m];
   vec4 C = uMatC[m];
   bool solid = cardMode > 2.5 && cardMode < 3.5;
-  bool emissive = cardMode > 3.5 && cardMode < 4.5;
+  bool waterLean = cardMode > 7.5;
+  bool lean = cardMode > 6.5;
+  bool emissive = (cardMode > 3.5 && cardMode < 4.5) || waterLean;
   bool rain = cardMode > 4.5 && cardMode < 5.5;
-  bool leaf = cardMode > 5.5;
-  float billboard = (solid || emissive || leaf) ? 0.0 : (rain ? 1.0 : (cardMode > 0.5 ? cardMode : B.x));
+  bool leaf = cardMode > 5.5 && cardMode < 6.5;
+  float billboard = (solid || emissive || leaf || lean) ? 0.0 : (rain ? 1.0 : (cardMode > 0.5 ? cardMode : B.x));
 
   float h = hash(iCenter);
   vec3 wind3 = vec3(uWind.x, 0.0, uWind.y);
@@ -212,6 +216,22 @@ void main() {
   }
 
   vec3 toCam = normalize(cameraPosition - center);
+  // Surface normal of flat-stored cards: used to lean them and to light them.
+  vec3 n0 = normalize(cross(iU, iV));
+  if (lean) {
+    // Lean toward the current camera (the original does this for its one
+    // camera): ground marks by a fixed amount, water 35-60 degrees. The
+    // glyph's horizontal runs across the view, upright (ground: or flipped).
+    float k = waterLean ? mix(0.7, 1.7, fract(h * 3.7)) : 0.9;
+    vec3 nn = normalize(n0 + toCam * k);
+    vec3 side = cross(n0, toCam);
+    vec3 u = dot(side, side) > 1e-6 ? normalize(side) : normalize(iU);
+    float a = waterLean ? (h - 0.5) * 0.4 : (h - 0.5) + (fract(h * 9.1) < 0.5 ? 0.0 : 3.14159);
+    u = rotateAbout(u, nn, a);
+    u = normalize(u - nn * dot(u, nn));
+    U = u * length(iU);
+    V = cross(nn, u) * length(iV);
+  }
   // Billboards keep their axis but turn round it to face the viewer, then
   // twist away by a fixed per-card amount so they don't all line up.
   float tw = (h - 0.5) * 2.0 * B.y;
@@ -255,6 +275,8 @@ void main() {
   vec3 world = center + sway + U * position.x + V * position.y;
   vec3 N = normalize(cross(U, V));
   float facing = dot(N, toCam);
+  // Leaned ground is lit by the true surface normal, as in the original.
+  vec3 Nlight = lean ? n0 : N;
   if (solid && facing < 0.0) {
     // Back face of an opaque surface (far side of a rock or trunk): skip it.
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
@@ -265,6 +287,7 @@ void main() {
   // winding) the glyph is also un-mirrored below, so text always reads right.
   float flip = facing < 0.0 ? -1.0 : 1.0;
   N *= flip;
+  if (!lean) Nlight = N;
   float dist = length(cameraPosition - center);
 
   if (emissive || rain) {
@@ -274,11 +297,11 @@ void main() {
     float ts = leaf ? 1.0 : iLight.x;
     float tk = leaf ? 1.0 : iLight.y;
     ts *= 1.0 - 0.6 * uRain; // overcast while it rains
-    float ndl = dot(N, uSunDir);
+    float ndl = dot(Nlight, uSunDir);
     float diff = clamp((ndl + A.w) / (1.0 + A.w), 0.0, 1.0);
     float back = clamp(-ndl, 0.0, 1.0);
-    float spec = pow(clamp(dot(N, normalize(uSunDir + toCam)), 0.0, 1.0), A.y) * step(0.0, ndl);
-    float hemi = mix(1.0, 0.55 + 0.45 * N.y, uTone.w);
+    float spec = pow(clamp(dot(Nlight, normalize(uSunDir + toCam)), 0.0, 1.0), A.y) * step(0.0, ndl);
+    float hemi = mix(1.0, 0.55 + 0.45 * Nlight.y, uTone.w);
     vec3 rad = iColor.rgb * (ts * uSunColor * (1.25 * diff + A.z * back) + uTone.y * tk * hemi * uSkyColor + uTone.z)
              + A.x * spec * ts * uGlintColor;
     vColor = 1.0 - exp(-uTone.x * rad);

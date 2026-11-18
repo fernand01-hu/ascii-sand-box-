@@ -193,9 +193,9 @@ fn studio_ground(sk: &mut Skinner, center: Vec3, radius: f32, eye: Vec3, focal: 
             let fade = 1.0 - super::asset::smoothstep(0.85 * radius, radius, rc);
             let soil = noise.fbm(p.x * 0.15, p.z * 0.15, 0.37, 3) > 0.18;
             let mat = if soil { Mat::Soil } else { Mat::GroundGrass };
-            // Mark tilted toward the default camera (as the original does) so
-            // glyphs don't flatten into slivers at grazing angles.
-            let n = unit(UP + unit(eye - p) * 0.9 + rng.gauss3(0.2));
+            // Mark stored flat; the shader leans it toward the current camera
+            // (as the original does) so glyphs never flatten into slivers.
+            let n = unit(UP + rng.gauss3(0.06));
             let (b1, b2) = basis(n);
             let ang = rng.uniform(0.0, TAU);
             let ud = b1 * ang.cos() + b2 * ang.sin();
@@ -203,7 +203,7 @@ fn studio_ground(sk: &mut Skinner, center: Vec3, radius: f32, eye: Vec3, focal: 
             let alb = mat.def().albedo.map(|c| c * (1.0 + 0.12 * rng.normal()));
             let alpha = (mat.def().alpha.0 + 0.08 * rng.next_f32()) * fade;
             let glyph = sk.glyph(mat);
-            sk.push(p + UP * 0.005, ud * (g * aspect), vd * g, alb, alpha, glyph, mat, CardMode::Fixed);
+            sk.push(p + UP * 0.005, ud * (g * aspect), vd * g, alb, alpha, glyph, mat, CardMode::GroundLean);
             if !soil && rng.chance(0.22) {
                 let bh = g * rng.uniform(0.7, 1.0);
                 let axis = unit(UP + rng.gauss3(0.3));

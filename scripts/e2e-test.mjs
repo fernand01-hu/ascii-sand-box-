@@ -171,6 +171,30 @@ try {
     });
   }
 
+  await step('ground and water stay visible from every viewing angle', async () => {
+    await page.keyboard.press('l');
+    await waitSettled('scene-lake');
+    // Orbit round the focus; flat-lying glyphs must not vanish edge-on.
+    const covAt = (deg) => page.evaluate((deg) => {
+      const v = window.__ascii.app.viewer;
+      const t = v.controls.target;
+      if (!window.__home) window.__home = v.camera.position.clone();
+      const off = window.__home.clone().sub(t);
+      const a = (deg * Math.PI) / 180;
+      v.camera.position.set(t.x + off.x * Math.cos(a) + off.z * Math.sin(a), t.y + off.y, t.z - off.x * Math.sin(a) + off.z * Math.cos(a));
+      v.controls.update();
+      return window.__ascii.coverage();
+    }, deg);
+    const front = await covAt(0);
+    const results = [];
+    for (const deg of [60, 120, 160, 220, 300]) results.push([deg, await covAt(deg)]);
+    await covAt(160);
+    await page.screenshot({ path: join(outDir, '16b-lake-from-160deg.png') });
+    await covAt(0);
+    console.log(`       coverage: front ${(front * 100).toFixed(0)}%, ` + results.map(([d, c]) => `${d}deg ${(c * 100).toFixed(0)}%`).join(', '));
+    for (const [deg, c] of results) assert.ok(c > front * 0.6, `at ${deg} degrees only ${(c * 100).toFixed(0)}% drawn (front ${(front * 100).toFixed(0)}%)`);
+  });
+
   await step('wind moves the scene over time; calm air does not', async () => {
     const at = (t) => page.evaluate((t) => { window.__ascii.freezeTime(t); return window.__ascii.thumbnail(); }, t);
     const diff = (a, b) => a.reduce((s, v, i) => s + Math.abs(v - b[i]), 0) / a.length;

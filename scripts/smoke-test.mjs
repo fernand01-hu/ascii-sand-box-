@@ -193,12 +193,13 @@ for (const preset of ['meadow', 'forest', 'lake', 'valley', 'alpine']) {
     console.log(`       ${n} cards, ${body.length / 9} body triangles, ${(performance.now() - t).toFixed(0)} ms`);
     assert.ok(n > 100_000 && n < 2_500_000, `${n} cards`);
     assert.equal(env.length, 9);
-    const modes = [0, 0, 0, 0, 0, 0, 0];
+    const modes = [0, 0, 0, 0, 0, 0, 0, 0, 0];
     for (let i = 0; i < cards.length; i += STRIDE) {
       for (let k = 0; k < STRIDE; k++) assert.ok(Number.isFinite(cards[i + k]), `card ${i / STRIDE} field ${k}`);
       modes[Math.floor(cards[i + 13] / 1024 / 64)]++;
     }
-    assert.ok(modes[4] > 20_000, 'sky and water');
+    assert.ok(modes[4] > 20_000, 'sky');
+    assert.ok(modes[7] > 50_000, 'ground marks lean toward the camera');
     assert.equal(modes[5], 7000, 'rain particles');
     assert.equal(modes[6], 900, 'leaf particles');
   });

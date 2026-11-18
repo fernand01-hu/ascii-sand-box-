@@ -252,7 +252,6 @@ pub fn ground(sk: &mut Skinner, t: &Terrain, canopy: &Canopy, sky: &Sky, view: &
                 }
                 let y = t.height(x, z);
                 let p = Vec3::new(x, y, z);
-                let toward = unit(view.eye - p);
                 if let Some(level) = water {
                     if t.is_water(x, z) {
                         // Several wave glyphs per sample (the original packs
@@ -261,18 +260,14 @@ pub fn ground(sk: &mut Skinner, t: &Terrain, canopy: &Canopy, sky: &Sky, view: &
                         let g = view.glyph_at(pw);
                         for _ in 0..5 {
                             let q = pw + Vec3::new(rng.gauss(1.0), 0.0, rng.gauss(1.0)) * (g * 0.5);
-                            let d = unit(q - view.eye);
-                            let right = unit(d.cross(UP));
-                            let right = if right == Vec3::ZERO { Vec3::X } else { right };
-                            let back = right.cross(UP);
-                            let yaw = rng.gauss(0.2);
-                            let ud = right * yaw.cos() + back * yaw.sin();
-                            let tilt = rng.uniform(35.0, 60.0).to_radians();
-                            let vd = unit(ud.cross(UP) * -tilt.cos() + UP * tilt.sin());
+                            // Stored flat; the shader tilts it toward whoever looks.
+                            let a = rng.uniform(0.0, TAU);
+                            let ud = Vec3::new(a.cos(), 0.0, a.sin());
+                            let vd = UP.cross(ud); // ud x vd = up
                             let s = g * rng.uniform(0.9, 1.15);
                             let col = water_color(sky, view.eye, q, sun, glint, &mut rng).map(|v| v * rng.uniform(0.85, 1.15));
                             let glyph = sk.glyph(Mat::Water);
-                            sk.push(q + UP * 0.02, ud * (s * aspect), vd * s, col, 0.95, glyph, Mat::Water, CardMode::Emissive);
+                            sk.push(q + UP * 0.02, ud * (s * aspect), vd * s, col, 0.95, glyph, Mat::Water, CardMode::WaterLean);
                         }
                         continue;
                     }
@@ -283,14 +278,12 @@ pub fn ground(sk: &mut Skinner, t: &Terrain, canopy: &Canopy, sky: &Sky, view: &
                 let n = t.normal(x, z);
                 let mat = classify(t, canopy, p, n, &mut rng);
                 let g = view.glyph_at(p);
-                // Tilted toward the default camera so glyphs don't flatten.
-                let nn = unit(n + toward * 0.6 + rng.gauss3(0.12));
-                let a = rng.uniform(-0.5, 0.5) + if rng.chance(0.5) { 0.0 } else { PI };
-                let side = unit(toward.cross(UP));
-                let side = if side == Vec3::ZERO { Vec3::X } else { side };
-                let ud = unit(side * a.cos() + nn.cross(side) * a.sin());
-                let ud = unit(ud - nn * ud.dot(nn));
-                let vd = nn.cross(ud);
+                // Stored flat on the surface; the shader leans it toward the
+                // current camera (as the original does for its one camera).
+                let nn = unit(n + rng.gauss3(0.06));
+                let (b1, _) = basis(nn);
+                let ud = b1;
+                let vd = nn.cross(ud); // ud x vd = nn
                 let s = g * 1.15;
                 let mut alb = mat.def().albedo.map(|v| v * (1.0 + mat.def().var * rng.normal()));
                 let dry = smoothstep(-0.15, 0.35, t.noise.fbm(x / 30.0 + 50.0, z / 30.0, 2.2, 3));
@@ -300,7 +293,7 @@ pub fn ground(sk: &mut Skinner, t: &Terrain, canopy: &Canopy, sky: &Sky, view: &
                 }
                 let alpha = mat.def().alpha.0 + 0.08 * rng.next_f32();
                 let glyph = sk.glyph(mat);
-                sk.push(p + n * (0.01 * s), ud * (s * aspect), vd * s, alb, alpha, glyph, mat, CardMode::Fixed);
+                sk.push(p + n * (0.01 * s), ud * (s * aspect), vd * s, alb, alpha, glyph, mat, CardMode::GroundLean);
                 // Standing grass blades on grass.
                 let dist = (p - view.eye).length().min((p - view.focus).length() + 10.0);
                 let p_blade = 0.5 * smoothstep(160.0, 10.0, dist) * smoothstep(0.35, 0.1, 1.0 - n.y);
@@ -346,15 +339,13 @@ pub fn streams(sk: &mut Skinner, t: &Terrain, sky: &Sky, view: &View, sun: Vec3,
             for k in 0..across {
                 let off = ((k as f32 + 0.5) / across as f32 - 0.5) * s.width * 0.9 + rng.gauss(0.1);
                 let p = b + side * off + Vec3::new(0.0, 0.03, 0.0);
-                let toward = unit(view.eye - p);
-                let nn = unit(UP + toward * 0.6);
-                let ud = unit(tangent - nn * tangent.dot(nn));
-                let vd = nn.cross(ud);
+                let ud = tangent; // flow direction; the shader slides along it
+                let vd = UP.cross(ud);
                 let foam = smoothstep(0.03, 0.12, drop) * rng.next_f32();
                 let col = water_color(sky, view.eye, p, sun, glint, &mut rng).map(|v| (v * 1.1 + foam * 0.5).min(1.3));
                 let sz = g * rng.uniform(0.9, 1.1);
                 let glyph = sk.glyph(Mat::WaterStream);
-                sk.push(p, ud * (sz * aspect), vd * sz, col, 0.95, glyph, Mat::WaterStream, CardMode::Emissive);
+                sk.push(p, ud * (sz * aspect), vd * sz, col, 0.95, glyph, Mat::WaterStream, CardMode::WaterLean);
             }
         }
     }

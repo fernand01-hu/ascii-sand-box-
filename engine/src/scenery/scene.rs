@@ -180,7 +180,7 @@ mod tests {
             let t0 = std::time::Instant::now();
             let s = build_scene(p, 1, 0.64);
             let n = card_count(&s);
-            let mut modes = [0usize; 7];
+            let mut modes = [0usize; 9];
             for c in s.cards.chunks_exact(STRIDE) {
                 modes[((c[layout::GLYPH] as u32 / 1024) / MAX_MATERIALS) as usize] += 1;
             }
