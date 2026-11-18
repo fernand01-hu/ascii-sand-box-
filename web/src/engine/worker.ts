@@ -1,9 +1,16 @@
 // Runs the Rust/WASM engine off the main thread so heavy work never freezes
-// the page. Requests are processed strictly in order.
+// the page.
+//
+// Requests are handled one at a time, newest-wins: before starting a request
+// the worker lets every message already sent land, then skips requests that a
+// newer one makes pointless (switching models five times quickly builds only
+// the last one).
 
-import init, { CardConfig, Engine, cardStride, generatePine, pineCharset, pineSunDir } from '../pkg/ascii_engine.js';
+import init, * as wasm from '../pkg/ascii_engine.js';
 import wasmUrl from '../pkg/ascii_engine_bg.wasm?url';
-import type { CardSettings, WorkerRequest, WorkerResponse } from './protocol';
+import { GLYPH_RULES, type CardSettings, type WorkerRequest, type WorkerResponse } from './protocol';
+
+const TESTBED = import.meta.env.DEV || import.meta.env.MODE === 'test';
 
 interface WorkerScope {
   onmessage: ((e: MessageEvent<WorkerRequest>) => void) | null;
@@ -11,31 +18,63 @@ interface WorkerScope {
 }
 const ctx = self as unknown as WorkerScope;
 
-const ready: Promise<Engine> = init({ module_or_path: wasmUrl }).then(() => new Engine());
+const ready: Promise<wasm.Engine> = init({ module_or_path: wasmUrl }).then(() => new wasm.Engine());
 
-let queue: Promise<void> = Promise.resolve();
+const queue: WorkerRequest[] = [];
+let busy = false;
+let scheduled = false;
+
 ctx.onmessage = (e) => {
-  const req = e.data;
-  queue = queue.then(() => handle(req));
+  queue.push(e.data);
+  schedule();
 };
+
+function schedule(): void {
+  if (busy || scheduled) return;
+  scheduled = true;
+  // A macrotask, so messages that are already waiting arrive before we pick.
+  setTimeout(pump, 0);
+}
+
+async function pump(): Promise<void> {
+  scheduled = false;
+  busy = true;
+  try {
+    while (queue.length > 0) {
+      const req = queue.shift()!;
+      if (isSuperseded(req, queue)) {
+        ctx.postMessage({ kind: 'skipped', id: req.id });
+        continue;
+      }
+      await handle(req);
+      await new Promise((r) => setTimeout(r, 0)); // let new messages land
+    }
+  } finally {
+    busy = false;
+    if (queue.length > 0) schedule();
+  }
+}
+
+/** A load is only pointless if a newer request replaces the scene; anything
+ *  else is pointless as soon as any newer request exists. */
+function isSuperseded(req: WorkerRequest, newer: WorkerRequest[]): boolean {
+  if (newer.length === 0) return false;
+  if (req.kind === 'load') return newer.some((r) => r.kind === 'load' || r.kind === 'testbed');
+  return true;
+}
 
 async function handle(req: WorkerRequest): Promise<void> {
   try {
     const engine = await ready;
-    if (req.kind === 'pine') {
-      const t0 = performance.now();
-      const cards = generatePine(req.seed >>> 0, req.glyphAspect);
-      const generateMs = performance.now() - t0;
-      const stride = cardStride();
-      const [x = 0, y = 1, z = 0] = pineSunDir();
-      ctx.postMessage(
-        {
-          kind: 'result', id: req.id, mesh: null, cards, stride, count: cards.length / stride,
-          timings: { loadMs: 0, generateMs }, charset: pineCharset(), sunDir: [x, y, z],
-        },
-        [cards.buffer],
-      );
-      return;
+    if (req.kind === 'testbed') {
+      // TESTBED is a build-time constant, so production drops this import entirely.
+      if (TESTBED) {
+        const { runTestbed } = await import('../testbed/worker-scenes');
+        const res = runTestbed(wasm, req);
+        ctx.postMessage({ kind: 'result', id: req.id, ...res }, [res.cards.buffer]);
+        return;
+      }
+      throw new Error('test scenes are not part of this build');
     }
     let mesh = null;
     let loadMs = 0;
@@ -50,14 +89,15 @@ async function handle(req: WorkerRequest): Promise<void> {
         dropped: engine.droppedTriangles(),
       };
     }
+    const charset = wasm.normalizeCharset(req.settings.charset);
     const t1 = performance.now();
-    const cards = generate(engine, req.settings);
+    const cards = generate(engine, req.settings, charset);
     const generateMs = performance.now() - t1;
-    const stride = cardStride();
+    const stride = wasm.cardStride();
     const transfer: Transferable[] = [cards.buffer];
     if (mesh) transfer.push(mesh.positions.buffer, mesh.normals.buffer);
     ctx.postMessage(
-      { kind: 'result', id: req.id, mesh, cards, stride, count: cards.length / stride, timings: { loadMs, generateMs } },
+      { kind: 'result', id: req.id, mesh, cards, stride, count: cards.length / stride, charset, timings: { loadMs, generateMs } },
       transfer,
     );
   } catch (err) {
@@ -68,13 +108,14 @@ async function handle(req: WorkerRequest): Promise<void> {
   }
 }
 
-function generate(engine: Engine, s: CardSettings): Float32Array {
-  const c = new CardConfig();
+function generate(engine: wasm.Engine, s: CardSettings, charset: string): Float32Array {
+  const c = new wasm.CardConfig();
   try {
     c.seed = s.seed >>> 0;
-    c.count = s.count >>> 0;
+    c.glyphSize = s.glyphSize;
     c.sizeFactor = s.sizeFactor;
-    c.glyphCount = s.glyphCount >>> 0;
+    c.glyphRule = GLYPH_RULES[s.glyphRule];
+    c.patternScale = s.patternScale;
     c.glyphAspect = s.glyphAspect;
     [c.r, c.g, c.b] = s.color;
     c.colorJitter = s.colorJitter;
@@ -82,7 +123,7 @@ function generate(engine: Engine, s: CardSettings): Float32Array {
     c.tilt = s.tilt;
     c.alphaMin = s.alphaMin;
     c.alphaMax = s.alphaMax;
-    return engine.generate(c);
+    return engine.generate(c, charset);
   } finally {
     c.free();
   }

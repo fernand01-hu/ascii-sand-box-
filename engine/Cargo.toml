@@ -9,6 +9,10 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Test scenes (the procedural pine). Dev/test builds only, never production.
+testbed = []
+
 [dependencies]
 wasm-bindgen = "0.2"
 console_error_panic_hook = "0.1"

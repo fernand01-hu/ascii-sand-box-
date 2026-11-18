@@ -1,28 +1,32 @@
 // Runs the compiled WASM engine in Node against every bundled model and some
 // hostile inputs. Checks the exact binary the browser will load.
+// Needs the testbed build (npm run wasm:testbed) for the pine checks.
 //
-//   npm run wasm && node scripts/smoke-test.mjs
+//   node scripts/smoke-test.mjs
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
-import init, { CardConfig, Engine, cardStride, generatePine, pineCharset } from '../web/src/pkg/ascii_engine.js';
+import init, * as wasm from '../web/src/pkg/ascii_engine.js';
 
+const { CardConfig, Engine, cardStride, normalizeCharset, defaultCharset } = wasm;
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 await init({ module_or_path: readFileSync(join(root, 'web/src/pkg/ascii_engine_bg.wasm')) });
 
 const STRIDE = cardStride();
 assert.equal(STRIDE, 16, 'renderer expects 16 floats per card');
+const CHARSET = defaultCharset();
+const GLYPHS = [...CHARSET].length;
 
 const config = (patch = {}) => {
   const c = new CardConfig();
-  Object.assign(c, { count: 50_000, glyphCount: 16, glyphAspect: 0.6, seed: 3 }, patch);
+  Object.assign(c, { glyphAspect: 0.64, seed: 3 }, patch);
   return c;
 };
 
-function checkCards(cards, count, glyphs) {
-  assert.equal(cards.length, count * STRIDE);
+function checkCards(cards, glyphs) {
+  assert.ok(cards.length > 0 && cards.length % STRIDE === 0);
   for (let i = 0; i < cards.length; i += STRIDE) {
     for (let k = 0; k < STRIDE; k++) assert.ok(Number.isFinite(cards[i + k]), `non-finite value in card ${i / STRIDE}`);
     const g = cards[i + 13];
@@ -69,23 +73,46 @@ for (const file of models) {
     assert.ok(Math.abs(xmin + xmax) < 1e-3, 'not centred on x');
     assert.ok(Math.max(ymax - ymin, xmax - xmin) <= 2.0001);
 
-    const c = config();
-    t = performance.now();
-    const a = engine.generate(c);
-    const genMs = performance.now() - t;
-    checkCards(a, 50_000, 16);
-    assert.deepEqual(engine.generate(c), a, 'same seed must give identical cards');
-    c.free();
-    console.log(`       ${tris} tris (${engine.droppedTriangles()} dropped), parse ${loadMs.toFixed(1)} ms, 50k cards ${genMs.toFixed(1)} ms`);
+    for (const rule of [0, 1, 2]) {
+      const c = config({ glyphRule: rule });
+      t = performance.now();
+      const a = engine.generate(c, CHARSET);
+      const genMs = performance.now() - t;
+      checkCards(a, GLYPHS);
+      assert.deepEqual(engine.generate(c, CHARSET), a, 'same seed must give identical cards');
+      c.free();
+      if (rule === 1) {
+        console.log(`       ${tris} tris (${engine.droppedTriangles()} dropped), parse ${loadMs.toFixed(1)} ms, ` +
+          `${a.length / STRIDE} cards ${genMs.toFixed(1)} ms`);
+      }
+    }
   });
 }
 
-test('one million cards', () => {
-  const c = config({ count: 1_000_000 });
+test('glyph size, not count, sets density', () => {
+  const big = config({ glyphSize: 0.06 });
+  const small = config({ glyphSize: 0.03 });
+  const nBig = engine.generate(big, CHARSET).length / STRIDE;
+  const nSmall = engine.generate(small, CHARSET).length / STRIDE;
+  assert.ok(Math.abs(nSmall / nBig - 4) < 0.05, `${nSmall} vs ${nBig}`);
+  big.free(); small.free();
+});
+
+test('tiny glyphs hit the card cap instead of failing', () => {
+  const c = config({ glyphSize: 0.002 });
   const t = performance.now();
-  const cards = engine.generate(c);
-  console.log(`       1M cards in ${(performance.now() - t).toFixed(0)} ms`);
-  assert.equal(cards.length, 1_000_000 * STRIDE);
+  const cards = engine.generate(c, CHARSET);
+  console.log(`       ${cards.length / STRIDE} cards in ${(performance.now() - t).toFixed(0)} ms`);
+  assert.equal(cards.length, 2_000_000 * STRIDE);
+  c.free();
+});
+
+test('charset is normalized by the engine', () => {
+  assert.equal(normalizeCharset('aa b\tcb'), 'abc');
+  assert.throws(() => normalizeCharset('   '));
+  const c = config();
+  const cards = engine.generate(c, 'x x y');
+  checkCards(cards, 2);
   c.free();
 });
 
@@ -102,42 +129,45 @@ test('garbage input is rejected and the previous mesh is kept', () => {
   }
   engine.loadStl(readFileSync(join(modelsDir, 'sphere.stl')), true);
   assert.ok(engine.triangleCount() > 0 && before > 0);
-  const c = config({ count: 100 });
-  checkCards(engine.generate(c), 100, 16);
+  const c = config();
+  checkCards(engine.generate(c, CHARSET), GLYPHS);
   c.free();
 });
 
 test('invalid settings are rejected', () => {
-  for (const patch of [{ count: 0 }, { count: 3_000_000 }, { glyphCount: 0 }, { sizeFactor: NaN }, { alphaMin: 1, alphaMax: 0 }]) {
+  for (const patch of [{ glyphSize: 0 }, { glyphRule: 9 }, { patternScale: 0 }, { sizeFactor: NaN }, { alphaMin: 1, alphaMax: 0 }]) {
     const c = config(patch);
-    assert.throws(() => engine.generate(c), undefined, JSON.stringify(patch));
+    assert.throws(() => engine.generate(c, CHARSET), undefined, JSON.stringify(patch));
     c.free();
   }
+  const c = config();
+  assert.throws(() => engine.generate(c, ' \n'));
+  c.free();
 });
 
-test('procedural pine', () => {
+test('generate without a mesh fails cleanly', () => {
+  const fresh = new Engine();
+  const c = config();
+  assert.throws(() => fresh.generate(c, CHARSET), /no mesh/);
+  c.free();
+  fresh.free();
+});
+
+test('testbed: procedural pine', () => {
+  assert.ok('generatePine' in wasm, 'run `npm run wasm:testbed` first');
   const t = performance.now();
-  const cards = generatePine(23, 0.64);
+  const cards = wasm.generatePine(23, 0.64);
   console.log(`       ${cards.length / STRIDE} cards in ${(performance.now() - t).toFixed(0)} ms`);
-  assert.equal(cards.length % STRIDE, 0);
   assert.ok(cards.length / STRIDE > 50_000);
-  const glyphs = [...pineCharset()].length;
+  const glyphs = [...wasm.pineCharset()].length;
   for (let i = 0; i < cards.length; i += STRIDE) {
     for (let k = 0; k < STRIDE; k++) assert.ok(Number.isFinite(cards[i + k]));
     const g = cards[i + 13];
     assert.ok(g % 1024 < glyphs && g >= 1024 && g < 7 * 1024, `glyph slot ${g}`);
     assert.ok(cards[i + 14] >= 0 && cards[i + 14] <= 1 && cards[i + 15] >= 0 && cards[i + 15] <= 1);
   }
-  assert.deepEqual(generatePine(23, 0.64), cards, 'same seed must give the same tree');
-  assert.throws(() => generatePine(23, 0));
-});
-
-test('generate without a mesh fails cleanly', () => {
-  const fresh = new Engine();
-  const c = config();
-  assert.throws(() => fresh.generate(c), /no mesh/);
-  c.free();
-  fresh.free();
+  assert.deepEqual(wasm.generatePine(23, 0.64), cards, 'same seed must give the same tree');
+  assert.throws(() => wasm.generatePine(23, 0));
 });
 
 if (failures) {

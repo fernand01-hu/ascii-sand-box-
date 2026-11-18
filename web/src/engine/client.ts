@@ -1,7 +1,15 @@
 // Promise-based front end for the engine worker. Restarts the worker by
 // itself if the WASM instance ever crashes.
 
-import type { CardSettings, EngineResult, WorkerRequest, WorkerResponse } from './protocol';
+import type { CardSettings, EngineResult, TestbedRequest, WorkerRequest, WorkerResponse } from './protocol';
+
+/** Thrown for requests the worker skipped because a newer one replaced them. */
+export class SupersededError extends Error {
+  constructor() {
+    super('superseded by a newer request');
+    this.name = 'SupersededError';
+  }
+}
 
 interface Pending {
   resolve: (r: EngineResult) => void;
@@ -28,9 +36,9 @@ export class EngineClient {
     return this.send({ kind: 'generate', id: this.nextId++, settings });
   }
 
-  /** Build the procedural pine from the original Python script. */
-  pine(seed: number, glyphAspect: number): Promise<EngineResult> {
-    return this.send({ kind: 'pine', id: this.nextId++, seed, glyphAspect });
+  /** Build a test scene (dev/test builds only). */
+  testbed(req: TestbedRequest): Promise<EngineResult> {
+    return this.send({ kind: 'testbed', id: this.nextId++, ...req });
   }
 
   dispose(): void {
@@ -60,6 +68,10 @@ export class EngineClient {
   private receive(msg: WorkerResponse): void {
     const p = this.pending.get(msg.id);
     this.pending.delete(msg.id);
+    if (msg.kind === 'skipped') {
+      p?.reject(new SupersededError());
+      return;
+    }
     if (msg.kind === 'error') {
       if (msg.fatal) this.restart(new Error(`engine crashed: ${msg.message}`));
       p?.reject(new Error(msg.message));

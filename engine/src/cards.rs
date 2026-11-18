@@ -5,12 +5,21 @@
 //!   albedo RGB, opacity, glyph (atlas index + 1024 * material id),
 //!   sun visibility, sky visibility (0..1, baked shadows; 1 = unshadowed).
 //!
+//! Density is set by glyph size (in normalized model units, where the model's
+//! largest dimension is 2), so characters have the same on-screen size on
+//! every model; the engine works out how many cards that takes.
+//!
 //! Points are sampled by area with a stratified CDF walk, so every triangle
 //! receives almost exactly its fair share of cards (much more even than plain
 //! random sampling, and spatially coherent in memory).
+//!
+//! Which character goes where is decided by a `GlyphRule`. The charset is a
+//! ramp ordered from light to dense ink (like the script's sky ramp), and the
+//! surface-driven rules map a pattern value to a position on that ramp.
 
 use crate::math::Vec3;
 use crate::mesh::Mesh;
+use crate::noise;
 use crate::rng::Pcg32;
 use std::fmt;
 
@@ -35,14 +44,41 @@ pub fn pack_glyph(glyph: u32, material: u32) -> f32 {
     (glyph + material * MATERIAL_SHIFT) as f32
 }
 
+/// How each card's character is chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlyphRule {
+    /// Uniformly random from the charset.
+    Random = 0,
+    /// Cellular plates and cracks (the pine bark's pattern, in 3D): light
+    /// characters in the cracks, dense ones on the plates.
+    Cells = 1,
+    /// Smooth noise bands across the ramp.
+    Noise = 2,
+}
+
+impl GlyphRule {
+    pub fn from_u32(v: u32) -> Result<GlyphRule, ParamError> {
+        match v {
+            0 => Ok(GlyphRule::Random),
+            1 => Ok(GlyphRule::Cells),
+            2 => Ok(GlyphRule::Noise),
+            _ => Err(ParamError(format!("unknown glyph rule {v}"))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CardParams {
     pub seed: u32,
-    pub count: u32,
+    /// Card height in normalized model units (model's largest dimension = 2).
+    pub glyph_size: f32,
     /// Card height relative to the average spacing between cards (>1 overlaps).
     pub size_factor: f32,
-    /// Number of glyphs in the atlas; indices are drawn from [0, glyph_count).
-    pub glyph_count: u32,
+    /// Characters to use, ordered light to dense. Normalized by `normalize_charset`.
+    pub charset: String,
+    pub glyph_rule: GlyphRule,
+    /// Size of the rule's pattern features, in normalized model units.
+    pub pattern_scale: f32,
     /// Glyph cell width / height, so characters aren't stretched.
     pub glyph_aspect: f32,
     pub color: [f32; 3],
@@ -56,13 +92,17 @@ pub struct CardParams {
     pub alpha_max: f32,
 }
 
+pub const DEFAULT_CHARSET: &str = ":-=+*xoO#%&8@BMW";
+
 impl Default for CardParams {
     fn default() -> Self {
         CardParams {
             seed: 1,
-            count: 60_000,
+            glyph_size: 0.045,
             size_factor: 1.6,
-            glyph_count: 1,
+            charset: DEFAULT_CHARSET.to_string(),
+            glyph_rule: GlyphRule::Cells,
+            pattern_scale: 0.22,
             glyph_aspect: 0.6,
             color: [0.78, 0.62, 0.45],
             color_jitter: 0.12,
@@ -85,11 +125,33 @@ impl fmt::Display for ParamError {
 
 impl std::error::Error for ParamError {}
 
+/// The engine's one definition of a charset: visible characters only, each
+/// once, in first-seen order. The renderer builds its atlas from the result,
+/// so glyph indices always line up.
+pub fn normalize_charset(s: &str) -> Result<String, ParamError> {
+    let mut out = String::new();
+    for c in s.chars().filter(|c| !c.is_whitespace() && !c.is_control()) {
+        if !out.contains(c) {
+            out.push(c);
+        }
+    }
+    let n = out.chars().count();
+    if n == 0 {
+        return Err(ParamError("charset has no visible characters".into()));
+    }
+    if n >= MATERIAL_SHIFT as usize {
+        return Err(ParamError(format!("charset may hold at most {} characters", MATERIAL_SHIFT - 1)));
+    }
+    Ok(out)
+}
+
 impl CardParams {
     pub fn validate(&self) -> Result<(), ParamError> {
         let bad = |m: &str| Err(ParamError(m.to_string()));
         let finite = [
+            self.glyph_size,
             self.size_factor,
+            self.pattern_scale,
             self.glyph_aspect,
             self.color_jitter,
             self.twist,
@@ -103,17 +165,8 @@ impl CardParams {
         if finite.iter().any(|v| !v.is_finite()) {
             return bad("all values must be finite numbers");
         }
-        if self.count == 0 {
-            return bad("count must be at least 1");
-        }
-        if self.count > MAX_CARDS {
-            return Err(ParamError(format!("count must be at most {MAX_CARDS}")));
-        }
-        if self.glyph_count == 0 {
-            return bad("glyph_count must be at least 1");
-        }
-        if self.size_factor <= 0.0 || self.glyph_aspect <= 0.0 {
-            return bad("size_factor and glyph_aspect must be positive");
+        if self.glyph_size <= 0.0 || self.size_factor <= 0.0 || self.glyph_aspect <= 0.0 || self.pattern_scale <= 0.0 {
+            return bad("glyph_size, size_factor, glyph_aspect and pattern_scale must be positive");
         }
         if !(0.0..=1.0).contains(&self.alpha_min) || !(0.0..=1.0).contains(&self.alpha_max) || self.alpha_min > self.alpha_max {
             return bad("alpha range must satisfy 0 <= alpha_min <= alpha_max <= 1");
@@ -121,20 +174,31 @@ impl CardParams {
         if self.color_jitter < 0.0 || self.twist < 0.0 || self.tilt < 0.0 {
             return bad("jitter, twist and tilt must not be negative");
         }
-        Ok(())
+        normalize_charset(&self.charset).map(|_| ())
     }
 }
 
-/// Average distance between neighbouring cards for `count` cards on `mesh`.
-pub fn spacing(mesh: &Mesh, count: u32) -> f32 {
-    (mesh.total_area / count.max(1) as f64).sqrt() as f32
+/// How many cards `p.glyph_size` takes on `mesh`, capped at `MAX_CARDS`
+/// (past the cap the glyphs grow instead, so the surface stays covered).
+pub fn card_count(mesh: &Mesh, p: &CardParams) -> u32 {
+    let spacing = (p.glyph_size / p.size_factor) as f64;
+    let n = (mesh.total_area / (spacing * spacing)).round();
+    n.clamp(1.0, MAX_CARDS as f64) as u32
+}
+
+/// Glyph size that gives exactly `count` cards on `mesh` (handy for tests and tools).
+pub fn glyph_size_for_count(mesh: &Mesh, count: u32, size_factor: f32) -> f32 {
+    ((mesh.total_area / count.max(1) as f64).sqrt() as f32) * size_factor
 }
 
 pub fn generate(mesh: &Mesh, p: &CardParams) -> Result<Vec<f32>, ParamError> {
     p.validate()?;
-    let n = p.count as usize;
+    let glyphs = normalize_charset(&p.charset)?.chars().count() as u32;
+    let count = card_count(mesh, p);
+    let n = count as usize;
     let mut rng = Pcg32::new(p.seed as u64, 0x5eed_ca7d);
-    let base_h = spacing(mesh, p.count) * p.size_factor;
+    let pattern_seed = rng.next_u32() as u64;
+    let base_h = (mesh.total_area / count as f64).sqrt() as f32 * p.size_factor;
 
     // Cumulative areas in f64: with millions of triangles f32 loses precision.
     let mut cdf = Vec::with_capacity(mesh.areas.len());
@@ -145,6 +209,7 @@ pub fn generate(mesh: &Mesh, p: &CardParams) -> Result<Vec<f32>, ParamError> {
     }
     let total = acc;
     let last = mesh.tris.len() - 1;
+    let ramp = |t: f32| ((t.clamp(0.0, 1.0) * (glyphs - 1) as f32).round() as u32).min(glyphs - 1);
 
     let mut out = vec![0.0f32; n * STRIDE];
     for (i, card) in out.chunks_exact_mut(STRIDE).enumerate() {
@@ -173,9 +238,24 @@ pub fn generate(mesh: &Mesh, p: &CardParams) -> Result<Vec<f32>, ParamError> {
 
         let h = base_h * rng.range(0.85, 1.15);
         let center = pos + normal * (0.04 * base_h);
-        let shade = (1.0 + p.color_jitter * rng.normal()).max(0.0);
+        let mut shade = (1.0 + p.color_jitter * rng.normal()).max(0.0);
         let alpha = rng.range(p.alpha_min, p.alpha_max.max(p.alpha_min + f32::EPSILON)).min(p.alpha_max);
-        let glyph = rng.below(p.glyph_count) as f32;
+
+        let q = pos * (1.0 / p.pattern_scale);
+        let glyph = match p.glyph_rule {
+            GlyphRule::Random => rng.below(glyphs),
+            GlyphRule::Cells => {
+                let (f1, f2) = noise::worley(q, pattern_seed);
+                let t = smoothstep(0.02, 0.45, f2 - f1);
+                shade *= 0.55 + 0.45 * t; // cracks are darker
+                ramp(t + rng.normal() * 0.06)
+            }
+            GlyphRule::Noise => {
+                let t = smoothstep(0.25, 0.75, noise::fbm(q, pattern_seed));
+                shade *= 0.7 + 0.3 * t;
+                ramp(t + rng.normal() * 0.06)
+            }
+        };
 
         write3(card, layout::CENTER, center);
         write3(card, layout::U, u * (h * p.glyph_aspect));
@@ -184,11 +264,16 @@ pub fn generate(mesh: &Mesh, p: &CardParams) -> Result<Vec<f32>, ParamError> {
         card[layout::COLOR + 1] = (p.color[1] * shade).clamp(0.0, 1.0);
         card[layout::COLOR + 2] = (p.color[2] * shade).clamp(0.0, 1.0);
         card[layout::COLOR + 3] = alpha;
-        card[layout::GLYPH] = glyph;
+        card[layout::GLYPH] = pack_glyph(glyph, 0);
         card[layout::LIGHT] = 1.0;
         card[layout::LIGHT + 1] = 1.0;
     }
     Ok(out)
+}
+
+fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// Tangent frame (U = glyph right, V = glyph up) with the glyph standing as
@@ -224,9 +309,15 @@ mod tests {
         Vec3::new(c[at], c[at + 1], c[at + 2])
     }
 
+    /// Params that produce exactly `n` cards on the normalized cube.
+    fn with_count(n: u32) -> CardParams {
+        let p = CardParams::default();
+        CardParams { glyph_size: glyph_size_for_count(&cube_mesh(), n, p.size_factor), ..p }
+    }
+
     #[test]
     fn output_shape_and_finiteness() {
-        let p = CardParams { count: 5000, glyph_count: 12, ..Default::default() };
+        let p = CardParams { charset: "abcdefghijkl".into(), ..with_count(5000) };
         let out = generate(&cube_mesh(), &p).unwrap();
         assert_eq!(out.len(), 5000 * STRIDE);
         assert!(out.iter().all(|v| v.is_finite()));
@@ -234,13 +325,91 @@ mod tests {
             let g = c[layout::GLYPH];
             assert!((0.0..12.0).contains(&g) && g.fract() == 0.0);
             assert!((0.0..=1.0).contains(&c[layout::COLOR + 3]));
+            assert_eq!([c[layout::LIGHT], c[layout::LIGHT + 1]], [1.0, 1.0]);
         }
+    }
+
+    #[test]
+    fn glyph_size_sets_density() {
+        let m = cube_mesh();
+        let small = card_count(&m, &CardParams { glyph_size: 0.02, ..Default::default() });
+        let large = card_count(&m, &CardParams { glyph_size: 0.04, ..Default::default() });
+        // Half the glyph size, four times the cards.
+        assert!((small as f32 / large as f32 - 4.0).abs() < 0.01, "{small} vs {large}");
+        let p = CardParams { glyph_size: 0.05, ..Default::default() };
+        let out = generate(&m, &p).unwrap();
+        let mean_h: f32 = out.chunks_exact(STRIDE).map(|c| get3(c, layout::V).length()).sum::<f32>()
+            / (out.len() / STRIDE) as f32;
+        assert!((mean_h - 0.05).abs() < 0.002, "mean card height {mean_h}");
+    }
+
+    #[test]
+    fn tiny_glyphs_are_capped_not_fatal() {
+        let p = CardParams { glyph_size: 1e-6, ..Default::default() };
+        assert_eq!(card_count(&cube_mesh(), &p), MAX_CARDS);
+    }
+
+    #[test]
+    fn charset_normalization() {
+        assert_eq!(normalize_charset("a b\ta\nbc").unwrap(), "abc");
+        assert_eq!(normalize_charset("ÿé@").unwrap(), "ÿé@");
+        assert!(normalize_charset("  \n").is_err());
+        let huge: String = (0..1100u32).filter_map(|i| char::from_u32(0x4E00 + i)).collect();
+        assert!(normalize_charset(&huge).is_err());
+    }
+
+    #[test]
+    fn every_rule_is_valid_and_distinct() {
+        let m = cube_mesh();
+        let glyph_hist = |rule| {
+            let p = CardParams { glyph_rule: rule, ..with_count(4000) };
+            let out = generate(&m, &p).unwrap();
+            let mut h = vec![0usize; DEFAULT_CHARSET.chars().count()];
+            for c in out.chunks_exact(STRIDE) {
+                h[c[layout::GLYPH] as usize] += 1;
+            }
+            h
+        };
+        let random = glyph_hist(GlyphRule::Random);
+        let cells = glyph_hist(GlyphRule::Cells);
+        let noise = glyph_hist(GlyphRule::Noise);
+        // Random is flat; the pattern rules use the whole ramp but unevenly.
+        let n = random.len() as f32;
+        assert!(random.iter().all(|&c| (c as f32 - 4000.0 / n).abs() < 4000.0 / n * 0.35), "{random:?}");
+        for h in [&cells, &noise] {
+            assert!(h.iter().filter(|&&c| c > 0).count() as f32 > n * 0.6, "{h:?}");
+        }
+        assert_ne!(cells, noise);
+        assert!(GlyphRule::from_u32(3).is_err());
+    }
+
+    #[test]
+    fn cells_rule_follows_the_surface_pattern() {
+        // Neighbouring cards share a cell, so their glyphs correlate far more
+        // than random picks would.
+        let m = cube_mesh();
+        let p = CardParams { glyph_rule: GlyphRule::Cells, ..with_count(20000) };
+        let out = generate(&m, &p).unwrap();
+        let cards: Vec<(Vec3, f32)> = out.chunks_exact(STRIDE).map(|c| (get3(c, layout::CENTER), c[layout::GLYPH])).collect();
+        let sample = &cards[..2000];
+        let (mut near, mut far) = (0.0f32, 0.0f32);
+        for (i, &(p, g)) in sample.iter().enumerate() {
+            let nearest = sample
+                .iter()
+                .enumerate()
+                .filter(|&(j, _)| j != i)
+                .min_by(|a, b| (a.1 .0 - p).length().total_cmp(&(b.1 .0 - p).length()))
+                .unwrap();
+            near += (nearest.1 .1 - g).abs();
+            far += (sample[(i * 7919 + 13) % sample.len()].1 - g).abs();
+        }
+        assert!(near < far * 0.7, "near {near} far {far}");
     }
 
     #[test]
     fn deterministic_per_seed() {
         let m = cube_mesh();
-        let p = CardParams { count: 2000, ..Default::default() };
+        let p = with_count(2000);
         assert_eq!(generate(&m, &p).unwrap(), generate(&m, &p).unwrap());
         let q = CardParams { seed: 2, ..p.clone() };
         assert_ne!(generate(&m, &p).unwrap(), generate(&m, &q).unwrap());
@@ -249,7 +418,7 @@ mod tests {
     #[test]
     fn cards_sit_on_the_surface_and_face_out() {
         let m = cube_mesh(); // normalized: x,z in [-1,1], y in [0,2]
-        let p = CardParams { count: 3000, twist: 0.0, tilt: 0.0, ..Default::default() };
+        let p = CardParams { twist: 0.0, tilt: 0.0, ..with_count(3000) };
         let out = generate(&m, &p).unwrap();
         for c in out.chunks_exact(STRIDE) {
             let ctr = get3(c, layout::CENTER);
@@ -267,8 +436,8 @@ mod tests {
     #[test]
     fn even_coverage_per_face() {
         let m = cube_mesh();
-        let p = CardParams { count: 6000, ..Default::default() };
-        let out = generate(&m, &p).unwrap();
+        let out = generate(&m, &with_count(6000)).unwrap();
+        assert_eq!(out.len(), 6000 * STRIDE);
         let mut per_face = [0usize; 6];
         for c in out.chunks_exact(STRIDE) {
             let ctr = get3(c, layout::CENTER) - Vec3::new(0.0, 1.0, 0.0);
@@ -301,9 +470,10 @@ mod tests {
     fn rejects_bad_params() {
         let m = cube_mesh();
         let bad = [
-            CardParams { count: 0, ..Default::default() },
-            CardParams { count: MAX_CARDS + 1, ..Default::default() },
-            CardParams { glyph_count: 0, ..Default::default() },
+            CardParams { glyph_size: 0.0, ..Default::default() },
+            CardParams { glyph_size: f32::INFINITY, ..Default::default() },
+            CardParams { pattern_scale: 0.0, ..Default::default() },
+            CardParams { charset: " ".into(), ..Default::default() },
             CardParams { size_factor: f32::NAN, ..Default::default() },
             CardParams { size_factor: -1.0, ..Default::default() },
             CardParams { alpha_min: 0.9, alpha_max: 0.5, ..Default::default() },
@@ -316,7 +486,7 @@ mod tests {
 
     #[test]
     fn fixed_alpha_is_allowed() {
-        let p = CardParams { count: 100, alpha_min: 1.0, alpha_max: 1.0, ..Default::default() };
+        let p = CardParams { alpha_min: 1.0, alpha_max: 1.0, ..with_count(100) };
         let out = generate(&cube_mesh(), &p).unwrap();
         assert!(out.chunks_exact(STRIDE).all(|c| c[layout::COLOR + 3] == 1.0));
     }

@@ -127,6 +127,40 @@ export class Viewer {
     return lit / (w * h);
   }
 
+  /** CSS pixels per world unit at the orbit target's distance. */
+  pixelsPerUnit(): number {
+    const h = this.renderer.domElement.clientHeight || 1;
+    const dist = this.camera.position.distanceTo(this.controls.target);
+    return h / 2 / Math.tan((this.camera.fov * Math.PI) / 360) / Math.max(dist, 1e-6);
+  }
+
+  /**
+   * Render now and return a small block-averaged RGB image (row-major, from
+   * the bottom row up), used by the visual regression tests.
+   */
+  thumbnail(w = 48, h = 36): number[] {
+    this.renderer.render(this.scene, this.camera);
+    const gl = this.renderer.getContext();
+    const W = gl.drawingBufferWidth;
+    const H = gl.drawingBufferHeight;
+    const px = new Uint8Array(W * H * 4);
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const sums = new Float64Array(w * h * 3);
+    const counts = new Float64Array(w * h);
+    for (let y = 0; y < H; y++) {
+      const ty = Math.min(h - 1, Math.floor((y * h) / H));
+      for (let x = 0; x < W; x++) {
+        const t = ty * w + Math.min(w - 1, Math.floor((x * w) / W));
+        const i = (y * W + x) * 4;
+        sums[t * 3] = sums[t * 3]! + px[i]!;
+        sums[t * 3 + 1] = sums[t * 3 + 1]! + px[i + 1]!;
+        sums[t * 3 + 2] = sums[t * 3 + 2]! + px[i + 2]!;
+        counts[t] = counts[t]! + 1;
+      }
+    }
+    return Array.from(sums, (s, k) => Math.round(s / Math.max(1, counts[Math.floor(k / 3)]!)));
+  }
+
   dispose(): void {
     cancelAnimationFrame(this.raf);
     this.resizeObserver.disconnect();

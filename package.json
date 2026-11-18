@@ -5,14 +5,17 @@
   "type": "module",
   "scripts": {
     "wasm": "wasm-pack build engine --target web --release --out-dir ../web/src/pkg --no-pack",
+    "wasm:testbed": "wasm-pack build engine --target web --release --out-dir ../web/src/pkg --no-pack -- --features testbed",
     "models": "node scripts/make-models.mjs",
-    "dev": "npm run wasm && vite",
+    "dev": "npm run wasm:testbed && vite",
     "build": "npm run wasm && tsc --noEmit && vite build",
+    "build:test": "npm run wasm:testbed && tsc --noEmit && vite build --mode test",
     "preview": "vite preview",
-    "test:rust": "cargo test --release --manifest-path engine/Cargo.toml",
+    "test:rust": "cargo test --release --features testbed --manifest-path engine/Cargo.toml && cargo clippy --release --all-targets --all-features --manifest-path engine/Cargo.toml -- -D warnings",
     "test:wasm": "node scripts/smoke-test.mjs",
     "test:e2e": "node scripts/e2e-test.mjs",
-    "test": "npm run test:rust && npm run build && npm run test:wasm && npm run test:e2e"
+    "test:prod": "npm run build && node scripts/check-prod.mjs",
+    "test": "npm run test:rust && npm run build:test && npm run test:wasm && npm run test:e2e && npm run test:prod"
   },
   "dependencies": {
     "three": "^0.187.0"

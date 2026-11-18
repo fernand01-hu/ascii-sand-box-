@@ -57,16 +57,13 @@ export interface MaterialDef {
   haze?: number;
 }
 
-export const MATERIALS: MaterialDef[] = [
-  /* 0 mesh   */ { spec: 0.25, shininess: 18, trans: 0.15, wrap: 0.25, billboard: 0, twist: 0, alphaLit: 0 },
-  /* 1 needle */ { spec: 0.45, shininess: 28, trans: 0.45, wrap: 0.25, billboard: 1, twist: 0.55, alphaLit: 0.8 },
-  /* 2 tip    */ { spec: 0.4, shininess: 20, trans: 0.5, wrap: 0.25, billboard: 1, twist: 0.8, alphaLit: 0 },
-  /* 3 wood   */ { spec: 0.12, shininess: 10, trans: 0, wrap: 0.25, billboard: 2, twist: 0.9, alphaLit: 0 },
-  /* 4 bark   */ { spec: 0.08, shininess: 12, trans: 0, wrap: 0.1, billboard: 0, twist: 0, alphaLit: 0 },
-  /* 5 grass  */ { spec: 0.2, shininess: 14, trans: 0.3, wrap: 0.25, billboard: 1, twist: 0.7, alphaLit: 0, haze: 1 },
-  /* 6 soil   */ { spec: 0.1, shininess: 14, trans: 0, wrap: 0.25, billboard: 0, twist: 0, alphaLit: 0, haze: 1 },
-  /* 7 spare  */ { spec: 0.25, shininess: 18, trans: 0, wrap: 0.25, billboard: 0, twist: 0, alphaLit: 0 },
-];
+/** Max materials per scene (size of the shader's material table). */
+export const MAX_MATERIALS = 8;
+
+/** Material 0: cards lying on a model's surface. */
+export const SURFACE_MATERIAL: MaterialDef = {
+  spec: 0.25, shininess: 18, trans: 0.15, wrap: 0.25, billboard: 0, twist: 0, alphaLit: 0,
+};
 
 /**
  * blend:    classic alpha blending, no depth writes. Right for cards lying on
@@ -108,7 +105,7 @@ float hash(vec3 p) {
 void main() {
   float mat = floor((iGlyph + 0.5) / ${MATERIAL_SHIFT.toFixed(1)});
   float glyph = iGlyph - mat * ${MATERIAL_SHIFT.toFixed(1)};
-  int m = int(mat);
+  int m = int(min(mat, 7.0));
   vec4 A = uMatA[m];
   vec4 B = uMatB[m];
 
@@ -204,8 +201,8 @@ export class CardLayer {
         uSkyColor: { value: new Vector3() },
         uGlintColor: { value: new Vector3() },
         uDepthBias: { value: 0.75 },
-        uMatA: { value: MATERIALS.map((m) => new Vector4(m.spec, m.shininess, m.trans, m.wrap)) },
-        uMatB: { value: MATERIALS.map((m) => new Vector4(m.billboard, m.twist, m.alphaLit, m.haze ?? 0)) },
+        uMatA: { value: Array.from({ length: MAX_MATERIALS }, () => new Vector4()) },
+        uMatB: { value: Array.from({ length: MAX_MATERIALS }, () => new Vector4()) },
         uAlphaGain: { value: 1 },
         uHazeColor: { value: new Vector3(120 / 255, 112 / 255, 140 / 255) },
         uHazeDist: { value: 110 }, // same falloff as the script
@@ -215,6 +212,7 @@ export class CardLayer {
     this.mesh.frustumCulled = false; // positions come from instance data, not the base quad
     this.mesh.renderOrder = 1; // after the opaque body
     this.setLighting(lighting);
+    this.setMaterials([SURFACE_MATERIAL]);
     this.setMode('blend');
   }
 
@@ -227,6 +225,21 @@ export class CardLayer {
     u.uAtlas!.value = atlas.texture;
     (u.uGrid!.value as Vector2).set(atlas.cols, atlas.rows);
     (u.uInset!.value as Vector2).set(...atlas.inset);
+  }
+
+  /** Material table for the current scene; card material ids index into it. */
+  setMaterials(defs: MaterialDef[]): void {
+    if (defs.length === 0 || defs.length > MAX_MATERIALS) {
+      throw new Error(`a scene needs 1 to ${MAX_MATERIALS} materials, got ${defs.length}`);
+    }
+    const u = this.mesh.material.uniforms;
+    const A = u.uMatA!.value as Vector4[];
+    const B = u.uMatB!.value as Vector4[];
+    for (let i = 0; i < MAX_MATERIALS; i++) {
+      const m = defs[i] ?? SURFACE_MATERIAL;
+      A[i]!.set(m.spec, m.shininess, m.trans, m.wrap);
+      B[i]!.set(m.billboard, m.twist, m.alphaLit, m.haze ?? 0);
+    }
   }
 
   setLighting(l: Lighting): void {
