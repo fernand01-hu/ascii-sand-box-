@@ -17,7 +17,7 @@ use crate::rng::Pcg32;
 use std::collections::HashMap;
 use std::f32::consts::TAU;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RockKind {
     Boulder,
     Angular,
@@ -204,9 +204,12 @@ pub fn make_rock(seed: u32, kind: RockKind) -> Asset {
         for (pos, nrm) in sample_surface(&pts, &f, spacing, rng) {
             asset.surfel(pos, nrm, spacing, paint(pos, nrm, &noise, base, mo, radius));
         }
-        // Solid body, shrunk a little so surfel cards sit on top of it.
+        // Solid body from the coarse (level-2) faces: an icosphere's first 162
+        // vertices are exactly the level-2 ones, so they index the same deformed
+        // points (320 triangles instead of 5120). Shrunk so cards sit on top.
         let c0 = center + Vec3::new(0.0, radius * 0.2, 0.0);
-        for t in &f {
+        let coarse = if level > 2 { icosphere(2).1 } else { f.clone() };
+        for t in &coarse {
             let tri = t.map(|i| {
                 let q = pts[i as usize];
                 c0 + (q - c0) * 0.97

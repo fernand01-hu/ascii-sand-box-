@@ -17,7 +17,12 @@ engine/          Rust engine, compiled to WebAssembly
                    rocks, plants (fern, hostas, elephant ear, rhubarb, grass,
                    reeds, wildflowers), bushes (7 kinds), trees (pine, spruce,
                    oak, birch, maple, dead), material table, skinning to cards,
-                   baked shadows (occlusion grid), gallery sheets
+                   baked shadows (occlusion grid), gallery sheets,
+                   terrain (5 presets, droplet erosion, lake basin, a stream
+                   carved downhill into the lake, worn footpaths), biome
+                   scattering with distance LOD and a per-object character
+                   budget, ground / water / sky dome, rain and leaf particles,
+                   and the 5 landscape presets (meadow, forest, lake, valley, alpine)
   src/testbed/     test scenes only (the pine from pine_ascii.py), feature `testbed`
   tests/           scenery statistics checked against the Python reference
   src/lib.rs       WASM bindings (Engine, CardConfig)
@@ -42,7 +47,15 @@ npm test           # Rust unit tests, typecheck + build, WASM smoke test, headle
 
 In the viewer: drag to orbit, wheel to zoom, right-drag to pan.
 Dev shortcuts (dev/test builds only): keys `1`-`4` test models, `5` testbed pine,
-`6`-`9` scenery galleries (rocks, plants, bushes, trees), drop an `.stl` to load it.
+`6`-`9` scenery galleries (rocks, plants, bushes, trees), `M` `F` `L` `V` `A`
+landscapes (meadow, forest, lake, valley, alpine), `W` wind (calm / breeze /
+storm), `R` rain on/off, `B` blowing leaves on/off, drop an `.stl` to load it.
+
+From code: `app.showScene('lake', seed)`, `app.showGallery('trees', seed)`,
+`app.setEnvironment({ wind: 0.5, rain: 1, leaves: 0.8 })` (all 0..1). Wind
+sways grass, leaves, needles and reeds; streams flow; rain falls round the
+camera and dims the sun; leaves blow across the scene. All animated in the
+shader, so the weather costs almost nothing per frame.
 
 Visual references for the e2e test live in `tests/golden/`; after an intended
 visual change, check `test-results/` and run `UPDATE_GOLDEN=1 npm run test:e2e`.

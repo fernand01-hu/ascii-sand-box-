@@ -39,6 +39,7 @@ if (!chrome) {
 const server = await preview({ configFile: join(root, 'vite.config.ts'), preview: { port: 4317, strictPort: false }, logLevel: 'warn' });
 const url = server.resolvedUrls.local[0];
 const browser = await puppeteer.launch({
+  protocolTimeout: 600_000, // software-rendering big landscapes is slow
   executablePath: chrome,
   headless: true,
   // Software WebGL: runs without a GPU and renders the same pixels every run.
@@ -153,14 +154,59 @@ try {
     });
   }
 
+  // Landscapes: animation clock frozen so frames are reproducible.
+  await page.evaluate(() => window.__ascii.freezeTime(3));
+  const scenes = [['m', 'meadow'], ['l', 'lake'], ['v', 'valley']];
+  for (const [i, [key, preset]] of scenes.entries()) {
+    await step(`landscape ${preset}: renders and matches reference`, async () => {
+      await page.keyboard.press(key);
+      await waitSettled(`scene-${preset}`);
+      const s = await state();
+      assert.equal(s.status, 'ready', s.error ?? '');
+      assert.ok(s.cards > 100_000 && s.weather.wind > 0);
+      assert.ok((await coverage()) > 0.3, 'a landscape fills the frame');
+      const name = `${13 + i}-scene-${preset}`;
+      await page.screenshot({ path: join(outDir, `${name}.png`) });
+      await matchesGolden(name);
+    });
+  }
+
+  await step('wind moves the scene over time; calm air does not', async () => {
+    const at = (t) => page.evaluate((t) => { window.__ascii.freezeTime(t); return window.__ascii.thumbnail(); }, t);
+    const diff = (a, b) => a.reduce((s, v, i) => s + Math.abs(v - b[i]), 0) / a.length;
+    await page.evaluate(() => window.__ascii.setEnvironment({ wind: 0.85, leaves: 0, rain: 0 }));
+    const windy = diff(await at(1), await at(2.5));
+    await page.evaluate(() => window.__ascii.setEnvironment({ wind: 0, leaves: 0, rain: 0 }));
+    const calm = diff(await at(1), await at(2.5));
+    console.log(`       frame change: windy ${windy.toFixed(2)}, calm ${calm.toFixed(2)} (only water moves)`);
+    assert.ok(windy > calm * 1.5 && windy > 0.3, 'wind should visibly move grass and leaves');
+  });
+
+  await step('rain and blowing leaves show up and switch off again', async () => {
+    await page.evaluate(() => window.__ascii.freezeTime(3));
+    const base = await page.evaluate(() => window.__ascii.thumbnail());
+    await page.evaluate(() => window.__ascii.setEnvironment({ rain: 1, wind: 0.6, leaves: 1 }));
+    const wet = await page.evaluate(() => window.__ascii.thumbnail());
+    await page.screenshot({ path: join(outDir, '16-valley-rain.png') });
+    const d = wet.reduce((s, v, i) => s + Math.abs(v - base[i]), 0) / wet.length;
+    assert.ok(d > 2, `rain should change the picture (diff ${d.toFixed(2)})`);
+    await page.evaluate(() => window.__ascii.setEnvironment({ rain: 0, wind: 0, leaves: 0 }));
+    const dry = await page.evaluate(() => window.__ascii.thumbnail());
+    const back = dry.reduce((s, v, i) => s + Math.abs(v - base[i]), 0) / dry.length;
+    assert.ok(back < d / 3, 'switching it off restores the scene');
+    await page.evaluate(() => window.__ascii.freezeTime(null));
+  });
+
   await step('orbiting round the trees keeps them solid and readable', async () => {
+    await page.keyboard.press('9');
+    await waitSettled('gallery-trees');
     await page.mouse.move(500, 400);
     await page.mouse.down();
     await page.mouse.move(820, 380, { steps: 16 });
     await page.mouse.up();
     await new Promise((r) => setTimeout(r, 1500));
     assert.ok((await coverage()) > 0.1);
-    await page.screenshot({ path: join(outDir, '9b-trees-orbited.png') });
+    await page.screenshot({ path: join(outDir, '17-trees-orbited.png') });
   });
 
   await step('mouse orbit and zoom keep rendering', async () => {

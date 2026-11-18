@@ -66,15 +66,19 @@ function isSuperseded(req: WorkerRequest, newer: WorkerRequest[]): boolean {
 async function handle(req: WorkerRequest): Promise<void> {
   try {
     const engine = await ready;
-    if (req.kind === 'gallery') {
+    if (req.kind === 'gallery' || req.kind === 'scene') {
       const t0 = performance.now();
-      const scene = wasm.buildGallery(req.category, req.seed >>> 0, req.glyphAspect);
+      const scene = req.kind === 'gallery'
+        ? wasm.buildGallery(req.category, req.seed >>> 0, req.glyphAspect)
+        : wasm.buildScene(req.preset, req.seed >>> 0, req.glyphAspect);
       try {
         const cards = scene.takeCards();
         const positions = scene.takeBody();
         const normals = scene.takeBodyNormals();
         const [tx = 0, ty = 0, tz = 0, ex = 0, ey = 0, ez = 10, fov = 40] = scene.camera();
-        const [sx = 0, sy = 1, sz = 0] = wasm.scenerySunDir();
+        const e = scene.env();
+        const day = (e[0] ?? 0) > 0.5;
+        const [sx = 0, sy = 1, sz = 0] = req.kind === 'gallery' ? wasm.scenerySunDir() : wasm.sceneSunDir(day);
         const generateMs = performance.now() - t0;
         const stride = wasm.cardStride();
         const materials = wasm.sceneryMaterials();
@@ -82,8 +86,14 @@ async function handle(req: WorkerRequest): Promise<void> {
           {
             kind: 'result', id: req.id, cards, stride, count: cards.length / stride, charset: wasm.sceneryCharset(),
             mesh: { positions, normals, triangles: positions.length / 9, dropped: 0 },
-            timings: { loadMs: 0, generateMs }, sunDir: [sx, sy, sz], materials,
+            timings: { loadMs: 0, generateMs }, sunDir: [sx, sy, sz], materials, materialFloats: wasm.materialFloats(),
             camera: { target: [tx, ty, tz], eye: [ex, ey, ez], fov },
+            env: {
+              day,
+              windDir: [e[1] ?? 1, e[2] ?? 0],
+              leafBox: [e[3] ?? 0, e[4] ?? 0, e[5] ?? 1],
+              rainBox: [e[6] ?? 36, e[7] ?? 24, e[8] ?? 36],
+            },
           },
           [cards.buffer, positions.buffer, normals.buffer, materials.buffer],
         );

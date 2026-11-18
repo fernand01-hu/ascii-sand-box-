@@ -27,6 +27,11 @@ const MAX_CELLS: f32 = 4.0e6;
 impl Occlusion {
     /// `occluders`: (world position, area in m^2).
     pub fn new(occluders: &[(Vec3, f32)]) -> Occlusion {
+        Self::with_max_cells(occluders, MAX_CELLS)
+    }
+
+    /// Like `new`, with a cap on the grid size (big scenes get coarser cells).
+    pub fn with_max_cells(occluders: &[(Vec3, f32)], max_cells: f32) -> Occlusion {
         let mut lo = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
         let mut hi = -lo;
         for &(p, _) in occluders {
@@ -41,7 +46,7 @@ impl Occlusion {
         hi += Vec3::new(1.0, 1.0, 1.0);
         let ext = hi - lo;
         let mut cell = 0.25f32;
-        while (ext.x / cell) * (ext.y / cell) * (ext.z / cell) > MAX_CELLS {
+        while (ext.x / cell) * (ext.y / cell) * (ext.z / cell) > max_cells {
             cell *= 1.12;
         }
         let dims = [ext.x, ext.y, ext.z].map(|e| (e / cell).ceil() as usize + 1);

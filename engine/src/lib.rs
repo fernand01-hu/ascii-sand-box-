@@ -202,6 +202,7 @@ pub struct SceneryScene {
     body_normals: Vec<f32>,
     camera: Vec<f32>,
     glyph: f32,
+    env: Vec<f32>,
 }
 
 #[wasm_bindgen]
@@ -232,6 +233,46 @@ impl SceneryScene {
     pub fn glyph(&self) -> f32 {
         self.glyph
     }
+
+    /// daytime (0/1), wind direction x, z, leaf box min x, min z, size,
+    /// rain box x, y, z.
+    pub fn env(&self) -> Vec<f32> {
+        self.env.clone()
+    }
+}
+
+fn body_buffers(body: &[[math::Vec3; 3]]) -> (Vec<f32>, Vec<f32>) {
+    let mut pos = Vec::with_capacity(body.len() * 9);
+    let mut nrm = Vec::with_capacity(body.len() * 9);
+    for t in body {
+        let n = (t[1] - t[0]).cross(t[2] - t[0]).try_normalize().unwrap_or(math::Vec3::Y);
+        for v in t {
+            pos.extend_from_slice(&[v.x, v.y, v.z]);
+            nrm.extend_from_slice(&[n.x, n.y, n.z]);
+        }
+    }
+    (pos, nrm)
+}
+
+/// A whole landscape: "meadow", "forest", "lake", "valley" or "alpine".
+#[wasm_bindgen(js_name = buildScene)]
+pub fn build_scene(preset: &str, seed: u32, glyph_aspect: f32) -> Result<SceneryScene, JsError> {
+    let p = scenery::scene::ScenePreset::parse(preset)
+        .ok_or_else(|| JsError::new(&format!("unknown scene {preset:?} (meadow, forest, lake, valley, alpine)")))?;
+    if !(glyph_aspect > 0.0 && glyph_aspect.is_finite()) {
+        return Err(JsError::new("glyph_aspect must be a positive number"));
+    }
+    let s = scenery::scene::build_scene(p, seed, glyph_aspect);
+    let (body, body_normals) = body_buffers(&s.body);
+    let rb = scenery::landscape::RAIN_BOX;
+    Ok(SceneryScene {
+        cards: s.cards,
+        body,
+        body_normals,
+        camera: vec![s.target.x, s.target.y, s.target.z, s.eye.x, s.eye.y, s.eye.z, s.fov],
+        glyph: 0.0,
+        env: vec![f32::from(s.day), s.wind[0], s.wind[1], s.leaf_box[0], s.leaf_box[1], s.leaf_box[2], rb[0], rb[1], rb[2]],
+    })
 }
 
 /// A gallery sheet of procedural assets: "rocks", "plants", "bushes" or "trees".
@@ -243,21 +284,16 @@ pub fn build_gallery(category: &str, seed: u32, glyph_aspect: f32) -> Result<Sce
         return Err(JsError::new("glyph_aspect must be a positive number"));
     }
     let s = scenery::gallery::build_gallery(cat, seed, glyph_aspect);
-    let mut body = Vec::with_capacity(s.body.len() * 9);
-    let mut body_normals = Vec::with_capacity(s.body.len() * 9);
-    for t in &s.body {
-        let n = (t[1] - t[0]).cross(t[2] - t[0]).try_normalize().unwrap_or(math::Vec3::Y);
-        for v in t {
-            body.extend_from_slice(&[v.x, v.y, v.z]);
-            body_normals.extend_from_slice(&[n.x, n.y, n.z]);
-        }
-    }
+    let (body, body_normals) = body_buffers(&s.body);
+    let w = scenery::scene::wind_dir();
+    let rb = scenery::landscape::RAIN_BOX;
     Ok(SceneryScene {
         cards: s.cards,
         body,
         body_normals,
         camera: vec![s.target.x, s.target.y, s.target.z, s.eye.x, s.eye.y, s.eye.z, s.fov],
         glyph: s.glyph,
+        env: vec![0.0, w[0], w[1], 0.0, 0.0, 0.0, rb[0], rb[1], rb[2]],
     })
 }
 
@@ -267,11 +303,23 @@ pub fn scenery_charset() -> String {
     scenery::style::charset()
 }
 
-/// Shader material table: 8 floats per material (spec, shininess, trans,
-/// wrap, billboard, twist, alphaLit, haze), indexed by material id.
+/// Shader material table: `materialFloats()` floats per material, indexed by
+/// material id (see `scenery::skin::material_table`).
 #[wasm_bindgen(js_name = sceneryMaterials)]
 pub fn scenery_materials() -> Vec<f32> {
     scenery::skin::material_table()
+}
+
+#[wasm_bindgen(js_name = materialFloats)]
+pub fn material_floats() -> u32 {
+    scenery::skin::MATERIAL_FLOATS as u32
+}
+
+/// Sun direction a scene was baked with (`day` selects the preset).
+#[wasm_bindgen(js_name = sceneSunDir)]
+pub fn scene_sun_dir(day: bool) -> Vec<f32> {
+    let s = scenery::scene::sun_for(day);
+    vec![s.x, s.y, s.z]
 }
 
 /// Sun direction scenery shadows are baked with.

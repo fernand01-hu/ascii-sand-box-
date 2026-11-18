@@ -86,6 +86,22 @@ impl Perlin {
         }
         tot / norm
     }
+
+    /// Ridged multifractal: sharp crests, good for mountains. About [0, 1].
+    pub fn ridged(&self, x: f32, y: f32, octaves: u32) -> f32 {
+        let (mut tot, mut amp, mut f, mut norm, mut weight) = (0.0, 1.0, 1.0, 0.0, 1.0f32);
+        for i in 0..octaves {
+            let fi = i as f32;
+            let mut n = 1.0 - self.noise3(x * f + 5.3 * fi, y * f + 1.9 * fi, 0.5 + fi).abs();
+            n = n * n * weight;
+            weight = (n * 1.6).clamp(0.0, 1.0);
+            tot += amp * n;
+            norm += amp;
+            amp *= 0.5;
+            f *= 2.0;
+        }
+        tot / norm
+    }
 }
 
 #[cfg(test)]

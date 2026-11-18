@@ -31,6 +31,13 @@ pub enum CardMode {
     BillboardU = 2,
     /// Fixed, opaque surface: back faces are not drawn.
     Solid = 3,
+    /// Final colour in the card (sky, water): no lighting, optional haze.
+    Emissive = 4,
+    /// Rain streak: the shader moves it down (and with the wind) in a box
+    /// that follows the camera. Position = seed inside that box.
+    Rain = 5,
+    /// Blowing leaf: the shader carries it along the wind, tumbling.
+    Drift = 6,
 }
 
 /// Material ids fit below this (the shader table has 64 rows).
@@ -65,6 +72,7 @@ impl Picker {
 /// Character pickers for every material and bark part, indexing `charset()`.
 pub struct Glyphs {
     pub charset: String,
+    index: [u32; 128],
     mats: Vec<Picker>,
     barks: Vec<[Picker; 4]>,
     dim: Picker,
@@ -95,6 +103,7 @@ impl Glyphs {
                 .collect(),
             dim: Picker::new(DIM_CHARS, None, &index),
             mid: Picker::new(MID_CHARS, None, &index),
+            index,
             charset: cs,
         }
     }
@@ -209,13 +218,15 @@ pub struct Skinner<'a> {
     pub solids: Vec<[Vec3; 3]>,
     pub occluders: Vec<(Vec3, f32)>,
     foliage: Vec<usize>,
+    /// Add opaque bodies (rock meshes, trunk tubes) for the next objects.
+    pub solids_on: bool,
 }
 
 impl<'a> Skinner<'a> {
     pub fn new(glyphs: &'a Glyphs, g: f32, aspect: f32, seed: u64) -> Skinner<'a> {
         let mut rng = Pcg32::new(seed, 0x5c1e);
         let bark = BarkPattern::new(&mut rng);
-        Skinner { g, aspect, glyphs, rng, bark, cards: Vec::new(), solids: Vec::new(), occluders: Vec::new(), foliage: Vec::new() }
+        Skinner { g, aspect, glyphs, rng, bark, cards: Vec::new(), solids: Vec::new(), occluders: Vec::new(), foliage: Vec::new(), solids_on: true }
     }
 
     pub fn card_count(&self) -> usize {
@@ -255,6 +266,46 @@ impl<'a> Skinner<'a> {
         self.glyphs.mats[mat as usize].pick(&mut self.rng)
     }
 
+    /// Character budget for one object (the original's per-screen-cell
+    /// budget, applied per object so it survives orbiting): keep at most
+    /// `cap` of the cards added since `start`, a random subset, and grow the
+    /// kept foliage a little so the silhouette stays filled.
+    pub fn cap_since(&mut self, start: usize, cap: usize) {
+        let n = self.card_count() - start;
+        if n <= cap || cap == 0 {
+            return;
+        }
+        for i in 0..cap {
+            let j = i + self.rng.below((n - i) as u32) as usize;
+            if i != j {
+                for k in 0..STRIDE {
+                    self.cards.swap((start + i) * STRIDE + k, (start + j) * STRIDE + k);
+                }
+            }
+        }
+        self.cards.truncate((start + cap) * STRIDE);
+        let grow = ((n as f32 / cap as f32).powf(0.25)).min(1.6);
+        self.foliage.retain(|&i| i < start);
+        for i in start..start + cap {
+            let base = i * STRIDE;
+            let high = self.cards[base + layout::GLYPH] as u32 / MATERIAL_SHIFT;
+            let (mat, mode) = (high % MAX_MATERIALS, high / MAX_MATERIALS);
+            if mode != CardMode::Solid as u32 {
+                for k in layout::U..layout::V + 3 {
+                    self.cards[base + k] *= grow;
+                }
+            }
+            if Mat::ALL[mat as usize].is_crown_foliage() {
+                self.foliage.push(i);
+            }
+        }
+    }
+
+    /// Atlas index of one specific character (it must be in the charset).
+    pub fn glyph_for_char(&self, c: char) -> u32 {
+        self.glyphs.index[(c as usize).min(127)]
+    }
+
     fn any_perp(&mut self, a: Vec3) -> Vec3 {
         let r = if a.y.abs() > 0.9 { Vec3::X } else { UP };
         unit(a.cross(r))
@@ -265,8 +316,10 @@ impl<'a> Skinner<'a> {
         self.skin_sprites(asset, pl);
         self.skin_surfels(asset, pl);
         self.skin_wood(asset, pl);
-        for t in &asset.solids {
-            self.solids.push(t.map(|p| pl.point(p)));
+        if self.solids_on {
+            for t in &asset.solids {
+                self.solids.push(t.map(|p| pl.point(p)));
+            }
         }
     }
 
@@ -432,7 +485,7 @@ impl<'a> Skinner<'a> {
                 }
             }
             // Opaque tube so the trunk hides what is behind it.
-            let sides = 8;
+            let sides = if self.solids_on && w.level == 0 { 8 } else { 0 };
             for k in 0..sides {
                 let (a0, a1) = (k as f32 / sides as f32 * TAU, (k + 1) as f32 / sides as f32 * TAU);
                 let ring = |p: Vec3, a: f32| p + (f0 * a.cos() + s0 * a.sin()) * (r * 0.9);
@@ -443,19 +496,31 @@ impl<'a> Skinner<'a> {
         }
     }
 
-    /// Fill in baked sun/sky visibility for every card, then shade crown
-    /// foliage the ASCII way: deeply shaded leaves become light characters.
-    pub fn light(&mut self, occ: &super::light::Occlusion, sun: Vec3) {
+    /// Fill in baked sun/sky visibility for every lit card (`extra_sun`
+    /// multiplies the sun, e.g. terrain shadows), then shade crown foliage the
+    /// ASCII way: deeply shaded leaves become light characters (fading out
+    /// beyond 30-60 m from `eye`, where crowns need dense glyphs).
+    pub fn light(&mut self, occ: &super::light::Occlusion, sun: Vec3, extra_sun: &dyn Fn(Vec3) -> f32, eye: Option<Vec3>) {
         let n = self.card_count();
         for i in 0..n {
             let card = &mut self.cards[i * STRIDE..(i + 1) * STRIDE];
+            let mode = (card[layout::GLYPH] as u32 / MATERIAL_SHIFT) / MAX_MATERIALS;
+            if mode >= CardMode::Emissive as u32 {
+                continue;
+            }
             let c = Vec3::new(card[0], card[1], card[2]);
-            card[layout::LIGHT] = occ.sun(c, sun);
+            card[layout::LIGHT] = occ.sun(c, sun) * extra_sun(c);
             card[layout::LIGHT + 1] = occ.sky(c);
         }
         let foliage = std::mem::take(&mut self.foliage);
         for &i in &foliage {
             let base = i * STRIDE;
+            if let Some(e) = eye {
+                let c = Vec3::new(self.cards[base], self.cards[base + 1], self.cards[base + 2]);
+                if !self.rng.chance(smoothstep(60.0, 30.0, (c - e).length())) {
+                    continue;
+                }
+            }
             let ts = self.cards[base + layout::LIGHT];
             let t = ts + self.rng.uniform(-0.03, 0.03);
             let slot = self.cards[base + layout::GLYPH] as u32;
@@ -481,10 +546,16 @@ impl<'a> Skinner<'a> {
 
 /// The material table for the shader: per material spec, shininess,
 /// translucency, wrap, default billboard (0), twist, alpha range, haze.
+/// Floats per material in `material_table`.
+pub const MATERIAL_FLOATS: usize = 12;
+
+/// Per material: spec, shininess, trans, wrap | billboard (0), twist,
+/// alphaLit, haze (0) | wind flex, water flow, fog (haze applies), 0.
 pub fn material_table() -> Vec<f32> {
-    let mut out = Vec::with_capacity(MATERIALS.len() * 8);
-    for m in MATERIALS {
-        out.extend_from_slice(&[m.spec, m.shin, m.trans, m.wrap, 0.0, 0.55, m.alpha.1 - m.alpha.0, 0.0]);
+    let mut out = Vec::with_capacity(MATERIALS.len() * MATERIAL_FLOATS);
+    for (i, m) in MATERIALS.iter().enumerate() {
+        let fog = if i == Mat::Sky as usize || i == Mat::Star as usize || i == Mat::Rain as usize { 0.0 } else { 1.0 };
+        out.extend_from_slice(&[m.spec, m.shin, m.trans, m.wrap, 0.0, 0.55, m.alpha.1 - m.alpha.0, 0.0, m.flex, m.flow, fog, 0.0]);
     }
     out
 }
@@ -514,7 +585,7 @@ mod tests {
         sk.skin(&make_tree(2, TreeKind::Spruce), Placement::at(Vec3::new(-8.0, 0.0, 0.0)));
         sk.skin(&make_rock(1, RockKind::Boulder), Placement { pos: Vec3::new(6.0, 0.0, 0.0), yaw: 1.0, scale: 1.2, tint: 0.9 });
         let occ = crate::scenery::light::Occlusion::new(&sk.occluders);
-        sk.light(&occ, crate::scenery::light::sun_dir());
+        sk.light(&occ, crate::scenery::light::sun_dir(), &|_| 1.0, None);
         assert!(sk.card_count() > 1000);
         assert!(!sk.solids.is_empty());
         let mut modes = [0usize; 4];

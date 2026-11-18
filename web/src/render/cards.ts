@@ -2,6 +2,11 @@
 // the card data read straight from the engine's Float32Array. Lighting runs
 // per card in the vertex shader, so moving the camera or the sun is free;
 // only changing the cards themselves touches the CPU.
+//
+// The environment is animated here too, from a time uniform: wind sways
+// flexible cards (grass, leaves, needles, reeds) with gusts that travel
+// downwind, streams slide along their flow, rain falls in a box that follows
+// the camera, and blown leaves drift and tumble across the scene.
 
 import {
   BufferAttribute,
@@ -23,7 +28,8 @@ export const CARD_STRIDE = 16;
  * Glyph slot = atlas index + 1024 * (material + 64 * mode). Must match
  * `cards::MATERIAL_SHIFT` and `scenery::skin::pack` in the Rust engine.
  * mode 0 uses the material's own billboard setting; 1 billboard round V,
- * 2 billboard round U, 3 solid (fixed, back faces not drawn).
+ * 2 billboard round U, 3 solid (back faces not drawn), 4 emissive (colour
+ * as given: sky, water), 5 rain particle, 6 blown-leaf particle.
  */
 const MATERIAL_SHIFT = 1024;
 /** Size of the shader's material table. */
@@ -58,7 +64,10 @@ export const DEFAULT_LIGHTING: Lighting = {
  *   billboard        0 none, 1 spin around V to face the viewer, 2 spin around U
  *   twist            random spin away from facing (radians, +-)
  *   alphaLit         extra opacity where sunlit ("lit = crisp" needles)
- *   haze             fade toward the haze colour with distance (ground)
+ *   haze             per-material distance haze (old pine testbed ground)
+ *   flex             how much wind moves it (0 rigid, 1 grass blade)
+ *   flow             flowing water: slide speed along the card's U axis
+ *   fog              1 if the scene's distance haze applies
  */
 export interface MaterialDef {
   spec: number;
@@ -69,11 +78,36 @@ export interface MaterialDef {
   twist: number;
   alphaLit: number;
   haze?: number;
+  flex?: number;
+  flow?: number;
+  fog?: number;
 }
 
 /** Material 0: cards lying on a model's surface. */
 export const SURFACE_MATERIAL: MaterialDef = {
   spec: 0.25, shininess: 18, trans: 0.15, wrap: 0.25, billboard: 0, twist: 0, alphaLit: 0,
+};
+
+/** Weather and wind. All strengths 0..1. */
+export interface Environment {
+  /** Wind direction in the ground plane (x, z) and strength. */
+  windDir: [number, number];
+  wind: number;
+  rain: number;
+  leaves: number;
+  /** Distance haze: e-folding distance in metres and strength (0 = off). */
+  fogDist: number;
+  fog: number;
+  hazeColor: [number, number, number];
+  /** Box (x, y, z sizes) rain falls in, following the camera. */
+  rainBox: [number, number, number];
+  /** Box (min x, min z, size) blown leaves travel in. */
+  leafBox: [number, number, number];
+}
+
+export const CALM: Environment = {
+  windDir: [1, 0], wind: 0, rain: 0, leaves: 0, fogDist: 420, fog: 0,
+  hazeColor: [120 / 255, 112 / 255, 140 / 255], rainBox: [36, 24, 36], leafBox: [0, 0, 1],
 };
 
 /**
@@ -94,10 +128,18 @@ uniform vec3 uGlintColor;
 uniform float uDepthBias;
 uniform vec4 uMatA[${MAX_MATERIALS}]; // spec, shininess, trans, wrap
 uniform vec4 uMatB[${MAX_MATERIALS}]; // billboard, twist, alphaLit, haze
+uniform vec4 uMatC[${MAX_MATERIALS}]; // flex, flow, fog, -
 uniform vec4 uTone; // exposure, sky gain, ambient, hemi
 uniform float uAlphaGain;
 uniform vec3 uHazeColor;
 uniform float uHazeDist;
+uniform vec2 uFog;      // e-folding distance, strength
+uniform float uTime;
+uniform vec4 uWind;     // dir x, dir z, strength, -
+uniform float uRain;
+uniform float uLeaves;
+uniform vec3 uRainBox;
+uniform vec3 uLeafBox;  // min x, min z, size
 
 attribute vec3 iCenter;
 attribute vec3 iU;
@@ -114,6 +156,11 @@ float hash(vec3 p) {
   return fract(sin(dot(p, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
 }
 
+vec3 rotateAbout(vec3 v, vec3 axis, float a) {
+  float c = cos(a);
+  return v * c + cross(axis, v) * sin(a) + axis * dot(axis, v) * (1.0 - c);
+}
+
 void main() {
   float high = floor((iGlyph + 0.5) / ${MATERIAL_SHIFT.toFixed(1)});
   float glyph = iGlyph - high * ${MATERIAL_SHIFT.toFixed(1)};
@@ -122,24 +169,61 @@ void main() {
   int m = int(min(mat, ${(MAX_MATERIALS - 1).toFixed(1)}));
   vec4 A = uMatA[m];
   vec4 B = uMatB[m];
-  bool solid = cardMode > 2.5;
-  float billboard = solid ? 0.0 : (cardMode > 0.5 ? cardMode : B.x);
+  vec4 C = uMatC[m];
+  bool solid = cardMode > 2.5 && cardMode < 3.5;
+  bool emissive = cardMode > 3.5 && cardMode < 4.5;
+  bool rain = cardMode > 4.5 && cardMode < 5.5;
+  bool leaf = cardMode > 5.5;
+  float billboard = (solid || emissive || leaf) ? 0.0 : (rain ? 1.0 : (cardMode > 0.5 ? cardMode : B.x));
 
-  vec3 toCam = normalize(cameraPosition - iCenter);
+  float h = hash(iCenter);
+  vec3 wind3 = vec3(uWind.x, 0.0, uWind.y);
+  float ws = uWind.z;
+  vec3 center = iCenter;
   vec3 U = iU;
   vec3 V = iV;
+  float alphaMul = 1.0;
+
+  if (rain) {
+    // Seeds live in a box that wraps round the camera: rain everywhere.
+    vec3 fall = vec3(uWind.x * ws * 9.0, -14.0, uWind.y * ws * 9.0) * uTime;
+    vec3 rel = mod(iCenter + fall - cameraPosition, uRainBox) - 0.5 * uRainBox;
+    center = cameraPosition + rel;
+    // Streaks right next to the eye would be huge bars: shrink and fade them.
+    float near = smoothstep(2.0, 9.0, length(rel));
+    V = normalize(vec3(uWind.x * ws * 0.65, -1.0, uWind.y * ws * 0.65)) * length(iV) * mix(0.35, 1.0, near);
+    U = iU * mix(0.35, 1.0, near);
+    vec3 q = abs(rel) / uRainBox;
+    float edge = 1.0 - smoothstep(0.35, 0.5, max(q.x, max(q.y, q.z)));
+    alphaMul = step(h, uRain) * edge * smoothstep(2.5, 6.0, length(rel));
+  } else if (leaf) {
+    // Carried downwind, wrapping in the leaf box, bobbing and tumbling.
+    float speed = (1.5 + 7.0 * ws) * (0.7 + 0.6 * h);
+    vec3 p = iCenter + wind3 * speed * uTime;
+    p.xz = uLeafBox.xy + mod(p.xz - uLeafBox.xy, vec2(uLeafBox.z));
+    p.y += sin(uTime * (1.1 + h) + h * 40.0) * 0.6 + sin(uTime * 0.37 + h * 13.0) * 0.4;
+    center = p;
+    vec3 axis = normalize(vec3(h - 0.5, 0.6, fract(h * 7.3) - 0.5));
+    float spin = uTime * (1.5 + 3.0 * fract(h * 3.1)) * (0.3 + ws);
+    U = rotateAbout(iU, axis, spin);
+    V = rotateAbout(iV, axis, spin);
+    vec2 e = min(p.xz - uLeafBox.xy, uLeafBox.xy + uLeafBox.z - p.xz);
+    alphaMul = step(fract(h * 5.7), uLeaves) * smoothstep(0.03, 0.15, ws) * smoothstep(0.0, 4.0, min(e.x, e.y));
+  }
+
+  vec3 toCam = normalize(cameraPosition - center);
   // Billboards keep their axis but turn round it to face the viewer, then
   // twist away by a fixed per-card amount so they don't all line up.
-  float tw = (hash(iCenter) - 0.5) * 2.0 * B.y;
+  float tw = (h - 0.5) * 2.0 * B.y;
   if (billboard > 0.5 && billboard < 1.5) {
-    vec3 axis = normalize(iV);
+    vec3 axis = normalize(V);
     vec3 side = cross(axis, toCam);
     if (dot(side, side) > 1e-8) {
       side = normalize(side);
       U = (side * cos(tw) + cross(side, axis) * sin(tw)) * length(iU);
     }
   } else if (billboard > 1.5) {
-    vec3 axis = normalize(iU);
+    vec3 axis = normalize(U);
     vec3 side = cross(toCam, axis);
     if (dot(side, side) > 1e-8) {
       side = normalize(side);
@@ -147,7 +231,28 @@ void main() {
     }
   }
 
-  vec3 world = iCenter + U * position.x + V * position.y;
+  // Wind: flexible cards lean and shift downwind; gust fronts travel with
+  // the wind across the land, and each card flutters at its own rate.
+  vec3 sway = vec3(0.0);
+  if (C.x > 0.0 && ws > 0.0 && !rain && !leaf) {
+    float gust = 0.55 + 0.45 * sin(uTime * 0.8 - dot(center.xz, uWind.xy) * 0.09 + h);
+    float flutter = sin(uTime * (2.6 + 1.4 * h) + h * 31.0 + dot(center.xz, vec2(0.7, 0.4)));
+    float amt = ws * C.x * gust;
+    float size = length(V);
+    sway = wind3 * (amt * size * (0.6 + 0.4 * flutter)) - vec3(0.0, 0.1 * amt * size, 0.0);
+    V = normalize(V / max(size, 1e-5) + wind3 * (amt * 0.8 * (0.75 + 0.25 * flutter))) * size;
+  }
+
+  // Flowing water slides along U; it fades in and out so the wrap is hidden.
+  if (C.y > 0.0) {
+    float travel = max(length(iU) * 2.0, 1e-3);
+    float ph = fract(uTime * C.y / travel + h);
+    center += normalize(iU) * (ph - 0.5) * travel;
+    // Streams fade in and out fully; slow lake ripples only shimmer.
+    alphaMul *= mix(0.75 + 0.25 * sin(3.14159 * ph), sin(3.14159 * ph), smoothstep(0.3, 0.8, C.y));
+  }
+
+  vec3 world = center + sway + U * position.x + V * position.y;
   vec3 N = normalize(cross(U, V));
   float facing = dot(N, toCam);
   if (solid && facing < 0.0) {
@@ -160,23 +265,34 @@ void main() {
   // winding) the glyph is also un-mirrored below, so text always reads right.
   float flip = facing < 0.0 ? -1.0 : 1.0;
   N *= flip;
+  float dist = length(cameraPosition - center);
 
-  float ts = iLight.x;
-  float tk = iLight.y;
-  float ndl = dot(N, uSunDir);
-  float diff = clamp((ndl + A.w) / (1.0 + A.w), 0.0, 1.0);
-  float back = clamp(-ndl, 0.0, 1.0);
-  float spec = pow(clamp(dot(N, normalize(uSunDir + toCam)), 0.0, 1.0), A.y) * step(0.0, ndl);
-  float hemi = mix(1.0, 0.55 + 0.45 * N.y, uTone.w);
-  vec3 rad = iColor.rgb * (ts * uSunColor * (1.25 * diff + A.z * back) + uTone.y * tk * hemi * uSkyColor + uTone.z)
-           + A.x * spec * ts * uGlintColor;
-  vColor = 1.0 - exp(-uTone.x * rad);
-  // Distance haze (ground), as in the script: far ground melts into the dusk.
-  float hz = B.w * pow(clamp(length(cameraPosition - iCenter) / uHazeDist, 0.0, 1.0), 0.65);
-  vColor = mix(vColor, uHazeColor, hz);
-
-  // Cards seen almost edge-on become slivers: fade them out instead of streaking.
-  vAlpha = min(1.0, (iColor.a + B.z * ts * diff) * uAlphaGain) * smoothstep(0.02, 0.25, abs(facing));
+  if (emissive || rain) {
+    vColor = iColor.rgb;
+    vAlpha = iColor.a * alphaMul * (rain ? 1.0 : smoothstep(0.02, 0.25, abs(facing)));
+  } else {
+    float ts = leaf ? 1.0 : iLight.x;
+    float tk = leaf ? 1.0 : iLight.y;
+    ts *= 1.0 - 0.6 * uRain; // overcast while it rains
+    float ndl = dot(N, uSunDir);
+    float diff = clamp((ndl + A.w) / (1.0 + A.w), 0.0, 1.0);
+    float back = clamp(-ndl, 0.0, 1.0);
+    float spec = pow(clamp(dot(N, normalize(uSunDir + toCam)), 0.0, 1.0), A.y) * step(0.0, ndl);
+    float hemi = mix(1.0, 0.55 + 0.45 * N.y, uTone.w);
+    vec3 rad = iColor.rgb * (ts * uSunColor * (1.25 * diff + A.z * back) + uTone.y * tk * hemi * uSkyColor + uTone.z)
+             + A.x * spec * ts * uGlintColor;
+    vColor = 1.0 - exp(-uTone.x * rad);
+    // Per-material distance haze, as in the pine script's ground.
+    float hz = B.w * pow(clamp(dist / uHazeDist, 0.0, 1.0), 0.65);
+    vColor = mix(vColor, uHazeColor, hz);
+    // Cards seen almost edge-on become slivers: fade them out instead of streaking.
+    vAlpha = min(1.0, (iColor.a + B.z * ts * diff) * uAlphaGain) * smoothstep(0.02, 0.25, abs(facing)) * alphaMul;
+  }
+  // Scene haze: far things melt into the sky colour (thicker in the rain).
+  if (uFog.y > 0.0 && C.z > 0.5) {
+    float hz = (1.0 - exp(-dist / (uFog.x * (1.0 - 0.55 * uRain)))) * uFog.y;
+    vColor = mix(vColor, uHazeColor, hz);
+  }
 
   float row = floor((glyph + 0.5) / uGrid.x);
   float col = glyph - row * uGrid.x;
@@ -210,6 +326,7 @@ export class CardLayer {
   private count = 0;
 
   constructor(atlas: GlyphAtlas, lighting: Lighting = DEFAULT_LIGHTING) {
+    const vec4s = () => Array.from({ length: MAX_MATERIALS }, () => new Vector4());
     const material = new ShaderMaterial({
       vertexShader,
       fragmentShader,
@@ -222,12 +339,20 @@ export class CardLayer {
         uSkyColor: { value: new Vector3() },
         uGlintColor: { value: new Vector3() },
         uDepthBias: { value: 0.75 },
-        uMatA: { value: Array.from({ length: MAX_MATERIALS }, () => new Vector4()) },
-        uMatB: { value: Array.from({ length: MAX_MATERIALS }, () => new Vector4()) },
+        uMatA: { value: vec4s() },
+        uMatB: { value: vec4s() },
+        uMatC: { value: vec4s() },
         uTone: { value: new Vector4(2.2, 0.5, 0.03, 1) },
         uAlphaGain: { value: 1 },
         uHazeColor: { value: new Vector3(120 / 255, 112 / 255, 140 / 255) },
-        uHazeDist: { value: 110 }, // same falloff as the script
+        uHazeDist: { value: 110 }, // same falloff as the pine script
+        uFog: { value: new Vector2(420, 0) },
+        uTime: { value: 0 },
+        uWind: { value: new Vector4(1, 0, 0, 0) },
+        uRain: { value: 0 },
+        uLeaves: { value: 0 },
+        uRainBox: { value: new Vector3(36, 24, 36) },
+        uLeafBox: { value: new Vector3(0, 0, 1) },
       },
     });
     this.mesh = new Mesh(emptyGeometry(), material);
@@ -257,10 +382,12 @@ export class CardLayer {
     const u = this.mesh.material.uniforms;
     const A = u.uMatA!.value as Vector4[];
     const B = u.uMatB!.value as Vector4[];
+    const C = u.uMatC!.value as Vector4[];
     for (let i = 0; i < MAX_MATERIALS; i++) {
       const m = defs[i] ?? SURFACE_MATERIAL;
       A[i]!.set(m.spec, m.shininess, m.trans, m.wrap);
       B[i]!.set(m.billboard, m.twist, m.alphaLit, m.haze ?? 0);
+      C[i]!.set(m.flex ?? 0, m.flow ?? 0, m.fog ?? 0, 0);
     }
   }
 
@@ -271,6 +398,23 @@ export class CardLayer {
     (u.uSkyColor!.value as Vector3).copy(l.skyColor);
     (u.uGlintColor!.value as Vector3).copy(l.glintColor);
     (u.uTone!.value as Vector4).set(l.exposure ?? 2.2, l.skyGain ?? 0.5, l.ambient ?? 0.03, l.hemi ?? 1);
+  }
+
+  setEnvironment(e: Environment): void {
+    const u = this.mesh.material.uniforms;
+    const len = Math.hypot(e.windDir[0], e.windDir[1]) || 1;
+    (u.uWind!.value as Vector4).set(e.windDir[0] / len, e.windDir[1] / len, e.wind, 0);
+    u.uRain!.value = e.rain;
+    u.uLeaves!.value = e.leaves;
+    (u.uFog!.value as Vector2).set(e.fogDist, e.fog);
+    (u.uHazeColor!.value as Vector3).set(...e.hazeColor);
+    (u.uRainBox!.value as Vector3).set(...e.rainBox);
+    (u.uLeafBox!.value as Vector3).set(...e.leafBox);
+  }
+
+  /** Animation clock, seconds. */
+  setTime(t: number): void {
+    this.mesh.material.uniforms.uTime!.value = t;
   }
 
   /** See `CardMode`. `depthBias` is in card heights (0 for scenes with no body). */

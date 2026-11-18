@@ -47,9 +47,24 @@ export interface EngineResult {
   sunDir?: [number, number, number];
   /** Procedural scenes: suggested camera (vertical fov in degrees). */
   camera?: { target: [number, number, number]; eye: [number, number, number]; fov: number };
-  /** Procedural scenes: shader material table, 8 floats per material id. */
+  /** Procedural scenes: shader material table, `materialFloats` per material id. */
   materials?: Float32Array;
+  materialFloats?: number;
+  /** Procedural scenes: time of day, wind direction, particle boxes. */
+  env?: SceneEnv;
 }
+
+export interface SceneEnv {
+  day: boolean;
+  windDir: [number, number];
+  /** Blown leaves: min x, min z, size. */
+  leafBox: [number, number, number];
+  /** Rain box sizes x, y, z (follows the camera). */
+  rainBox: [number, number, number];
+}
+
+export type ScenePreset = 'meadow' | 'forest' | 'lake' | 'valley' | 'alpine';
+export const SCENE_PRESETS: ScenePreset[] = ['meadow', 'forest', 'lake', 'valley', 'alpine'];
 
 export type GalleryCategory = 'rocks' | 'plants' | 'bushes' | 'trees';
 export const GALLERY_CATEGORIES: GalleryCategory[] = ['rocks', 'plants', 'bushes', 'trees'];
@@ -65,7 +80,8 @@ export type WorkerRequest =
   | { kind: 'load'; id: number; bytes: ArrayBuffer; zUp: boolean; settings: CardSettings }
   | { kind: 'generate'; id: number; settings: CardSettings }
   | ({ kind: 'testbed'; id: number } & TestbedRequest)
-  | { kind: 'gallery'; id: number; category: GalleryCategory; seed: number; glyphAspect: number };
+  | { kind: 'gallery'; id: number; category: GalleryCategory; seed: number; glyphAspect: number }
+  | { kind: 'scene'; id: number; preset: ScenePreset; seed: number; glyphAspect: number };
 
 export type WorkerResponse =
   | ({ kind: 'result'; id: number } & EngineResult)

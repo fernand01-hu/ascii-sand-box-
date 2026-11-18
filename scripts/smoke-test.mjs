@@ -181,7 +181,30 @@ for (const category of ['rocks', 'plants', 'bushes', 'trees']) {
     if (category === 'rocks') assert.ok(modes[3] > 0 && body.length > 0, 'rocks are solid');
   });
 }
+for (const preset of ['meadow', 'forest', 'lake', 'valley', 'alpine']) {
+  test(`landscape: ${preset}`, () => {
+    const t = performance.now();
+    const scene = wasm.buildScene(preset, 1, 0.64);
+    const cards = scene.takeCards();
+    const body = scene.takeBody();
+    const env = scene.env();
+    scene.free();
+    const n = cards.length / STRIDE;
+    console.log(`       ${n} cards, ${body.length / 9} body triangles, ${(performance.now() - t).toFixed(0)} ms`);
+    assert.ok(n > 100_000 && n < 2_500_000, `${n} cards`);
+    assert.equal(env.length, 9);
+    const modes = [0, 0, 0, 0, 0, 0, 0];
+    for (let i = 0; i < cards.length; i += STRIDE) {
+      for (let k = 0; k < STRIDE; k++) assert.ok(Number.isFinite(cards[i + k]), `card ${i / STRIDE} field ${k}`);
+      modes[Math.floor(cards[i + 13] / 1024 / 64)]++;
+    }
+    assert.ok(modes[4] > 20_000, 'sky and water');
+    assert.equal(modes[5], 7000, 'rain particles');
+    assert.equal(modes[6], 900, 'leaf particles');
+  });
+}
 test('scenery rejects bad input', () => {
+  assert.throws(() => wasm.buildScene('desert', 1, 0.64), /unknown scene/);
   assert.throws(() => wasm.buildGallery('volcanoes', 1, 0.64), /unknown gallery/);
   assert.throws(() => wasm.buildGallery('trees', 1, 0));
 });

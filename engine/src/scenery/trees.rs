@@ -15,7 +15,7 @@ use crate::math::Vec3;
 use crate::rng::Pcg32;
 use std::f32::consts::TAU;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TreeKind {
     Pine,
     Spruce,

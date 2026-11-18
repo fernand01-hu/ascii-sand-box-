@@ -9,7 +9,7 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 const GOLDEN: f32 = 2.39996;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PlantKind {
     Fern,
     Hosta,

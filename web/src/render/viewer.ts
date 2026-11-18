@@ -32,6 +32,10 @@ export class Viewer {
   private raf = 0;
   private resizeObserver: ResizeObserver;
   private contextLost = false;
+  /** Render every frame and advance the animation clock (wind, water, rain). */
+  animate = false;
+  private clockStart = performance.now();
+  private frozenTime: number | null = null;
 
   constructor(private container: HTMLElement, atlas: GlyphAtlas) {
     this.renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -92,7 +96,11 @@ export class Viewer {
    * transparency, camera placed explicitly, orbit kept above the ground.
    * `body` (optional) is an opaque occluder, e.g. rocks and trunks.
    */
-  setFreeScene(target: Vector3, eye: Vector3, opts: { fov?: number; body?: { positions: Float32Array; normals: Float32Array } } = {}): void {
+  setFreeScene(
+    target: Vector3,
+    eye: Vector3,
+    opts: { fov?: number; far?: number; body?: { positions: Float32Array; normals: Float32Array } } = {},
+  ): void {
     if (opts.body && opts.body.positions.length > 0) {
       this.setBody(opts.body.positions, opts.body.normals);
       this.cards.setMode('coverage', 0.75); // cards must win against the body they sit on
@@ -105,7 +113,7 @@ export class Viewer {
     this.controls.target.copy(target);
     this.camera.position.copy(eye);
     this.camera.near = dist / 200;
-    this.camera.far = dist * 20;
+    this.camera.far = opts.far ?? dist * 20;
     this.camera.updateProjectionMatrix();
     this.controls.minDistance = dist * 0.15;
     this.controls.maxDistance = dist * 3;
@@ -131,7 +139,7 @@ export class Viewer {
     const h = gl.drawingBufferHeight;
     const px = new Uint8Array(w * h * 4);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    const bg = BACKGROUND.clone().convertLinearToSRGB();
+    const bg = this.background.clone().convertLinearToSRGB();
     const [br, bgc, bb] = [bg.r * 255, bg.g * 255, bg.b * 255];
     let lit = 0;
     for (let i = 0; i < px.length; i += 4) {
@@ -214,10 +222,31 @@ export class Viewer {
     this.requestRender();
   }
 
+  /** Background between the glyphs (and colour of the opaque bodies). */
+  setBackground(color: Color): void {
+    this.renderer.setClearColor(color, 1);
+    this.body.material.color.copy(color);
+    this.background.copy(color);
+    this.requestRender();
+  }
+
+  private background = BACKGROUND.clone();
+
+  /** Freeze the animation clock at `t` seconds (tests), or `null` to run. */
+  freezeTime(t: number | null): void {
+    this.frozenTime = t;
+    if (t !== null) this.cards.setTime(t);
+    this.requestRender();
+  }
+
   private loop = (): void => {
     this.raf = requestAnimationFrame(this.loop);
     if (this.contextLost) return;
     const moved = this.controls.update(); // keeps damping going after the mouse is released
+    if (this.animate && this.frozenTime === null) {
+      this.cards.setTime((performance.now() - this.clockStart) / 1000);
+      this.dirty = true;
+    }
     if (moved || this.dirty) {
       this.dirty = false;
       this.renderer.render(this.scene, this.camera);

@@ -144,7 +144,7 @@ pub fn build_gallery(cat: Category, seed: u32, glyph_aspect: f32) -> SceneOut {
     studio_ground(&mut sk, Vec3::new(0.0, 0.0, target.z), radius, eye, focal, seed);
 
     let occ = Occlusion::new(&sk.occluders);
-    sk.light(&occ, sun_dir());
+    sk.light(&occ, sun_dir(), &|_| 1.0, None);
     SceneOut {
         cards: std::mem::take(&mut sk.cards),
         body: std::mem::take(&mut sk.solids),

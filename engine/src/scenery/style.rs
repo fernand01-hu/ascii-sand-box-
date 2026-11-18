@@ -22,6 +22,10 @@ pub struct Material {
     pub keep: f32,
     pub solid: bool,
     pub dens: f32,
+    /// How much wind moves it (0 rigid, 1 grass blade).
+    pub flex: f32,
+    /// Flowing water: drift speed along the card's U axis (0 = still).
+    pub flow: f32,
 }
 
 const fn m(chars: &'static str, albedo: [f32; 3]) -> Material {
@@ -40,23 +44,25 @@ const fn m(chars: &'static str, albedo: [f32; 3]) -> Material {
         keep: 1.9,
         solid: false,
         dens: 1.0,
+        flex: 0.0,
+        flow: 0.0,
     }
 }
 
 const fn foliage(x: Material) -> Material {
-    Material { spec: 0.4, shin: 24.0, trans: 0.45, wrap: 0.25, alpha: (0.78, 1.0), keep: 2.0, ..x }
+    Material { spec: 0.4, shin: 24.0, trans: 0.45, wrap: 0.25, alpha: (0.78, 1.0), keep: 2.0, flex: 0.5, ..x }
 }
 
 const fn accent(x: Material) -> Material {
-    Material { spec: 0.4, shin: 24.0, trans: 0.45, wrap: 0.25, alpha: (0.78, 1.0), keep: 0.6, ..x }
+    Material { spec: 0.4, shin: 24.0, trans: 0.45, wrap: 0.25, alpha: (0.78, 1.0), keep: 0.6, flex: 0.6, ..x }
 }
 
 const fn small_accent(x: Material, lo: f32) -> Material {
-    Material { alpha: (lo, 1.0), keep: 0.6, ..x }
+    Material { alpha: (lo, 1.0), keep: 0.6, flex: 0.6, ..x }
 }
 
 const fn bigleaf(x: Material, spec: f32, shin: f32, trans: f32) -> Material {
-    Material { spec, shin, trans, wrap: 0.2, alpha: (0.6, 1.0), dens: 1.7, ..x }
+    Material { spec, shin, trans, wrap: 0.2, alpha: (0.6, 1.0), dens: 1.7, flex: 0.25, ..x }
 }
 
 const fn rock(x: Material, var: f32, spec: f32, shin: f32, wrap: f32, alpha: (f32, f32)) -> Material {
@@ -88,8 +94,8 @@ macro_rules! materials {
 
 materials! {
     // conifer foliage: one card = a small spray of needles
-    NeedlePine = foliage(Material { weights: Some(&NEEDLE_PINE_W), ..m("VYvy*WwXxKk|/\\li!^A", [0.13, 0.33, 0.17]) });
-    NeedleSpruce = foliage(Material { weights: Some(&NEEDLE_SPRUCE_W), ..m("^AvVY*xXkK|/\\", [0.09, 0.28, 0.20]) });
+    NeedlePine = foliage(Material { weights: Some(&NEEDLE_PINE_W), flex: 0.35, ..m("VYvy*WwXxKk|/\\li!^A", [0.13, 0.33, 0.17]) });
+    NeedleSpruce = foliage(Material { weights: Some(&NEEDLE_SPRUCE_W), flex: 0.3, ..m("^AvVY*xXkK|/\\", [0.09, 0.28, 0.20]) });
     NeedleJuniper = foliage(m("*^vVYxX#", [0.11, 0.27, 0.20]));
     ShootTip = accent(m("*+xX", [0.36, 0.50, 0.20]));
     // broad leaves: one card = one leaf
@@ -111,23 +117,23 @@ materials! {
     BigleafEdge = bigleaf(m("o*:;.", [0.62, 0.64, 0.32]), 0.4, 24.0, 0.4);
     Midrib = Material { alpha: (0.7, 1.0), dens: 1.7, ..m("|!:", [0.45, 0.60, 0.28]) };
     MidribRed = Material { alpha: (0.7, 1.0), dens: 1.7, ..m("|!:", [0.62, 0.16, 0.14]) };
-    Stem = Material { axis_v: true, size: 0.8, ..m("|!l1", [0.22, 0.42, 0.14]) };
-    StemRed = Material { axis_v: true, size: 0.8, ..m("|!l1", [0.55, 0.13, 0.10]) };
-    GrassBlade = Material { weights: Some(&GRASS_W), spec: 0.2, shin: 14.0, trans: 0.3, alpha: (0.75, 0.95),
+    Stem = Material { axis_v: true, size: 0.8, flex: 0.4, ..m("|!l1", [0.22, 0.42, 0.14]) };
+    StemRed = Material { axis_v: true, size: 0.8, flex: 0.4, ..m("|!l1", [0.55, 0.13, 0.10]) };
+    GrassBlade = Material { weights: Some(&GRASS_W), spec: 0.2, shin: 14.0, trans: 0.3, alpha: (0.75, 0.95), flex: 1.0,
                             ..m("|/\\'\",;ivwVWYy^`", [0.22, 0.40, 0.12]) };
-    GrassTall = Material { spec: 0.2, shin: 14.0, trans: 0.35, alpha: (0.65, 1.0), axis_v: true,
+    GrassTall = Material { spec: 0.2, shin: 14.0, trans: 0.35, alpha: (0.65, 1.0), axis_v: true, flex: 1.0,
                            ..m("|/\\()il!", [0.30, 0.44, 0.14]) };
-    Reed = Material { spec: 0.2, trans: 0.3, alpha: (0.7, 1.0), axis_v: true, ..m("|!lI1", [0.34, 0.42, 0.17]) };
-    Cattail = Material { alpha: (0.9, 1.0), keep: 0.6, ..m("0#8@", [0.30, 0.17, 0.07]) };
+    Reed = Material { spec: 0.2, trans: 0.3, alpha: (0.7, 1.0), axis_v: true, flex: 0.9, ..m("|!lI1", [0.34, 0.42, 0.17]) };
+    Cattail = Material { alpha: (0.9, 1.0), keep: 0.6, flex: 0.8, ..m("0#8@", [0.30, 0.17, 0.07]) };
     FlowerYellow = Material { trans: 0.3, ..small_accent(m("*@oO+x", [0.95, 0.78, 0.15]), 0.75) };
     FlowerWhite = Material { trans: 0.3, ..small_accent(m("*@oO+x", [0.92, 0.92, 0.88]), 0.75) };
     FlowerPurple = Material { trans: 0.3, ..small_accent(m("*@oO+x", [0.55, 0.30, 0.80]), 0.75) };
     FlowerRed = Material { trans: 0.3, ..small_accent(m("*@oO+x", [0.88, 0.15, 0.12]), 0.75) };
     PlantLeaf = foliage(m("vVY^<>", [0.18, 0.40, 0.12]));
     // thin wood, drawn as a chain of cards along the branch
-    Twig = Material { alpha: (0.75, 0.9), ..m("-=~_", [0.30, 0.20, 0.13]) };
+    Twig = Material { alpha: (0.75, 0.9), flex: 0.2, ..m("-=~_", [0.30, 0.20, 0.13]) };
     Branch = Material { alpha: (0.85, 0.95), ..m("#=H%&8$", [0.30, 0.20, 0.13]) };
-    TwigBirch = Material { alpha: (0.8, 0.95), ..m("-=~_", [0.25, 0.18, 0.15]) };
+    TwigBirch = Material { alpha: (0.8, 0.95), flex: 0.3, ..m("-=~_", [0.25, 0.18, 0.15]) };
     TwigDead = Material { alpha: (0.85, 0.95), ..m("-=~/\\", [0.45, 0.43, 0.40]) };
     // rock surfaces
     Rock = rock(m("#%@MW&8$NHB", [0.42, 0.41, 0.40]), 0.15, 0.15, 10.0, 0.1, (0.92, 1.0));
@@ -143,13 +149,22 @@ materials! {
     Sand = ground(m(".,:'`-~", [0.75, 0.66, 0.45]));
     GroundRock = Material { alpha: (0.8, 0.95), ..m("#%&@:=", [0.27, 0.25, 0.24]) };
     Snow = Material { spec: 0.4, shin: 30.0, alpha: (0.8, 0.95), ..m("*+.:'`", [0.95, 0.96, 1.00]) };
-    MeadowFlower = Material { alpha: (0.8, 1.0), ..m("*o.+", [0.95, 0.85, 0.40]) };
+    MeadowFlower = Material { alpha: (0.8, 1.0), flex: 0.5, ..m("*o.+", [0.95, 0.85, 0.40]) };
+    // trails worn into the ground
+    Trail = Material { alpha: (0.75, 0.9), ..m(".,_-:'`~", [0.42, 0.32, 0.21]) };
     // shading for bark wrapped round trunks (characters come from BARKS)
     Bark = Material { spec: 0.08, shin: 12.0, wrap: 0.1, alpha: (0.95, 1.0), solid: true, ..m("#", [0.5, 0.4, 0.3]) };
     // far trees (impostors)
     FarConifer = Material { alpha: (0.6, 0.95), ..m("A^*#", [0.08, 0.22, 0.16]) };
     FarBroadleaf = Material { alpha: (0.6, 0.95), ..m("@&%O8#", [0.12, 0.27, 0.10]) };
     FarTrunk = Material { axis_v: true, ..m("|!", [0.25, 0.18, 0.12]) };
+    // water: still (lake) and flowing (stream); colour is precomputed from the sky
+    Water = Material { alpha: (0.95, 0.95), flow: 0.12, ..m("~~~=-~w", [0.3, 0.4, 0.5]) };
+    WaterStream = Material { alpha: (0.95, 0.95), flow: 1.0, ..m("~~=-~", [0.3, 0.4, 0.5]) };
+    // sky: brightness ramp, stars; rain streaks
+    Sky = Material { alpha: (0.8, 0.8), ..m(".`,:;-~=+*o#%@", [1.0, 1.0, 1.0]) };
+    Star = Material { alpha: (1.0, 1.0), ..m("*+.", [1.0, 1.0, 1.0]) };
+    Rain = Material { alpha: (0.45, 0.6), ..m("|!/:'", [0.62, 0.68, 0.82]) };
 }
 
 impl Mat {

@@ -1,11 +1,12 @@
 // The product core: one viewer, one engine worker, and the logic that turns
 // engine results into what's on screen. No debug or test code lives here.
 
-import { Vector3 } from 'three';
+import { Color, Vector3 } from 'three';
 import { EngineClient, SupersededError } from '../engine/client';
-import type { CardSettings, EngineResult, GalleryCategory } from '../engine/protocol';
+import type { CardSettings, EngineResult, GalleryCategory, ScenePreset } from '../engine/protocol';
 import { createGlyphAtlas, glyphAspect, type GlyphAtlas } from '../render/atlas';
-import { DEFAULT_LIGHTING, SURFACE_MATERIAL, type Lighting, type MaterialDef } from '../render/cards';
+import { CALM, DEFAULT_LIGHTING, SURFACE_MATERIAL, type Environment, type Lighting, type MaterialDef } from '../render/cards';
+import { BACKGROUND } from '../render/viewer';
 
 /** Lighting of the scenery `dusk` preset (light.py): stronger sky, no hemisphere falloff. */
 export const SCENERY_LIGHTING: Omit<Lighting, 'sunDir'> = {
@@ -18,13 +19,37 @@ export const SCENERY_LIGHTING: Omit<Lighting, 'sunDir'> = {
   hemi: 0,
 };
 
-/** Engine material table (8 floats per material) -> shader material defs. */
-export function materialsFromTable(t: Float32Array): MaterialDef[] {
+/** Lighting of the scenery `day` preset. */
+export const SCENERY_DAY: Omit<Lighting, 'sunDir'> = {
+  sunColor: new Vector3(1.15, 1.08, 0.95),
+  skyColor: new Vector3(0.55, 0.68, 0.95),
+  glintColor: new Vector3(1.0, 0.98, 0.92),
+  exposure: 2.2,
+  skyGain: 0.95,
+  ambient: 0.05,
+  hemi: 0,
+};
+
+const DUSK_BACKGROUND = BACKGROUND;
+const DAY_BACKGROUND = new Color().setRGB(34 / 255, 44 / 255, 58 / 255, 'srgb');
+
+/** Weather each scene starts with (wind, rain, blown leaves: 0..1). */
+export const SCENE_WEATHER: Record<ScenePreset, { wind: number; rain: number; leaves: number }> = {
+  meadow: { wind: 0.35, rain: 0, leaves: 0.5 },
+  forest: { wind: 0.25, rain: 0, leaves: 0.7 },
+  lake: { wind: 0.2, rain: 0, leaves: 0.3 },
+  valley: { wind: 0.4, rain: 0, leaves: 0.4 },
+  alpine: { wind: 0.6, rain: 0, leaves: 0.2 },
+};
+
+/** Engine material table (`floats` per material) -> shader material defs. */
+export function materialsFromTable(t: Float32Array, floats = 12): MaterialDef[] {
   const out: MaterialDef[] = [];
-  for (let i = 0; i + 8 <= t.length; i += 8) {
+  for (let i = 0; i + floats <= t.length; i += floats) {
     out.push({
       spec: t[i]!, shininess: t[i + 1]!, trans: t[i + 2]!, wrap: t[i + 3]!,
       billboard: (t[i + 4]! | 0) as 0 | 1 | 2, twist: t[i + 5]!, alphaLit: t[i + 6]!, haze: t[i + 7]!,
+      flex: t[i + 8] ?? 0, flow: t[i + 9] ?? 0, fog: t[i + 10] ?? 0,
     });
   }
   return out;
@@ -65,6 +90,8 @@ export interface AppState {
   error: string | null;
   /** Requests the worker skipped because a newer one replaced them. */
   skipped: number;
+  /** Current weather (wind, rain, blown leaves: 0..1). */
+  weather: { wind: number; rain: number; leaves: number };
 }
 
 export class App {
@@ -81,7 +108,9 @@ export class App {
     timings: null,
     error: null,
     skipped: 0,
+    weather: { wind: 0, rain: 0, leaves: 0 },
   };
+  private env: Environment = { ...CALM };
   private atlas: GlyphAtlas;
   // Only the most recent request may update the scene.
   private latest = 0;
@@ -126,9 +155,33 @@ export class App {
     }
   }
 
+  /**
+   * Change the weather: any of wind, rain, leaves (0..1). Wind sways grass,
+   * leaves, needles and reeds; rain falls round the camera and dims the sun;
+   * leaves blow across the scene (they need some wind).
+   */
+  setEnvironment(w: Partial<{ wind: number; rain: number; leaves: number }>): void {
+    const clamp = (v: number | undefined, d: number) => Math.min(1, Math.max(0, v ?? d));
+    this.env.wind = clamp(w.wind, this.env.wind);
+    this.env.rain = clamp(w.rain, this.env.rain);
+    this.env.leaves = clamp(w.leaves, this.env.leaves);
+    this.state.weather = { wind: this.env.wind, rain: this.env.rain, leaves: this.env.leaves };
+    this.viewer.cards.setEnvironment(this.env);
+    this.viewer.requestRender();
+  }
+
+  /** Calm weather, no fog, default background. */
+  resetEnvironment(animate: boolean, background = DUSK_BACKGROUND): void {
+    this.env = { ...CALM };
+    this.viewer.animate = animate;
+    this.viewer.setBackground(background);
+    this.setEnvironment({});
+  }
+
   loadBytes(bytes: ArrayBuffer, name: string): Promise<void> {
     return this.run(name, () => this.engine.load(bytes, this.settings), (res) => {
       if (!res.mesh) throw new Error('engine returned no mesh');
+      this.resetEnvironment(false);
       const v = this.viewer;
       v.cards.setAtlas(this.atlasFor(res.charset));
       v.cards.setMaterials([SURFACE_MATERIAL]);
@@ -152,9 +205,10 @@ export class App {
     const name = `gallery-${category}`;
     return this.run(name, () => this.engine.gallery(category, seed, glyphAspect()), (res) => {
       if (!res.camera || !res.materials || !res.sunDir || !res.mesh) throw new Error('gallery result is incomplete');
+      this.resetEnvironment(false);
       const v = this.viewer;
       v.cards.setAtlas(this.atlasFor(res.charset));
-      v.cards.setMaterials(materialsFromTable(res.materials));
+      v.cards.setMaterials(materialsFromTable(res.materials, res.materialFloats));
       v.cards.setLighting({ ...SCENERY_LIGHTING, sunDir: new Vector3(...res.sunDir) });
       v.setCards(res.cards, res.stride);
       v.setFreeScene(new Vector3(...res.camera.target), new Vector3(...res.camera.eye), {
@@ -163,6 +217,37 @@ export class App {
       });
       Object.assign(this.state, { triangles: res.mesh.triangles, dropped: 0, glyphPx: 0 });
       console.info(`[ascii] ${name} seed ${seed}: ${res.count} cards, ${res.mesh.triangles} solid triangles, ${res.timings.generateMs.toFixed(0)} ms`);
+    });
+  }
+
+  /**
+   * A whole landscape: terrain with a lake, a stream and trails, scattered
+   * trees / bushes / plants / rocks, sky, and animated weather.
+   */
+  showScene(preset: ScenePreset, seed = 1): Promise<void> {
+    const name = `scene-${preset}`;
+    return this.run(name, () => this.engine.scene(preset, seed, glyphAspect()), (res) => {
+      if (!res.camera || !res.materials || !res.sunDir || !res.mesh || !res.env) throw new Error('scene result is incomplete');
+      const day = res.env.day;
+      this.resetEnvironment(true, day ? DAY_BACKGROUND : DUSK_BACKGROUND);
+      const haze: [number, number, number] = day ? [176 / 255, 194 / 255, 214 / 255] : [74 / 255, 72 / 255, 104 / 255];
+      Object.assign(this.env, {
+        windDir: res.env.windDir, leafBox: res.env.leafBox, rainBox: res.env.rainBox,
+        fogDist: 420, fog: 1, hazeColor: haze,
+      });
+      const v = this.viewer;
+      v.cards.setAtlas(this.atlasFor(res.charset));
+      v.cards.setMaterials(materialsFromTable(res.materials, res.materialFloats));
+      v.cards.setLighting({ ...(day ? SCENERY_DAY : SCENERY_LIGHTING), sunDir: new Vector3(...res.sunDir) });
+      v.setCards(res.cards, res.stride);
+      v.setFreeScene(new Vector3(...res.camera.target), new Vector3(...res.camera.eye), {
+        fov: res.camera.fov,
+        far: 3000,
+        body: { positions: res.mesh.positions, normals: res.mesh.normals },
+      });
+      this.setEnvironment(SCENE_WEATHER[preset]);
+      Object.assign(this.state, { triangles: res.mesh.triangles, dropped: 0, glyphPx: 0 });
+      console.info(`[ascii] ${name} seed ${seed}: ${res.count} cards, ${res.mesh.triangles} body triangles, ${res.timings.generateMs.toFixed(0)} ms`);
     });
   }
 

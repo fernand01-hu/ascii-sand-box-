@@ -4,10 +4,14 @@
 //   keys 1-4      switch between the bundled test models
 //   key 5         testbed: the procedural pine
 //   keys 6-9      scenery galleries: rocks, plants, bushes, trees
+//   M F L V A     landscapes: meadow, forest, lake, valley, alpine
+//   W             wind: calm / breeze / storm
+//   R             rain on / off
+//   B             blowing leaves on / off
 //   drop a file   load any .stl from your computer
 //   window.__ascii  live engine state + hooks for the e2e test
 
-import { GALLERY_CATEGORIES, type GalleryCategory } from '../engine/protocol';
+import { GALLERY_CATEGORIES, type GalleryCategory, type ScenePreset } from '../engine/protocol';
 import { showPine } from '../testbed/pine';
 import type { App, AppState } from './app';
 
@@ -18,6 +22,12 @@ export interface DebugHandle extends AppState {
   loadModel(index: number): Promise<void>;
   loadPine(seed?: number): Promise<void>;
   loadGallery(category: GalleryCategory, seed?: number): Promise<void>;
+  loadScene(preset: ScenePreset, seed?: number): Promise<void>;
+  setEnvironment(w: Partial<{ wind: number; rain: number; leaves: number }>): void;
+  /** Freeze the animation clock (seconds), or null to let it run. */
+  freezeTime(t: number | null): void;
+  /** The app itself, for poking at it from the console (dev builds only). */
+  app: App;
   /** Fraction of pixels that differ from the background. */
   coverage(): number;
   thumbnail(): number[];
@@ -41,13 +51,25 @@ export function installDevtools(app: App): void {
     loadModel,
     loadPine: (seed?: number) => showPine(app, seed),
     loadGallery: (c: GalleryCategory, seed?: number) => app.showGallery(c, seed),
+    loadScene: (p: ScenePreset, seed?: number) => app.showScene(p, seed),
+    setEnvironment: (w: Partial<{ wind: number; rain: number; leaves: number }>) => app.setEnvironment(w),
+    freezeTime: (t: number | null) => app.viewer.freezeTime(t),
     coverage: () => app.viewer.coverage(),
     thumbnail: () => app.viewer.thumbnail(),
-  });
+  }) as DebugHandle;
+  // Not enumerable, so JSON snapshots of the state skip it (it links back to the state).
+  Object.defineProperty(window.__ascii, 'app', { value: app, enumerable: false });
 
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === '5') return void showPine(app);
+    const scenes: Record<string, ScenePreset> = { m: 'meadow', f: 'forest', l: 'lake', v: 'valley', a: 'alpine' };
+    const k = e.key.toLowerCase();
+    if (scenes[k]) return void app.showScene(scenes[k]);
+    const w = app.state.weather;
+    if (k === 'w') return app.setEnvironment({ wind: w.wind < 0.2 ? 0.35 : w.wind < 0.6 ? 0.85 : 0 });
+    if (k === 'r') return app.setEnvironment({ rain: w.rain > 0 ? 0 : 1 });
+    if (k === 'b') return app.setEnvironment({ leaves: w.leaves > 0 ? 0 : 0.8 });
     const g = GALLERY_CATEGORIES[Number(e.key) - 6];
     if (g) return void app.showGallery(g);
     const i = Number(e.key) - 1;

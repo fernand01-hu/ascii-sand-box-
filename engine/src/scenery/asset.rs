@@ -103,6 +103,37 @@ impl Asset {
         self.wood.len() + self.sprites.len() + self.surfels.len()
     }
 
+    /// Level of detail for distant copies (port of `geometry.lod`): level 1
+    /// keeps 1/4 of the sprites at 2x size and drops the finest twigs; level 2
+    /// keeps 1/16 at 4x and only trunk and limbs. Surfels thin out the same
+    /// way with a larger spacing. Solids are kept.
+    pub fn lod(&self, level: u8, seed: u64) -> Asset {
+        if level == 0 {
+            return self.clone();
+        }
+        let mut rng = Pcg32::new(seed + level as u64, 0x10d);
+        let f = 0.25f32.powi(level as i32);
+        let grow = 1.0 / f.sqrt();
+        let max_level = if level == 1 { 2 } else { 1 };
+        Asset {
+            name: format!("{}_lod{level}", self.name),
+            wood: self.wood.iter().filter(|w| w.level <= max_level).copied().collect(),
+            sprites: self
+                .sprites
+                .iter()
+                .filter(|_| rng.next_f32() < f)
+                .map(|s| Sprite { size: s.size * grow, ..*s })
+                .collect(),
+            surfels: self
+                .surfels
+                .iter()
+                .filter(|_| rng.next_f32() < f)
+                .map(|s| Surfel { spacing: s.spacing * grow, ..*s })
+                .collect(),
+            solids: self.solids.clone(),
+        }
+    }
+
     /// Every primitive finite and sane (used by tests and debug builds).
     pub fn is_valid(&self) -> bool {
         self.wood.iter().all(|w| w.p0.is_finite() && w.p1.is_finite() && w.r.is_finite() && w.r > 0.0)
