@@ -372,6 +372,87 @@ pub fn scenery_sun_dir() -> Vec<f32> {
     vec![s.x, s.y, s.z]
 }
 
+// ---- the infinite world ----------------------------------------------------------
+
+/// Chunk size (m), physics grid (samples - 1 per side), water level.
+#[wasm_bindgen(js_name = worldConsts)]
+pub fn world_consts() -> Vec<f32> {
+    vec![scenery::world::CHUNK, scenery::world::GRID as f32, scenery::world::WATER]
+}
+
+/// An endless landscape, built chunk by chunk around the viewer.
+#[wasm_bindgen]
+pub struct InfiniteWorld {
+    inner: scenery::world::World,
+}
+
+#[wasm_bindgen]
+impl InfiniteWorld {
+    #[wasm_bindgen(constructor)]
+    pub fn new(seed: u32, day: bool) -> InfiniteWorld {
+        InfiniteWorld { inner: scenery::world::World::new(seed, day) }
+    }
+
+    pub fn day(&self) -> bool {
+        self.inner.day
+    }
+
+    /// Ground height at (x, z), m.
+    pub fn height(&self, x: f32, z: f32) -> f32 {
+        self.inner.gen.height(x, z)
+    }
+
+    /// Sky dome, rain and blown leaves (all follow the camera).
+    #[wasm_bindgen(js_name = skyCards)]
+    pub fn sky_cards(&self, glyph_aspect: f32) -> Vec<f32> {
+        self.inner.sky_cards(glyph_aspect)
+    }
+
+    /// Chunk (cx, cz) with glyphs sized for an eye at (ex, ey, ez).
+    #[wasm_bindgen(js_name = buildChunk)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_chunk(&mut self, cx: i32, cz: i32, ex: f32, ey: f32, ez: f32, glyph_aspect: f32) -> WorldChunk {
+        let c = self.inner.build_chunk(cx, cz, math::Vec3::new(ex, ey, ez), glyph_aspect);
+        let (body, body_normals) = body_buffers(&c.body);
+        WorldChunk { cards: c.cards, body, body_normals, heights: c.heights, colliders: c.colliders.iter().flatten().copied().collect() }
+    }
+}
+
+#[wasm_bindgen]
+pub struct WorldChunk {
+    cards: Vec<f32>,
+    body: Vec<f32>,
+    body_normals: Vec<f32>,
+    heights: Vec<f32>,
+    colliders: Vec<f32>,
+}
+
+#[wasm_bindgen]
+impl WorldChunk {
+    #[wasm_bindgen(js_name = takeCards)]
+    pub fn take_cards(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.cards)
+    }
+    #[wasm_bindgen(js_name = takeBody)]
+    pub fn take_body(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.body)
+    }
+    #[wasm_bindgen(js_name = takeBodyNormals)]
+    pub fn take_body_normals(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.body_normals)
+    }
+    /// (GRID + 1)^2 heights, 1 m apart, from the chunk's corner.
+    #[wasm_bindgen(js_name = takeHeights)]
+    pub fn take_heights(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.heights)
+    }
+    /// x, z, radius, top y per collider.
+    #[wasm_bindgen(js_name = takeColliders)]
+    pub fn take_colliders(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.colliders)
+    }
+}
+
 // ---- testbed scenes (dev/test builds only) ------------------------------------
 
 /// Every character the procedural pine uses, in atlas order.

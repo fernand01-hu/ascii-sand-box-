@@ -28,6 +28,9 @@ pub struct View {
     pub focus: Vec3,
     /// Focal length in px for a 1000 px tall frame.
     pub focal: f32,
+    /// Closer than this, glyphs stop shrinking (keeps the ground at your
+    /// feet from exploding into thousands of tiny characters).
+    pub near: f32,
 }
 
 impl View {
@@ -36,7 +39,7 @@ impl View {
     pub fn glyph_at(&self, p: Vec3) -> f32 {
         let d_eye = (p - self.eye).length();
         let d_focus = (p - self.focus).length() + 0.5 * (self.eye - self.focus).length();
-        15.0 * d_eye.min(d_focus).max(2.0) / self.focal
+        15.0 * d_eye.min(d_focus).max(self.near) / self.focal
     }
 }
 
@@ -173,8 +176,57 @@ fn facing(d: Vec3, rng: &mut Pcg32) -> (Vec3, Vec3) {
 
 // ---- ground and water ------------------------------------------------------------------
 
-fn classify(t: &Terrain, canopy: &Canopy, p: Vec3, n: Vec3, rng: &mut Pcg32) -> Mat {
-    let noise = &t.noise;
+/// What the ground skin needs to know about the land: implemented by the
+/// finite `Terrain` and by the infinite world's chunks.
+pub trait Land {
+    fn height(&self, x: f32, z: f32) -> f32;
+    fn normal(&self, x: f32, z: f32) -> Vec3;
+    fn water(&self) -> Option<f32>;
+    fn is_water(&self, x: f32, z: f32) -> bool;
+    fn shore_dist(&self, x: f32, z: f32) -> f32;
+    fn trail_strength(&self, x: f32, z: f32) -> f32;
+    fn stream_strength(&self, x: f32, z: f32) -> f32;
+    /// Height above which gentle slopes are snow.
+    fn snow_line(&self) -> f32;
+    fn noise(&self) -> &Perlin;
+    fn inside(&self, x: f32, z: f32) -> bool;
+}
+
+impl Land for Terrain {
+    fn height(&self, x: f32, z: f32) -> f32 {
+        Terrain::height(self, x, z)
+    }
+    fn normal(&self, x: f32, z: f32) -> Vec3 {
+        Terrain::normal(self, x, z)
+    }
+    fn water(&self) -> Option<f32> {
+        self.water
+    }
+    fn is_water(&self, x: f32, z: f32) -> bool {
+        Terrain::is_water(self, x, z)
+    }
+    fn shore_dist(&self, x: f32, z: f32) -> f32 {
+        Terrain::shore_dist(self, x, z)
+    }
+    fn trail_strength(&self, x: f32, z: f32) -> f32 {
+        Terrain::trail_strength(self, x, z)
+    }
+    fn stream_strength(&self, x: f32, z: f32) -> f32 {
+        Terrain::stream_strength(self, x, z)
+    }
+    fn snow_line(&self) -> f32 {
+        self.hmax * 0.62
+    }
+    fn noise(&self) -> &Perlin {
+        &self.noise
+    }
+    fn inside(&self, x: f32, z: f32) -> bool {
+        Terrain::inside(self, x, z)
+    }
+}
+
+fn classify(t: &dyn Land, canopy: &dyn Fn(f32, f32) -> f32, p: Vec3, n: Vec3, rng: &mut Pcg32) -> Mat {
+    let noise = t.noise();
     let slope = 1.0 - n.y;
     let n1 = noise.fbm(p.x / 9.0, p.z / 9.0, 7.7, 3);
     let n2 = noise.fbm(p.x / 2.5, p.z / 2.5, 1.1, 2);
@@ -182,13 +234,13 @@ fn classify(t: &Terrain, canopy: &Canopy, p: Vec3, n: Vec3, rng: &mut Pcg32) -> 
     if n1 > 0.28 && n2 > -0.1 {
         mat = Mat::Soil;
     }
-    if canopy.at(p.x, p.z) > 0.45 + 0.2 * n2 {
+    if canopy(p.x, p.z) > 0.45 + 0.2 * n2 {
         mat = Mat::Litter;
     }
     if mat == Mat::GroundGrass && n1 < -0.25 && rng.chance(0.06) {
         mat = Mat::MeadowFlower;
     }
-    if let Some(level) = t.water {
+    if let Some(level) = t.water() {
         if t.shore_dist(p.x, p.z) < 2.5 + 2.0 * n2 && p.y < level + 1.2 {
             mat = Mat::Sand;
         }
@@ -203,7 +255,7 @@ fn classify(t: &Terrain, canopy: &Canopy, p: Vec3, n: Vec3, rng: &mut Pcg32) -> 
     if slope > 0.30 + 0.08 * n1 {
         mat = Mat::GroundRock;
     }
-    if p.y > t.hmax * 0.62 + 8.0 * n1 && slope < 0.45 {
+    if p.y > t.snow_line() + 8.0 * n1 && slope < 0.45 {
         mat = Mat::Snow;
     }
     mat
@@ -226,18 +278,37 @@ fn water_color(sky: &Sky, eye: Vec3, p: Vec3, sun: Vec3, glint: [f32; 3], rng: &
 #[allow(clippy::too_many_arguments)]
 pub fn ground(sk: &mut Skinner, t: &Terrain, canopy: &Canopy, sky: &Sky, view: &View, sun: Vec3, glint: [f32; 3], seed: u32) {
     let mut rng = Pcg32::new(seed as u64, 0x960d);
+    let rect = [-t.half, -t.half, t.half, t.half];
+    ground_region(sk, t, &|x, z| canopy.at(x, z), sky, view, sun, glint, &mut rng, rect, None);
+}
+
+/// Ground marks, grass blades, lake water (and, with `flow`, flowing stream
+/// water) over the rectangle [x0, z0, x1, z1].
+#[allow(clippy::too_many_arguments)]
+pub fn ground_region(
+    sk: &mut Skinner,
+    t: &dyn Land,
+    canopy: &dyn Fn(f32, f32) -> f32,
+    sky: &Sky,
+    view: &View,
+    sun: Vec3,
+    glint: [f32; 3],
+    rng: &mut Pcg32,
+    rect: [f32; 4],
+    flow: Option<&dyn Fn(f32, f32) -> Vec3>,
+) {
     let aspect = sk.aspect;
     let cell = 4.0;
-    let m = (t.size / cell) as usize;
-    let water = t.water;
-    for cj in 0..m {
-        for ci in 0..m {
-            let (x0, z0) = (-t.half + ci as f32 * cell, -t.half + cj as f32 * cell);
+    let (mx, mz) = (((rect[2] - rect[0]) / cell).ceil() as usize, ((rect[3] - rect[1]) / cell).ceil() as usize);
+    let water = t.water();
+    for cj in 0..mz {
+        for ci in 0..mx {
+            let (x0, z0) = (rect[0] + ci as f32 * cell, rect[1] + cj as f32 * cell);
             let c = Vec3::new(x0 + cell / 2.0, t.height(x0 + cell / 2.0, z0 + cell / 2.0), z0 + cell / 2.0);
             // Far land (valley walls, peaks) needs the original's denser screen
             // grid to read as solid ground rather than sky.
             let far = smoothstep(60.0, 160.0, (c - view.eye).length());
-            let sp = (0.9 - 0.35 * far) * view.glyph_at(c);
+            let sp = (1.0 - 0.4 * far) * view.glyph_at(c);
             // The original samples the screen, so slopes facing the camera
             // (valley walls, mountains) get as many glyphs as their screen
             // area. Scale by surface area x facing, never below flat density.
@@ -247,7 +318,7 @@ pub fn ground(sk: &mut Skinner, t: &Terrain, canopy: &Canopy, sky: &Sky, view: &
             let count = (cell * cell / (sp * sp) * boost + rng.next_f32()) as usize;
             for _ in 0..count {
                 let (x, z) = (x0 + rng.next_f32() * cell, z0 + rng.next_f32() * cell);
-                if !t.inside(x, z) {
+                if !t.inside(x, z) || x >= rect[2] || z >= rect[3] {
                     continue;
                 }
                 let y = t.height(x, z);
@@ -265,7 +336,7 @@ pub fn ground(sk: &mut Skinner, t: &Terrain, canopy: &Canopy, sky: &Sky, view: &
                             let ud = Vec3::new(a.cos(), 0.0, a.sin());
                             let vd = UP.cross(ud); // ud x vd = up
                             let s = g * rng.uniform(0.9, 1.15);
-                            let col = water_color(sky, view.eye, q, sun, glint, &mut rng).map(|v| v * rng.uniform(0.85, 1.15));
+                            let col = water_color(sky, view.eye, q, sun, glint, rng).map(|v| v * rng.uniform(0.85, 1.15));
                             let glyph = sk.glyph(Mat::Water);
                             sk.push(q + UP * 0.02, ud * (s * aspect), vd * s, col, 0.95, glyph, Mat::Water, CardMode::WaterLean);
                         }
@@ -273,10 +344,21 @@ pub fn ground(sk: &mut Skinner, t: &Terrain, canopy: &Canopy, sky: &Sky, view: &
                     }
                 }
                 if t.stream_strength(x, z) > 0.6 {
+                    if let Some(flow) = flow {
+                        // Flowing water: lies flat, slides along the flow.
+                        let g = view.glyph_at(p);
+                        let ud = flow(x, z);
+                        let vd = UP.cross(ud);
+                        let pw = Vec3::new(x, p.y + 0.15, z);
+                        let col = water_color(sky, view.eye, pw, sun, glint, rng).map(|v| (v * 1.1).min(1.3));
+                        let sz = g * rng.uniform(0.9, 1.1);
+                        let glyph = sk.glyph(Mat::WaterStream);
+                        sk.push(pw, ud * (sz * aspect), vd * sz, col, 0.95, glyph, Mat::WaterStream, CardMode::WaterLean);
+                    }
                     continue; // the stream's own cards cover the channel
                 }
                 let n = t.normal(x, z);
-                let mat = classify(t, canopy, p, n, &mut rng);
+                let mat = classify(t, canopy, p, n, rng);
                 let g = view.glyph_at(p);
                 // Stored flat on the surface; the shader leans it toward the
                 // current camera (as the original does for its one camera).
@@ -286,7 +368,7 @@ pub fn ground(sk: &mut Skinner, t: &Terrain, canopy: &Canopy, sky: &Sky, view: &
                 let vd = nn.cross(ud); // ud x vd = nn
                 let s = g * 1.15;
                 let mut alb = mat.def().albedo.map(|v| v * (1.0 + mat.def().var * rng.normal()));
-                let dry = smoothstep(-0.15, 0.35, t.noise.fbm(x / 30.0 + 50.0, z / 30.0, 2.2, 3));
+                let dry = smoothstep(-0.15, 0.35, t.noise().fbm(x / 30.0 + 50.0, z / 30.0, 2.2, 3));
                 if mat == Mat::GroundGrass {
                     let dc = [0.36, 0.32, 0.13];
                     alb = [0, 1, 2].map(|k| alb[k] * (1.0 - 0.6 * dry) + dc[k] * 0.6 * dry);
@@ -296,7 +378,7 @@ pub fn ground(sk: &mut Skinner, t: &Terrain, canopy: &Canopy, sky: &Sky, view: &
                 sk.push(p + n * (0.01 * s), ud * (s * aspect), vd * s, alb, alpha, glyph, mat, CardMode::GroundLean);
                 // Standing grass blades on grass.
                 let dist = (p - view.eye).length().min((p - view.focus).length() + 10.0);
-                let p_blade = 0.5 * smoothstep(160.0, 10.0, dist) * smoothstep(0.35, 0.1, 1.0 - n.y);
+                let p_blade = 0.35 * smoothstep(160.0, 10.0, dist) * smoothstep(0.35, 0.1, 1.0 - n.y);
                 if mat == Mat::GroundGrass && rng.chance(p_blade) {
                     let h = g * rng.uniform(0.9, 1.4);
                     let (tilt, tdir) = (rng.gauss(0.3), rng.uniform(0.0, TAU));
@@ -370,17 +452,22 @@ pub fn rain(sk: &mut Skinner, count: usize, seed: u32) {
     }
 }
 
-/// Leaves blown through the scene around the focus, autumn coloured.
-pub fn leaves(sk: &mut Skinner, t: &Terrain, view: &View, count: usize, half_box: f32, seed: u32) {
+/// Leaves blown through the scene, autumn coloured (legacy signature).
+pub fn leaves(sk: &mut Skinner, _t: &Terrain, view: &View, count: usize, half_box: f32, seed: u32) {
+    drifting_leaves(sk, count, half_box * 2.0, view, seed);
+}
+
+/// Blown leaves: seeds in a box of side `size` (x, z in [0, size), y the
+/// height above the camera's feet). The shader keeps the box round the
+/// camera, carries the leaves downwind and tumbles them.
+pub fn drifting_leaves(sk: &mut Skinner, count: usize, size: f32, view: &View, seed: u32) {
     let mut rng = Pcg32::new(seed as u64, 0x1ea5);
     let aspect = sk.aspect;
     let palette = [[0.75, 0.35, 0.08], [0.85, 0.62, 0.12], [0.62, 0.16, 0.06], [0.40, 0.48, 0.12], [0.70, 0.50, 0.20]];
     let chars = [Mat::LeafOak, Mat::LeafMaple, Mat::LeafBirch];
-    let g = view.glyph_at(view.focus) * 0.8;
+    let g = (15.0 * 12.0 / view.focal).max(0.12);
     for _ in 0..count {
-        let (x, z) = (view.focus.x + rng.uniform(-half_box, half_box), view.focus.z + rng.uniform(-half_box, half_box));
-        let base = if t.inside(x, z) { t.height(x, z).max(t.water.unwrap_or(f32::NEG_INFINITY)) } else { view.focus.y };
-        let p = Vec3::new(x, base + rng.uniform(0.3, 5.0), z);
+        let p = Vec3::new(rng.uniform(0.0, size), rng.uniform(0.3, 5.0), rng.uniform(0.0, size));
         let ax = unit(rng.gauss3(1.0));
         let ax = if ax == Vec3::ZERO { UP } else { ax };
         let (u, v) = basis(ax);

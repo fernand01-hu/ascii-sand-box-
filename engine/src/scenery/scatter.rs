@@ -31,7 +31,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn is_conifer(self) -> bool {
+    pub fn is_conifer(self) -> bool {
         matches!(self, Kind::Tree(TreeKind::Pine | TreeKind::Spruce))
     }
 }
@@ -45,7 +45,7 @@ pub enum Biome {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum LayerKind {
+pub(crate) enum LayerKind {
     Trees,
     Bushes,
     Rocks,
@@ -53,18 +53,18 @@ enum LayerKind {
     Shore,
 }
 
-struct Layer {
-    which: LayerKind,
-    cell: f32,
-    density: f32,
-    forest: Option<(f32, f32)>,
-    max_dist: f32,
-    clear: f32,
-    open: f32,
-    kinds: Vec<(Kind, f32)>,
+pub(crate) struct Layer {
+    pub which: LayerKind,
+    pub cell: f32,
+    pub density: f32,
+    pub forest: Option<(f32, f32)>,
+    pub max_dist: f32,
+    pub clear: f32,
+    pub open: f32,
+    pub kinds: Vec<(Kind, f32)>,
 }
 
-fn layers(b: Biome) -> Vec<Layer> {
+pub(crate) fn layers(b: Biome) -> Vec<Layer> {
     use BushKind as B;
     use Kind::*;
     use PlantKind as P;
@@ -129,7 +129,7 @@ impl Library {
         Library { seed, index: HashMap::new(), assets: Vec::new() }
     }
 
-    fn get(&mut self, kind: Kind, variant: u32, lod: u8) -> usize {
+    pub fn get(&mut self, kind: Kind, variant: u32, lod: u8) -> usize {
         if let Some(&i) = self.index.get(&(kind, variant, lod)) {
             return i;
         }

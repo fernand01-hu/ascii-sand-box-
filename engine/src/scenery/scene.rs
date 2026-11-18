@@ -118,7 +118,7 @@ pub fn build_scene(preset: ScenePreset, seed: u32, glyph_aspect: f32) -> SceneOu
     let mut target = eye + dir * 35.0;
     target.y = target.y.max(t.height(target.x, target.z) + 1.0);
     let fov: f32 = 50.0;
-    let view = View { eye, focus: target, focal: 500.0 / (fov.to_radians() / 2.0).tan() };
+    let view = View { eye, focus: target, focal: 500.0 / (fov.to_radians() / 2.0).tan(), near: 2.0 };
     let sun = sun_for(day);
     let glint = if day { [1.0, 0.98, 0.92] } else { [1.0, 0.86, 0.62] };
     let sky = Sky::new(seed, if day { &DAY } else { &DUSK });
@@ -127,21 +127,7 @@ pub fn build_scene(preset: ScenePreset, seed: u32, glyph_aspect: f32) -> SceneOu
     let glyphs = Glyphs::new();
     let mut sk = Skinner::new(&glyphs, 0.1, glyph_aspect, seed as u64);
     for p in &sc.placed {
-        let a = &sc.library.assets[p.asset];
-        sk.g = view.glyph_at(p.pl.pos);
-        sk.solids_on = (p.pl.pos - eye).length() < 120.0;
-        let start = sk.card_count();
-        sk.skin(a, p.pl);
-        // Budget: ~glyph cells covered by the silhouette, a few per cell
-        // (3 near, 1.8 far as in the original, x1.5 for depth seen when orbiting).
-        let (lo, hi) = a.bounds();
-        let w = (hi.x - lo.x).max(hi.z - lo.z) * p.pl.scale;
-        let h = (hi.y - lo.y.max(0.0)).max(0.1) * p.pl.scale;
-        let cells = (w * h * 0.75) / (sk.g * sk.g * sk.aspect);
-        let d = (p.pl.pos - eye).length();
-        // Generous: the renderer thins far chunks per frame (screen-space LOD).
-        let per_cell = 3.5 * (1.8 + 1.2 * super::asset::smoothstep(90.0, 25.0, d));
-        sk.cap_since(start, (cells * per_cell).ceil() as usize + 8);
+        skin_placed(&mut sk, &sc.library.assets[p.asset], p.pl, &view);
     }
     landscape::ground(&mut sk, &t, &sc.canopy, &sky, &view, sun, glint, seed);
     landscape::streams(&mut sk, &t, &sky, &view, sun, glint, seed);
@@ -150,7 +136,8 @@ pub fn build_scene(preset: ScenePreset, seed: u32, glyph_aspect: f32) -> SceneOu
     let occ = Occlusion::with_max_cells(&sk.occluders, 2.0e6);
     sk.light(&occ, sun, &|p| t.sun_visibility(p, sun), Some(eye));
 
-    landscape::sky_dome(&mut sk, &sky, target, 900.0, &view, seed);
+    // Built round the origin: the shader keeps the dome centred on the camera.
+    landscape::sky_dome(&mut sk, &sky, Vec3::ZERO, 900.0, &view, seed);
     landscape::rain(&mut sk, 7000, seed);
     let half_box = 45.0;
     landscape::leaves(&mut sk, &t, &view, 900, half_box, seed);
@@ -207,6 +194,25 @@ pub fn build_scene(preset: ScenePreset, seed: u32, glyph_aspect: f32) -> SceneOu
         colliders,
         heights: t.h.clone(),
     }
+}
+
+/// Skin one placed asset with the glyph size its distance calls for, opaque
+/// bodies only when near, and a per-object character budget.
+pub fn skin_placed(sk: &mut Skinner, a: &super::asset::Asset, pl: Placement, view: &View) {
+    let eye = view.eye;
+    sk.g = view.glyph_at(pl.pos);
+    sk.solids_on = (pl.pos - eye).length() < 120.0;
+    let start = sk.card_count();
+    sk.skin(a, pl);
+    // Budget: ~glyph cells covered by the silhouette, a few per cell (3 near,
+    // 1.8 far as in the original, generous so crowns stay full).
+    let (lo, hi) = a.bounds();
+    let w = (hi.x - lo.x).max(hi.z - lo.z) * pl.scale;
+    let h = (hi.y - lo.y.max(0.0)).max(0.1) * pl.scale;
+    let cells = (w * h * 0.75) / (sk.g * sk.g * sk.aspect);
+    let d = (pl.pos - eye).length();
+    let per_cell = 3.5 * (1.8 + 1.2 * super::asset::smoothstep(90.0, 25.0, d));
+    sk.cap_since(start, (cells * per_cell).ceil() as usize + 8);
 }
 
 /// Number of cards in a scene's buffer.

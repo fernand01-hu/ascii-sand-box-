@@ -20,3 +20,4 @@ pub mod skin;
 pub mod style;
 pub mod terrain;
 pub mod trees;
+pub mod world;

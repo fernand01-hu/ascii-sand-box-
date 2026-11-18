@@ -8,6 +8,8 @@ import { createGlyphAtlas, glyphAspect, type GlyphAtlas } from '../render/atlas'
 import { CALM, DEFAULT_LIGHTING, SURFACE_MATERIAL, type Environment, type Lighting, type MaterialDef } from '../render/cards';
 import { BACKGROUND } from '../render/viewer';
 import { Player } from './player';
+import { GridGround, type Ground } from './physics';
+import { WorldStreamer } from './world';
 import type { WalkData } from '../engine/protocol';
 
 /** Lighting of the scenery `dusk` preset (light.py): stronger sky, no hemisphere falloff. */
@@ -117,6 +119,8 @@ export class App {
   };
   /** The player while in play mode. */
   player: Player | null = null;
+  /** The infinite world while one is shown. */
+  world: WorldStreamer | null = null;
   private walk: WalkData | null = null;
   private env: Environment = { ...CALM };
   private atlas: GlyphAtlas;
@@ -185,22 +189,33 @@ export class App {
    * lake stop you.
    */
   play(): boolean {
-    if (!this.walk || this.player) return false;
+    if (this.player) return false;
+    const ground: Ground | null = this.world ?? (this.walk ? new GridGround(this.walk) : null);
+    if (!ground) return false;
     const v = this.viewer;
     const cam = v.camera;
     const t = v.controls.target;
     const yaw = Math.atan2(-(t.x - cam.position.x), -(t.z - cam.position.z));
-    const world = { ...this.walk, waterMask: this.walk.waterMask };
-    this.player = new Player(world, { x: cam.position.x, z: cam.position.z, yaw }, v.renderer.domElement);
+    this.player = new Player(ground, { x: cam.position.x, z: cam.position.z, yaw }, v.renderer.domElement);
     v.controls.enabled = false;
     cam.near = 0.05;
     cam.updateProjectionMatrix();
-    const player = this.player;
-    v.onFrame = (dt) => player.update(dt, cam);
-    player.placeCamera(cam);
+    this.player.placeCamera(cam);
     this.state.playing = true;
+    this.updateFrameHook();
     v.requestRender();
     return true;
+  }
+
+  /** One per-frame callback: the player moves, the world streams round the camera. */
+  private updateFrameHook(): void {
+    const v = this.viewer;
+    v.onFrame = this.player || this.world
+      ? (dt) => {
+          this.player?.update(dt, v.camera);
+          this.world?.update(v.camera.position);
+        }
+      : null;
   }
 
   /** Back to orbiting, around a point in front of where the player stood. */
@@ -208,9 +223,9 @@ export class App {
     const p = this.player;
     if (!p) return;
     const v = this.viewer;
-    v.onFrame = null;
     p.dispose();
     this.player = null;
+    this.updateFrameHook();
     const cam = v.camera;
     const dir = cam.getWorldDirection(cam.position.clone());
     v.controls.target.copy(cam.position).addScaledVector(dir, 20);
@@ -311,6 +326,40 @@ export class App {
   leaveScene(): void {
     this.stopPlaying();
     this.walk = null;
+    this.world?.dispose();
+    this.world = null;
+    this.viewer.clearBodies();
+    this.updateFrameHook();
+  }
+
+  /**
+   * An endless landscape streamed in chunks round the camera (or the player:
+   * press P to walk). Terrain, lakes, streams, trails, biomes and plants go
+   * on forever; detail follows you.
+   */
+  showWorld(seed = 1, day = false): Promise<void> {
+    return this.run('world', () => this.engine.worldInit(seed, day, glyphAspect()), (res) => {
+      if (!res.world || !res.materials || !res.sunDir || !res.env) throw new Error('world result is incomplete');
+      this.leaveScene();
+      this.resetEnvironment(true, day ? DAY_BACKGROUND : DUSK_BACKGROUND);
+      const haze: [number, number, number] = day ? [176 / 255, 194 / 255, 214 / 255] : [74 / 255, 72 / 255, 104 / 255];
+      // Haze thick enough that the edge of the loaded area melts away.
+      Object.assign(this.env, { windDir: res.env.windDir, leafBox: res.env.leafBox, rainBox: res.env.rainBox, fogDist: 140, fog: 1, hazeColor: haze });
+      const v = this.viewer;
+      v.cards.setAtlas(this.atlasFor(res.charset));
+      v.cards.setMaterials(materialsFromTable(res.materials, res.materialFloats));
+      v.cards.setLighting({ ...(day ? SCENERY_DAY : SCENERY_LIGHTING), sunDir: new Vector3(...res.sunDir) });
+      v.setCards(res.cards, res.stride, res.chunks); // sky, rain, leaves
+      const [sx, sy, sz] = res.world.spawn;
+      v.setFreeScene(new Vector3(sx, sy + 1, sz - 30), new Vector3(sx, sy + 7, sz), { fov: 50, far: 3000 });
+      v.controls.maxDistance = 400;
+      this.world = new WorldStreamer(this.engine, v, res.world, (e) => console.warn(`[ascii] world chunk failed: ${e instanceof Error ? e.message : String(e)}`));
+      this.world.update(v.camera.position, true);
+      this.updateFrameHook();
+      this.setEnvironment({ wind: 0.3, rain: 0, leaves: 0.5 });
+      Object.assign(this.state, { triangles: 0, dropped: 0, glyphPx: 0 });
+      console.info(`[ascii] world seed ${seed}: streaming chunks of ${res.world.chunkSize} m round (${sx.toFixed(0)}, ${sz.toFixed(0)})`);
+    });
   }
 
   async loadUrl(url: string, name = url.split('/').pop() ?? url): Promise<void> {

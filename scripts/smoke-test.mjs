@@ -204,6 +204,24 @@ for (const preset of ['meadow', 'forest', 'lake', 'valley', 'alpine']) {
     assert.equal(modes[6], 900, 'leaf particles');
   });
 }
+test('infinite world: chunks join seamlessly, detail falls with distance', () => {
+  const [S, G] = wasm.worldConsts();
+  const w = new wasm.InfiniteWorld(1, false);
+  const sky = w.skyCards(0.64);
+  assert.ok(sky.length / STRIDE > 20_000, 'sky, rain, leaves');
+  const eye = [16, w.height(16, 16) + 1.7, 16];
+  const t = performance.now();
+  const build = (cx, cz) => { const c = w.buildChunk(cx, cz, ...eye, 0.64); const r = { cards: c.takeCards(), h: c.takeHeights(), col: c.takeColliders() }; c.free(); return r; };
+  const a = build(0, 0), b = build(1, 0), far = build(8, 3);
+  console.log(`       near ${a.cards.length / STRIDE} cards, neighbour ${b.cards.length / STRIDE}, far ${far.cards.length / STRIDE}, ${(performance.now() - t).toFixed(0)} ms`);
+  const n = G + 1;
+  for (let j = 0; j < n; j++) assert.ok(Math.abs(a.h[j * n + G] - b.h[j * n]) < 1e-3, 'shared chunk edge heights match');
+  assert.ok(far.cards.length < a.cards.length / 3, 'far chunks use fewer, bigger glyphs');
+  for (const c of [a, b, far]) for (let i = 0; i < c.cards.length; i++) assert.ok(Number.isFinite(c.cards[i]));
+  assert.equal(S, 32);
+  w.free();
+});
+
 test('scenery rejects bad input', () => {
   assert.throws(() => wasm.buildScene('desert', 1, 0.64), /unknown scene/);
   assert.throws(() => wasm.buildGallery('volcanoes', 1, 0.64), /unknown gallery/);

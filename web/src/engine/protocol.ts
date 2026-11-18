@@ -54,6 +54,9 @@ export interface EngineResult {
   env?: SceneEnv;
   /** Landscapes: terrain, water and colliders for the player physics. */
   walk?: WalkData;
+  /** Infinite world: setup (after worldInit) or one streamed chunk. */
+  world?: WorldInfo;
+  chunk?: WorldChunkData;
   /** Render chunks (see engine/chunks.ts): CHUNK_FLOATS per chunk. */
   chunks?: Float32Array;
 }
@@ -64,6 +67,25 @@ export interface WalkData {
   size: number;
   water: number | null;
   waterMask: Uint8Array;
+  /** x, z, radius, top y per collider. */
+  colliders: Float32Array;
+}
+
+export interface WorldInfo {
+  chunkSize: number;
+  grid: number;
+  water: number;
+  /** A dry place to start, and its ground height. */
+  spawn: [number, number, number];
+}
+
+export interface WorldChunkData {
+  cx: number;
+  cz: number;
+  /** Eye the glyph sizes were chosen for. */
+  eye: [number, number, number];
+  /** (grid + 1)^2 heights, 1 m apart, from the chunk corner. */
+  heights: Float32Array;
   /** x, z, radius, top y per collider. */
   colliders: Float32Array;
 }
@@ -95,7 +117,9 @@ export type WorkerRequest =
   | { kind: 'generate'; id: number; settings: CardSettings }
   | ({ kind: 'testbed'; id: number } & TestbedRequest)
   | { kind: 'gallery'; id: number; category: GalleryCategory; seed: number; glyphAspect: number }
-  | { kind: 'scene'; id: number; preset: ScenePreset; seed: number; glyphAspect: number };
+  | { kind: 'scene'; id: number; preset: ScenePreset; seed: number; glyphAspect: number }
+  | { kind: 'worldInit'; id: number; seed: number; day: boolean; glyphAspect: number }
+  | { kind: 'worldChunk'; id: number; cx: number; cz: number; eye: [number, number, number]; glyphAspect: number };
 
 export type WorkerResponse =
   | ({ kind: 'result'; id: number } & EngineResult)

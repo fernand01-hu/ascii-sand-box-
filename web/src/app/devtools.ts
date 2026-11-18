@@ -5,6 +5,7 @@
 //   key 5         testbed: the procedural pine
 //   keys 6-9      scenery galleries: rocks, plants, bushes, trees
 //   M F L V A     landscapes: meadow, forest, lake, valley, alpine
+//   I             the infinite world (orbit / pan to travel, or P to walk)
 //   W             wind: calm / breeze / storm
 //   R             rain on / off
 //   B             blowing leaves on / off
@@ -28,6 +29,9 @@ export interface DebugHandle extends AppState {
   /** Freeze the animation clock (seconds), or null to let it run. */
   freezeTime(t: number | null): void;
   play(): boolean;
+  loadWorld(seed?: number, day?: boolean): Promise<void>;
+  /** Infinite world stats: chunks loaded / in flight / built so far. */
+  worldStats(): { loaded: number; pending: number; built: number } | null;
   stopPlaying(): void;
   /**
    * Test hook: run the player physics for `seconds` with fixed input, in
@@ -65,6 +69,8 @@ export function installDevtools(app: App): void {
     setEnvironment: (w: Partial<{ wind: number; rain: number; leaves: number }>) => app.setEnvironment(w),
     freezeTime: (t: number | null) => app.viewer.freezeTime(t),
     play: () => app.play(),
+    loadWorld: (seed?: number, day?: boolean) => app.showWorld(seed, day),
+    worldStats: () => (app.world ? { loaded: app.world.loadedCount, pending: app.world.pending, built: app.world.built } : null),
     stopPlaying: () => app.stopPlaying(),
     playSteps: (input: Parameters<DebugHandle['playSteps']>[0], seconds: number) => {
       const p = app.player;
@@ -99,6 +105,7 @@ export function installDevtools(app: App): void {
     const scenes: Record<string, ScenePreset> = { m: 'meadow', f: 'forest', l: 'lake', v: 'valley', a: 'alpine' };
     const k = e.key.toLowerCase();
     if (scenes[k]) return void app.showScene(scenes[k]);
+    if (k === 'i') return void app.showWorld();
     const w = app.state.weather;
     if (k === 'w') return app.setEnvironment({ wind: w.wind < 0.2 ? 0.35 : w.wind < 0.6 ? 0.85 : 0 });
     if (k === 'r') return app.setEnvironment({ rain: w.rain > 0 ? 0 : 1 });

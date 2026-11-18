@@ -106,7 +106,7 @@ export interface Environment {
   hazeColor: [number, number, number];
   /** Box (x, y, z sizes) rain falls in, following the camera. */
   rainBox: [number, number, number];
-  /** Box (min x, min z, size) blown leaves travel in. */
+  /** Blown leaves travel in a box of side [2] round the camera ([0], [1] unused). */
   leafBox: [number, number, number];
 }
 
@@ -196,6 +196,10 @@ void main() {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     return;
   }
+  if (cardMode > 3.5 && cardMode < 4.5) {
+    // Sky dome and stars: built round the origin, kept centred on the camera.
+    center = iCenter + cameraPosition;
+  }
   if (rain) {
     // Seeds live in a box that wraps round the camera: rain everywhere.
     vec3 fall = vec3(uWind.x * ws * 9.0, -14.0, uWind.y * ws * 9.0) * uTime;
@@ -209,17 +213,19 @@ void main() {
     float edge = 1.0 - smoothstep(0.35, 0.5, max(q.x, max(q.y, q.z)));
     alphaMul = step(h, uRain) * edge * smoothstep(2.5, 6.0, length(rel));
   } else if (leaf) {
-    // Carried downwind, wrapping in the leaf box, bobbing and tumbling.
+    // Carried downwind in a box that stays round the camera (seeds hold the
+    // height above the camera's feet), bobbing and tumbling.
     float speed = (1.5 + 7.0 * ws) * (0.7 + 0.6 * h);
     vec3 p = iCenter + wind3 * speed * uTime;
-    p.xz = uLeafBox.xy + mod(p.xz - uLeafBox.xy, vec2(uLeafBox.z));
-    p.y += sin(uTime * (1.1 + h) + h * 40.0) * 0.6 + sin(uTime * 0.37 + h * 13.0) * 0.4;
+    vec2 boxMin = cameraPosition.xz - 0.5 * uLeafBox.z;
+    p.xz = boxMin + mod(p.xz - boxMin, vec2(uLeafBox.z));
+    p.y = cameraPosition.y - 1.6 + iCenter.y + sin(uTime * (1.1 + h) + h * 40.0) * 0.6 + sin(uTime * 0.37 + h * 13.0) * 0.4;
     center = p;
     vec3 axis = normalize(vec3(h - 0.5, 0.6, fract(h * 7.3) - 0.5));
     float spin = uTime * (1.5 + 3.0 * fract(h * 3.1)) * (0.3 + ws);
     U = rotateAbout(iU, axis, spin);
     V = rotateAbout(iV, axis, spin);
-    vec2 e = min(p.xz - uLeafBox.xy, uLeafBox.xy + uLeafBox.z - p.xz);
+    vec2 e = min(p.xz - boxMin, boxMin + uLeafBox.z - p.xz);
     alphaMul = step(fract(h * 5.7), uLeaves) * smoothstep(0.03, 0.15, ws) * smoothstep(0.0, 4.0, min(e.x, e.y));
   }
 
@@ -372,6 +378,7 @@ export class CardLayer {
   readonly group = new Group();
   readonly material: ShaderMaterial;
   private chunks: Chunk[] = [];
+  private sets = new Map<string, Chunk[]>();
   private count = 0;
   /** Cards actually submitted in the last frame (after frustum culling). */
   drawn = 0;
@@ -492,13 +499,20 @@ export class CardLayer {
    * by `chunks` (see engine/chunks.ts); without chunks it is one global chunk.
    */
   setCards(data: Float32Array, stride: number, chunks?: Float32Array): void {
+    this.clear();
+    this.addSet('main', data, stride, chunks);
+  }
+
+  /** Add (or replace) a named set of cards, e.g. one streamed world chunk. */
+  addSet(key: string, data: Float32Array, stride: number, chunks?: Float32Array): void {
+    this.removeSet(key);
     if (stride !== CARD_STRIDE) {
       throw new Error(`card stride mismatch: engine sends ${stride}, renderer expects ${CARD_STRIDE}`);
     }
     if (data.length % stride !== 0) throw new Error('card buffer length is not a multiple of the stride');
     const total = data.length / stride;
     const table = chunks ?? new Float32Array([0, total, 0, 0, 0, 0, 0, 0, 0, 1]);
-    this.clear();
+    const set: Chunk[] = [];
     for (let c = 0; c + CHUNK_FLOATS <= table.length; c += CHUNK_FLOATS) {
       const [start = 0, count = 0, lx = 0, ly = 0, lz = 0, hx = 0, hy = 0, hz = 0, size = 0, global = 0] = table.subarray(c, c + CHUNK_FLOATS);
       if (count <= 0) continue;
@@ -524,10 +538,25 @@ export class CardLayer {
       mesh.onBeforeRender = () => {
         this.drawn += chunk.count;
       };
+      set.push(chunk);
       this.chunks.push(chunk);
       this.group.add(mesh);
     }
-    this.count = total;
+    this.sets.set(key, set);
+    this.count += total;
+  }
+
+  /** Remove a named set and free its GPU buffers. */
+  removeSet(key: string): void {
+    const set = this.sets.get(key);
+    if (!set) return;
+    for (const c of set) {
+      this.group.remove(c.mesh);
+      c.mesh.geometry.dispose();
+      this.count -= c.count;
+    }
+    this.chunks = this.chunks.filter((c) => !set.includes(c));
+    this.sets.delete(key);
   }
 
   private clear(): void {
@@ -536,6 +565,8 @@ export class CardLayer {
       c.mesh.geometry.dispose(); // frees the GPU buffers
     }
     this.chunks = [];
+    this.sets.clear();
+    this.count = 0;
   }
 
   dispose(): void {

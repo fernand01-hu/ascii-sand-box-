@@ -70,13 +70,79 @@ async function pump(): Promise<void> {
  *  else is pointless as soon as any newer request exists. */
 function isSuperseded(req: WorkerRequest, newer: WorkerRequest[]): boolean {
   if (newer.length === 0) return false;
-  if (req.kind === 'load') return newer.some((r) => r.kind !== 'generate');
+  const replacesScene = (r: WorkerRequest) => r.kind !== 'generate' && r.kind !== 'worldChunk';
+  if (req.kind === 'load' || req.kind === 'worldInit') return newer.some(replacesScene);
+  // Streamed chunks: only a new scene or world makes them pointless.
+  if (req.kind === 'worldChunk') return newer.some(replacesScene);
   return true;
 }
+
+let world: wasm.InfiniteWorld | null = null;
 
 async function handle(req: WorkerRequest): Promise<void> {
   try {
     const engine = await ready;
+    if (req.kind === 'worldInit') {
+      world?.free();
+      world = new wasm.InfiniteWorld(req.seed >>> 0, req.day);
+      const t0 = performance.now();
+      const cards = world.skyCards(req.glyphAspect);
+      const [chunkSize = 32, grid = 32, water = 0] = wasm.worldConsts();
+      // A dry, fairly flat place near the origin to start from.
+      let spawn: [number, number, number] = [0, world.height(0, 0), 0];
+      search: for (let r = 0; r < 400; r += 4) {
+        for (let k = 0; k < 24; k++) {
+          const a = (k / 24) * Math.PI * 2;
+          const x = r * Math.cos(a), z = r * Math.sin(a);
+          const h = world.height(x, z);
+          const slope = Math.abs(world.height(x + 2, z) - world.height(x - 2, z)) + Math.abs(world.height(x, z + 2) - world.height(x, z - 2));
+          if (h > water + 1 && h < 20 && slope < 1.2) {
+            spawn = [x, h, z];
+            break search;
+          }
+        }
+      }
+      const stride = wasm.cardStride();
+      const materials = wasm.sceneryMaterials();
+      const [sx = 0, sy = 1, sz = 0] = wasm.sceneSunDir(req.day);
+      postResult(
+        {
+          kind: 'result', id: req.id, mesh: null, cards, stride, count: cards.length / stride, charset: wasm.sceneryCharset(),
+          timings: { loadMs: 0, generateMs: performance.now() - t0 }, sunDir: [sx, sy, sz], materials, materialFloats: wasm.materialFloats(),
+          env: { day: req.day, windDir: [0.89, -0.45], leafBox: [0, 0, 90], rainBox: [36, 24, 36] },
+          world: { chunkSize, grid, water, spawn },
+        },
+        [cards.buffer, materials.buffer],
+        true,
+      );
+      return;
+    }
+    if (req.kind === 'worldChunk') {
+      if (!world) throw new Error('no world: call worldInit first');
+      const t0 = performance.now();
+      const [ex, ey, ez] = req.eye;
+      const c = world.buildChunk(req.cx, req.cz, ex, ey, ez, req.glyphAspect);
+      try {
+        const cards = c.takeCards();
+        const positions = c.takeBody();
+        const normals = c.takeBodyNormals();
+        const heights = c.takeHeights();
+        const colliders = c.takeColliders();
+        const stride = wasm.cardStride();
+        postResult(
+          {
+            kind: 'result', id: req.id, cards, stride, count: cards.length / stride, charset: wasm.sceneryCharset(),
+            mesh: { positions, normals, triangles: positions.length / 9, dropped: 0 },
+            timings: { loadMs: 0, generateMs: performance.now() - t0 },
+            chunk: { cx: req.cx, cz: req.cz, eye: req.eye, heights, colliders },
+          },
+          [cards.buffer, positions.buffer, normals.buffer, heights.buffer, colliders.buffer],
+        );
+      } finally {
+        c.free();
+      }
+      return;
+    }
     if (req.kind === 'gallery' || req.kind === 'scene') {
       const t0 = performance.now();
       const scene = req.kind === 'gallery'

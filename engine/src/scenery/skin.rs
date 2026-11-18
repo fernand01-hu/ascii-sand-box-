@@ -14,7 +14,7 @@
 //! Smaller sprites are enlarged and thinned out, bigger ones split.
 
 use super::asset::{basis, smoothstep, unit, Asset, Placement, RngExt, UP};
-use super::style::{charset, Bark, Mat, Pattern, DIM_CHARS, MATERIALS, MID_CHARS};
+use super::style::{charset, Bark, Mat, Pattern, MATERIALS, MID_CHARS};
 use crate::cards::{layout, write3, MATERIAL_SHIFT, STRIDE};
 use crate::math::Vec3;
 use crate::rng::Pcg32;
@@ -83,7 +83,6 @@ pub struct Glyphs {
     index: [u32; 128],
     mats: Vec<Picker>,
     barks: Vec<[Picker; 4]>,
-    dim: Picker,
     mid: Picker,
 }
 
@@ -109,7 +108,6 @@ impl Glyphs {
                     [d.plate, d.mid, d.fissure, d.upper].map(|s| Picker::new(s, None, &index))
                 })
                 .collect(),
-            dim: Picker::new(DIM_CHARS, None, &index),
             mid: Picker::new(MID_CHARS, None, &index),
             index,
             charset: cs,
@@ -327,6 +325,34 @@ impl<'a> Skinner<'a> {
         }
     }
 
+    /// Only the shadow-casting part of an asset (for objects just outside
+    /// a chunk, whose shadows fall into it): no cards.
+    pub fn add_occluders(&mut self, asset: &Asset, pl: Placement) {
+        for s in &asset.sprites {
+            let size = s.size * pl.scale;
+            let f = match s.mat {
+                Mat::NeedlePine | Mat::NeedleSpruce | Mat::NeedleJuniper => 1.25,
+                Mat::GrassBlade | Mat::GrassTall => 0.4,
+                _ => 1.0,
+            };
+            self.occluders.push((pl.point(s.pos), size * size * 0.6 * f));
+        }
+        for s in &asset.surfels {
+            let sp = s.spacing * pl.scale;
+            self.occluders.push((pl.point(s.pos), sp * sp * 4.0));
+        }
+        for w in &asset.wood {
+            let (p0, p1, r) = (pl.point(w.p0), pl.point(w.p1), w.r * pl.scale);
+            if r > 0.015 {
+                let len = (p1 - p0).length();
+                let cnt = (len / 0.15).ceil().max(1.0) as usize;
+                for k in 0..cnt {
+                    self.occluders.push((p0 + (p1 - p0) * ((k as f32 + 0.5) / cnt as f32), 2.0 * r * len / cnt as f32 * 1.5));
+                }
+            }
+        }
+    }
+
     /// Atlas index of one specific character (it must be in the charset).
     pub fn glyph_for_char(&self, c: char) -> u32 {
         self.glyphs.index[(c as usize).min(127)]
@@ -448,8 +474,9 @@ impl<'a> Skinner<'a> {
                     self.occluders.push((q, 2.0 * r * len / cnt as f32 * 1.5));
                 }
             }
-            // Twigs thinner than a pixel of a glyph: the leaves hide them.
-            if 2.0 * r <= g / 15.0 && w.level > 1 {
+            // Fine twigs sit inside the foliage, which hides them (the original
+            // pine drew none); thin ones much smaller than a glyph neither.
+            if w.level >= 3 || (w.level == 2 && 2.0 * r < g * 0.35) {
                 continue;
             }
             let rel_h = w.p0.y.max(0.0) / height;

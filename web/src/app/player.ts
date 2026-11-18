@@ -4,7 +4,7 @@
 //   mouse          look (click the view to capture the mouse, Esc to release)
 
 import type { PerspectiveCamera } from 'three';
-import { Physics, PLAYER, type Input, type PlayerState, type World } from './physics';
+import { Physics, PLAYER, type Ground, type Input, type PlayerState } from './physics';
 
 export class Player {
   readonly physics: Physics;
@@ -14,8 +14,8 @@ export class Player {
   /** Mouse look sensitivity, radians per pixel. */
   sensitivity = 0.0022;
 
-  constructor(world: World, start: { x: number; z: number; yaw: number }, private canvas: HTMLCanvasElement) {
-    this.physics = new Physics(world);
+  constructor(ground: Ground, start: { x: number; z: number; yaw: number }, private canvas: HTMLCanvasElement) {
+    this.physics = new Physics(ground);
     this.state = this.physics.spawn(start.x, start.z, start.yaw);
     const on = <K extends keyof WindowEventMap>(t: K, f: (e: WindowEventMap[K]) => void) => {
       window.addEventListener(t, f);

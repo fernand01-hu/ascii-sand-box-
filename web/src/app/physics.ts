@@ -17,6 +17,75 @@ export interface World {
   colliders: Float32Array;
 }
 
+/** What the physics asks about the world (finite scene or streamed chunks). */
+export interface Ground {
+  /** Ground height, or NaN where the world is not loaded yet. */
+  height(x: number, z: number): number;
+  isWater(x: number, z: number): boolean;
+  /** Inside the playable area (and loaded). */
+  inBounds(x: number, z: number): boolean;
+  /** Colliders near (x, z): calls `f(x, z, radius, top)` for each. */
+  collidersNear(x: number, z: number, f: (cx: number, cz: number, r: number, top: number) => void): void;
+}
+
+/** Colliders bucketed on a grid, for fast nearby lookups. */
+export class ColliderGrid {
+  private grid = new Map<number, number[]>();
+  constructor(readonly c: Float32Array, private cell = 4) {
+    for (let i = 0; i + 4 <= c.length; i += 4) {
+      const r = c[i + 2]! + PLAYER.radius;
+      const x0 = Math.floor((c[i]! - r) / cell), x1 = Math.floor((c[i]! + r) / cell);
+      const z0 = Math.floor((c[i + 1]! - r) / cell), z1 = Math.floor((c[i + 1]! + r) / cell);
+      for (let gx = x0; gx <= x1; gx++) {
+        for (let gz = z0; gz <= z1; gz++) {
+          const k = gx * 100003 + gz;
+          const list = this.grid.get(k);
+          if (list) list.push(i);
+          else this.grid.set(k, [i]);
+        }
+      }
+    }
+  }
+  near(x: number, z: number, f: (cx: number, cz: number, r: number, top: number) => void): void {
+    const c = this.c;
+    for (const i of this.grid.get(Math.floor(x / this.cell) * 100003 + Math.floor(z / this.cell)) ?? []) f(c[i]!, c[i + 1]!, c[i + 2]!, c[i + 3]!);
+  }
+}
+
+/** A finite scene's heightfield as a Ground. */
+export class GridGround implements Ground {
+  private colliders: ColliderGrid;
+  constructor(readonly world: World) {
+    this.colliders = new ColliderGrid(world.colliders);
+  }
+  height(x: number, z: number): number {
+    const { n, size, heights } = this.world;
+    const half = size / 2;
+    const res = size / (n - 1);
+    const fx = Math.min(Math.max((x + half) / res, 0), n - 1.001);
+    const fz = Math.min(Math.max((z + half) / res, 0), n - 1.001);
+    const ix = Math.floor(fx), iz = Math.floor(fz);
+    const tx = fx - ix, tz = fz - iz;
+    const h = (i: number, j: number) => heights[j * n + i]!;
+    return (h(ix, iz) * (1 - tx) + h(ix + 1, iz) * tx) * (1 - tz) + (h(ix, iz + 1) * (1 - tx) + h(ix + 1, iz + 1) * tx) * tz;
+  }
+  isWater(x: number, z: number): boolean {
+    const { n, size, waterMask, water } = this.world;
+    if (water === null || waterMask.length === 0) return false;
+    const res = size / (n - 1);
+    const ix = Math.round((x + size / 2) / res), iz = Math.round((z + size / 2) / res);
+    if (ix < 0 || iz < 0 || ix >= n || iz >= n) return false;
+    return waterMask[iz * n + ix] === 1;
+  }
+  inBounds(x: number, z: number): boolean {
+    const lim = this.world.size / 2 - 2;
+    return Math.abs(x) < lim && Math.abs(z) < lim;
+  }
+  collidersNear(x: number, z: number, f: (cx: number, cz: number, r: number, top: number) => void): void {
+    this.colliders.near(x, z, f);
+  }
+}
+
 export interface PlayerState {
   /** Feet position. */
   x: number;
@@ -56,51 +125,20 @@ export const PLAYER = {
 
 export class Physics {
   private acc = 0;
-  private grid = new Map<number, number[]>();
-  private readonly cell = 4;
 
-  constructor(readonly world: World) {
-    const c = world.colliders;
-    for (let i = 0; i + 4 <= c.length; i += 4) {
-      const r = c[i + 2]! + PLAYER.radius;
-      const x0 = Math.floor((c[i]! - r) / this.cell), x1 = Math.floor((c[i]! + r) / this.cell);
-      const z0 = Math.floor((c[i + 1]! - r) / this.cell), z1 = Math.floor((c[i + 1]! + r) / this.cell);
-      for (let gx = x0; gx <= x1; gx++) {
-        for (let gz = z0; gz <= z1; gz++) {
-          const k = gx * 100003 + gz;
-          const list = this.grid.get(k);
-          if (list) list.push(i);
-          else this.grid.set(k, [i]);
-        }
-      }
-    }
-  }
+  constructor(readonly ground: Ground) {}
 
   height(x: number, z: number): number {
-    const { n, size, heights } = this.world;
-    const half = size / 2;
-    const res = size / (n - 1);
-    const fx = Math.min(Math.max((x + half) / res, 0), n - 1.001);
-    const fz = Math.min(Math.max((z + half) / res, 0), n - 1.001);
-    const ix = Math.floor(fx), iz = Math.floor(fz);
-    const tx = fx - ix, tz = fz - iz;
-    const h = (i: number, j: number) => heights[j * n + i]!;
-    return (h(ix, iz) * (1 - tx) + h(ix + 1, iz) * tx) * (1 - tz) + (h(ix, iz + 1) * (1 - tx) + h(ix + 1, iz + 1) * tx) * tz;
+    return this.ground.height(x, z);
   }
 
   isWater(x: number, z: number): boolean {
-    const { n, size, waterMask, water } = this.world;
-    if (water === null || waterMask.length === 0) return false;
-    const res = size / (n - 1);
-    const ix = Math.round((x + size / 2) / res), iz = Math.round((z + size / 2) / res);
-    if (ix < 0 || iz < 0 || ix >= n || iz >= n) return false;
-    return waterMask[iz * n + ix] === 1;
+    return this.ground.isWater(x, z);
   }
 
-  /** Can the player stand at (x, z)? (inside the world, dry land) */
+  /** Can the player stand at (x, z)? (loaded, inside the world, dry land) */
   walkable(x: number, z: number): boolean {
-    const lim = this.world.size / 2 - 2;
-    return Math.abs(x) < lim && Math.abs(z) < lim && !this.isWater(x, z);
+    return this.ground.inBounds(x, z) && Number.isFinite(this.ground.height(x, z)) && !this.ground.isWater(x, z);
   }
 
   /** A dry, gentle spot near (x, z) to start from. */
@@ -114,19 +152,16 @@ export class Physics {
         }
       }
     }
-    return { x, y: this.height(x, z), z, vx: 0, vy: 0, vz: 0, onGround: true, yaw, pitch: -0.1 };
+    const h = this.height(x, z);
+    return { x, y: Number.isFinite(h) ? h : 0, z, vx: 0, vy: 0, vz: 0, onGround: true, yaw, pitch: -0.1 };
   }
 
   private blocked(x: number, z: number): boolean {
-    const c = this.world.colliders;
-    for (const i of this.nearby(x, z)) {
-      if (Math.hypot(x - c[i]!, z - c[i + 1]!) < c[i + 2]! + PLAYER.radius) return true;
-    }
-    return false;
-  }
-
-  private nearby(x: number, z: number): number[] {
-    return this.grid.get(Math.floor(x / this.cell) * 100003 + Math.floor(z / this.cell)) ?? [];
+    let hit = false;
+    this.ground.collidersNear(x, z, (cx, cz, r) => {
+      if (Math.hypot(x - cx, z - cz) < r + PLAYER.radius) hit = true;
+    });
+    return hit;
   }
 
   /** Advance by `dt` seconds of real time, in fixed sub-steps. */
@@ -165,8 +200,12 @@ export class Physics {
     this.pushOut(s);
 
     // Vertical: fall, land on the ground, never below it.
-    s.y += s.vy * dt;
     const g = this.height(s.x, s.z);
+    if (!Number.isFinite(g)) {
+      s.vy = 0; // the ground here isn't loaded yet: hold still
+      return;
+    }
+    s.y += s.vy * dt;
     if (s.y <= g) {
       s.y = g;
       s.vy = 0;
@@ -203,12 +242,11 @@ export class Physics {
 
   /** Push the player out of trunks and rocks (unless standing on top). */
   private pushOut(s: PlayerState): void {
-    const c = this.world.colliders;
-    for (const i of this.nearby(s.x, s.z)) {
-      if (s.y > c[i + 3]!) continue; // above a low rock: no collision
-      const dx = s.x - c[i]!, dz = s.z - c[i + 1]!;
+    this.ground.collidersNear(s.x, s.z, (cx, cz, r, top) => {
+      if (s.y > top) return; // above a low rock: no collision
+      const dx = s.x - cx, dz = s.z - cz;
       const d = Math.hypot(dx, dz);
-      const min = c[i + 2]! + PLAYER.radius;
+      const min = r + PLAYER.radius;
       if (d < min && d > 1e-6) {
         const k = (min - d) / d;
         s.x += dx * k;
@@ -221,6 +259,6 @@ export class Physics {
           s.vz -= vn * nz;
         }
       }
-    }
+    });
   }
 }

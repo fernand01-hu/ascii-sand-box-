@@ -72,6 +72,9 @@ try {
     } catch (e) {
       failures++;
       console.log(`  FAIL ${name}\n       ${e.message}`);
+    } finally {
+      // Never leave play mode on: it swallows the keys the next steps press.
+      await page.evaluate(() => window.__ascii?.stopPlaying?.()).catch(() => {});
     }
   };
 
@@ -214,7 +217,7 @@ try {
       out.landedClearance = out.landed.y - p.height(out.landed.x, out.landed.z);
       // 4. Walk straight into the nearest collider (trunk / rock).
       const s = a.app.player.state;
-      const c = p.world.colliders;
+      const c = p.ground.world.colliders;
       let best = -1, bd = Infinity;
       for (let i = 0; i < c.length; i += 4) {
         const d = Math.hypot(c[i] - s.x, c[i + 1] - s.z);
@@ -241,6 +244,25 @@ try {
     assert.ok(r.gap !== undefined && r.gap > 0.3, 'the player walked through a trunk or rock');
     await page.screenshot({ path: join(outDir, '16c-first-person.png') });
     await page.evaluate(() => window.__ascii.stopPlaying());
+  });
+
+  await step('infinite world: streams chunks, travels, walkable everywhere', async () => {
+    await page.keyboard.press('i');
+    await waitSettled('world');
+    const loadedAtLeast = (n) => page.waitForFunction((n) => { const s = window.__ascii.worldStats(); return s && s.loaded >= n; }, { timeout: 900_000, polling: 1000 }, n);
+    await loadedAtLeast(12);
+    assert.ok((await coverage()) > 0.3, 'the world fills the view');
+    await page.screenshot({ path: join(outDir, '16d-world.png') });
+    // Travel 400 m and check new chunks arrive there and can be walked on.
+    await page.evaluate(() => { const v = window.__ascii.app.viewer; v.camera.position.x += 400; v.controls.target.x += 400; v.controls.update(); });
+    const before = (await page.evaluate(() => window.__ascii.worldStats())).built;
+    await page.waitForFunction((b) => window.__ascii.worldStats().built >= b + 9, { timeout: 900_000, polling: 1000 }, before);
+    assert.equal(await page.evaluate(() => window.__ascii.play()), true);
+    const r = await page.evaluate(() => window.__ascii.playSteps({ forward: 1 }, 2));
+    assert.ok(r.minClearance >= -1e-3 && !r.inWater, 'walks on the streamed ground');
+    await page.evaluate(() => window.__ascii.stopPlaying());
+    await page.keyboard.press('l');
+    await waitSettled('scene-lake');
   });
 
   await step('wind moves the scene over time; calm air does not', async () => {

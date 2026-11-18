@@ -46,6 +46,16 @@ export class EngineClient {
     return this.send({ kind: 'scene', id: this.nextId++, preset, seed, glyphAspect });
   }
 
+  /** Start an infinite world: returns its sky and setup. */
+  worldInit(seed: number, day: boolean, glyphAspect: number): Promise<EngineResult> {
+    return this.send({ kind: 'worldInit', id: this.nextId++, seed, day, glyphAspect });
+  }
+
+  /** Build one world chunk with glyphs sized for `eye`. */
+  worldChunk(cx: number, cz: number, eye: [number, number, number], glyphAspect: number): Promise<EngineResult> {
+    return this.send({ kind: 'worldChunk', id: this.nextId++, cx, cz, eye, glyphAspect });
+  }
+
   /** Build a test scene (dev/test builds only). */
   testbed(req: TestbedRequest): Promise<EngineResult> {
     return this.send({ kind: 'testbed', id: this.nextId++, ...req });

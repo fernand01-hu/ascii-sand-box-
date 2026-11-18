@@ -84,6 +84,33 @@ export class Viewer {
     this.requestRender();
   }
 
+  private bodies = new Map<string, Mesh<BufferGeometry, MeshBasicMaterial>>();
+
+  /** Add (or replace) a named opaque body, e.g. one streamed world chunk. */
+  addBody(key: string, positions: Float32Array, normals: Float32Array): void {
+    this.removeBody(key);
+    if (positions.length === 0) return;
+    const g = new BufferGeometry();
+    g.setAttribute('position', new BufferAttribute(positions, 3));
+    g.setAttribute('normal', new BufferAttribute(normals, 3));
+    g.computeBoundingSphere();
+    const m = new Mesh(g, this.body.material);
+    this.bodies.set(key, m);
+    this.scene.add(m);
+  }
+
+  removeBody(key: string): void {
+    const m = this.bodies.get(key);
+    if (!m) return;
+    this.scene.remove(m);
+    m.geometry.dispose();
+    this.bodies.delete(key);
+  }
+
+  clearBodies(): void {
+    for (const k of [...this.bodies.keys()]) this.removeBody(k);
+  }
+
   /** Opaque body drawn in the background colour: it only hides what is behind it. */
   private setBody(positions: Float32Array, normals: Float32Array): BufferGeometry {
     if (positions.length === 0 || positions.length % 9 !== 0 || normals.length !== positions.length) {
