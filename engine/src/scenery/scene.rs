@@ -131,7 +131,8 @@ pub fn build_scene(preset: ScenePreset, seed: u32, glyph_aspect: f32) -> SceneOu
         let h = (hi.y - lo.y.max(0.0)).max(0.1) * p.pl.scale;
         let cells = (w * h * 0.75) / (sk.g * sk.g * sk.aspect);
         let d = (p.pl.pos - eye).length();
-        let per_cell = 1.5 * (1.8 + 1.2 * super::asset::smoothstep(90.0, 25.0, d));
+        // Generous: the renderer thins far chunks per frame (screen-space LOD).
+        let per_cell = 2.2 * (1.8 + 1.2 * super::asset::smoothstep(90.0, 25.0, d));
         sk.cap_since(start, (cells * per_cell).ceil() as usize + 8);
     }
     landscape::ground(&mut sk, &t, &sc.canopy, &sky, &view, sun, glint, seed);

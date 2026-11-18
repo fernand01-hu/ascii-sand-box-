@@ -187,7 +187,7 @@ export class App {
       v.cards.setMaterials([SURFACE_MATERIAL]);
       v.cards.setLighting(DEFAULT_LIGHTING);
       v.setMesh(res.mesh.positions, res.mesh.normals);
-      v.setCards(res.cards, res.stride);
+      v.setCards(res.cards, res.stride, res.chunks);
       Object.assign(this.state, {
         triangles: res.mesh.triangles,
         dropped: res.mesh.dropped,
@@ -210,7 +210,7 @@ export class App {
       v.cards.setAtlas(this.atlasFor(res.charset));
       v.cards.setMaterials(materialsFromTable(res.materials, res.materialFloats));
       v.cards.setLighting({ ...SCENERY_LIGHTING, sunDir: new Vector3(...res.sunDir) });
-      v.setCards(res.cards, res.stride);
+      v.setCards(res.cards, res.stride, res.chunks);
       v.setFreeScene(new Vector3(...res.camera.target), new Vector3(...res.camera.eye), {
         fov: res.camera.fov,
         body: res.mesh.positions.length ? { positions: res.mesh.positions, normals: res.mesh.normals } : undefined,
@@ -239,7 +239,7 @@ export class App {
       v.cards.setAtlas(this.atlasFor(res.charset));
       v.cards.setMaterials(materialsFromTable(res.materials, res.materialFloats));
       v.cards.setLighting({ ...(day ? SCENERY_DAY : SCENERY_LIGHTING), sunDir: new Vector3(...res.sunDir) });
-      v.setCards(res.cards, res.stride);
+      v.setCards(res.cards, res.stride, res.chunks);
       v.setFreeScene(new Vector3(...res.camera.target), new Vector3(...res.camera.eye), {
         fov: res.camera.fov,
         far: 3000,

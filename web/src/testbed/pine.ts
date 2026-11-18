@@ -29,7 +29,7 @@ export function showPine(app: App, seed = PINE_SEED): Promise<void> {
     v.cards.setAtlas(app.atlasFor(res.charset));
     v.cards.setMaterials(PINE_MATERIALS);
     v.cards.setLighting({ ...DEFAULT_LIGHTING, sunDir: new Vector3(...res.sunDir) });
-    v.setCards(res.cards, res.stride);
+    v.setCards(res.cards, res.stride, res.chunks);
     // Roughly the script's camera: eye low, ~21 units out, framing a 10-unit tree.
     v.setFreeScene(new Vector3(0, 4.6, 0), new Vector3(4, 3.2, 21));
     Object.assign(app.state, { triangles: 0, dropped: 0, glyphPx: 0 });

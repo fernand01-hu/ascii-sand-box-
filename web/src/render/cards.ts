@@ -10,6 +10,12 @@
 
 import {
   BufferAttribute,
+  Group,
+  PerspectiveCamera,
+  Sphere,
+  type Camera,
+  type Material,
+  type WebGLRenderer,
   InstancedBufferGeometry,
   InstancedInterleavedBuffer,
   InterleavedBufferAttribute,
@@ -21,6 +27,7 @@ import {
   Vector4,
 } from 'three';
 import type { GlyphAtlas } from './atlas';
+import { CHUNK_FLOATS } from '../engine/chunks';
 
 /** Must match `cards::STRIDE` / `cards::layout` in the Rust engine. */
 export const CARD_STRIDE = 16;
@@ -143,6 +150,7 @@ uniform float uLeaves;
 uniform vec3 uRainBox;
 uniform vec3 uLeafBox;  // min x, min z, size
 uniform float uUnder;   // 1 in the underpaint pass (particles stay out of it)
+uniform float uThin;    // level of detail: this chunk draws 1 card in uThin
 
 attribute vec3 iCenter;
 attribute vec3 iU;
@@ -277,6 +285,19 @@ void main() {
     alphaMul *= mix(0.75 + 0.25 * sin(3.14159 * ph), sin(3.14159 * ph), smoothstep(0.3, 0.8, C.y));
   }
 
+  // Level of detail: a thinned chunk's cards stand in for the ones not drawn,
+  // so they get more opaque and a little bigger. The budget still leaves ~2
+  // glyph-sized cards per screen cell, so they must not grow much: glyphs
+  // keep their on-screen size, there are just fewer layers of them.
+  float thinA = 1.0;
+  if (uThin > 1.0 && !(emissive || rain || leaf)) {
+    float g = min(pow(uThin, 0.2), 1.35);
+    U *= g;
+    V *= g;
+    thinA = uThin;
+  }
+  float baseA = 1.0 - pow(1.0 - clamp(iColor.a, 0.0, 0.999), thinA);
+
   vec3 world = center + sway + U * position.x + V * position.y;
   vec3 N = normalize(cross(U, V));
   float facing = dot(N, toCam);
@@ -297,7 +318,7 @@ void main() {
 
   if (emissive || rain) {
     vColor = iColor.rgb;
-    vAlpha = iColor.a * alphaMul * (rain ? 1.0 : smoothstep(0.02, 0.25, abs(facing)));
+    vAlpha = baseA * alphaMul * (rain ? 1.0 : smoothstep(0.02, 0.25, abs(facing)));
   } else {
     float ts = leaf ? 1.0 : iLight.x;
     float tk = leaf ? 1.0 : iLight.y;
@@ -314,7 +335,7 @@ void main() {
     float hz = B.w * pow(clamp(dist / uHazeDist, 0.0, 1.0), 0.65);
     vColor = mix(vColor, uHazeColor, hz);
     // Cards seen almost edge-on become slivers: fade them out instead of streaking.
-    vAlpha = min(1.0, (iColor.a + B.z * ts * diff) * uAlphaGain) * smoothstep(0.02, 0.25, abs(facing)) * alphaMul;
+    vAlpha = min(1.0, (baseA + B.z * ts * diff) * uAlphaGain) * smoothstep(0.02, 0.25, abs(facing)) * alphaMul;
   }
   // Scene haze: far things melt into the sky colour (thicker in the rain).
   if (uFog.y > 0.0 && C.z > 0.5) {
@@ -349,13 +370,37 @@ void main() {
 }
 `;
 
+/** One render chunk: a group of cards culled and thinned together. */
+interface Chunk {
+  mesh: Mesh<InstancedBufferGeometry, ShaderMaterial>;
+  count: number;
+  global: boolean;
+  lo: Vector3;
+  hi: Vector3;
+}
+
 export class CardLayer {
-  readonly mesh: Mesh<InstancedBufferGeometry, ShaderMaterial>;
+  /** All chunk meshes; add this to the scene. */
+  readonly group = new Group();
+  readonly material: ShaderMaterial;
+  /**
+   * Level of detail on/off, and its budget in cards per glyph-sized screen
+   * cell: like the original's character budget, `lodNear` closer than 25 m,
+   * falling to `lodFar` beyond 90 m, so distance reads as sparser.
+   */
+  lod = true;
+  lodNear = 3.2;
+  lodFar = 1.8;
+  /** On-screen glyph height (CSS px) the budget is measured in. */
+  glyphPx = 15;
+  private chunks: Chunk[] = [];
   private count = 0;
+  /** Cards actually submitted in the last frame (after culling and LOD). */
+  drawn = 0;
 
   constructor(atlas: GlyphAtlas, lighting: Lighting = DEFAULT_LIGHTING) {
     const vec4s = () => Array.from({ length: MAX_MATERIALS }, () => new Vector4());
-    const material = new ShaderMaterial({
+    this.material = new ShaderMaterial({
       vertexShader,
       fragmentShader,
       uniforms: {
@@ -382,11 +427,9 @@ export class CardLayer {
         uRainBox: { value: new Vector3(36, 24, 36) },
         uLeafBox: { value: new Vector3(0, 0, 1) },
         uUnder: { value: 0 },
+        uThin: { value: 1 },
       },
     });
-    this.mesh = new Mesh(emptyGeometry(), material);
-    this.mesh.frustumCulled = false; // positions come from instance data, not the base quad
-    this.mesh.renderOrder = 1; // after the opaque body
     this.setLighting(lighting);
     this.setMaterials([SURFACE_MATERIAL]);
     this.setMode('blend');
@@ -396,8 +439,13 @@ export class CardLayer {
     return this.count;
   }
 
+  /** The chunk meshes (the underpaint pass draws them with its own material). */
+  get meshes(): Mesh<InstancedBufferGeometry, ShaderMaterial>[] {
+    return this.chunks.map((c) => c.mesh);
+  }
+
   setAtlas(atlas: GlyphAtlas): void {
-    const u = this.mesh.material.uniforms;
+    const u = this.material.uniforms;
     u.uAtlas!.value = atlas.texture;
     (u.uGrid!.value as Vector2).set(atlas.cols, atlas.rows);
     (u.uInset!.value as Vector2).set(...atlas.inset);
@@ -408,7 +456,7 @@ export class CardLayer {
     if (defs.length === 0 || defs.length > MAX_MATERIALS) {
       throw new Error(`a scene needs 1 to ${MAX_MATERIALS} materials, got ${defs.length}`);
     }
-    const u = this.mesh.material.uniforms;
+    const u = this.material.uniforms;
     const A = u.uMatA!.value as Vector4[];
     const B = u.uMatB!.value as Vector4[];
     const C = u.uMatC!.value as Vector4[];
@@ -421,7 +469,7 @@ export class CardLayer {
   }
 
   setLighting(l: Lighting): void {
-    const u = this.mesh.material.uniforms;
+    const u = this.material.uniforms;
     (u.uSunDir!.value as Vector3).copy(l.sunDir).normalize();
     (u.uSunColor!.value as Vector3).copy(l.sunColor);
     (u.uSkyColor!.value as Vector3).copy(l.skyColor);
@@ -430,7 +478,7 @@ export class CardLayer {
   }
 
   setEnvironment(e: Environment): void {
-    const u = this.mesh.material.uniforms;
+    const u = this.material.uniforms;
     const len = Math.hypot(e.windDir[0], e.windDir[1]) || 1;
     (u.uWind!.value as Vector4).set(e.windDir[0] / len, e.windDir[1] / len, e.wind, 0);
     u.uRain!.value = e.rain;
@@ -443,12 +491,12 @@ export class CardLayer {
 
   /** Animation clock, seconds. */
   setTime(t: number): void {
-    this.mesh.material.uniforms.uTime!.value = t;
+    this.material.uniforms.uTime!.value = t;
   }
 
   /** See `CardMode`. `depthBias` is in card heights (0 for scenes with no body). */
   setMode(mode: CardMode, depthBias = mode === 'blend' ? 0.75 : 0): void {
-    const m = this.mesh.material;
+    const m = this.material;
     const coverage = mode === 'coverage';
     m.transparent = !coverage;
     m.blending = NormalBlending;
@@ -462,33 +510,87 @@ export class CardLayer {
     m.needsUpdate = true;
   }
 
-  /** Replace all cards. `data` holds `stride` floats per card. */
-  setCards(data: Float32Array, stride: number): void {
+  /**
+   * Replace all cards. `data` holds `stride` floats per card, already grouped
+   * by `chunks` (see engine/chunks.ts); without chunks it is one global chunk.
+   */
+  setCards(data: Float32Array, stride: number, chunks?: Float32Array): void {
     if (stride !== CARD_STRIDE) {
       throw new Error(`card stride mismatch: engine sends ${stride}, renderer expects ${CARD_STRIDE}`);
     }
     if (data.length % stride !== 0) throw new Error('card buffer length is not a multiple of the stride');
-    const geometry = emptyGeometry();
-    const count = data.length / stride;
-    if (count > 0) {
-      const buf = new InstancedInterleavedBuffer(data, stride, 1);
+    const total = data.length / stride;
+    const table = chunks ?? new Float32Array([0, total, 0, 0, 0, 0, 0, 0, 0, 1]);
+    this.clear();
+    for (let c = 0; c + CHUNK_FLOATS <= table.length; c += CHUNK_FLOATS) {
+      const [start = 0, count = 0, lx = 0, ly = 0, lz = 0, hx = 0, hy = 0, hz = 0, size = 0, global = 0] = table.subarray(c, c + CHUNK_FLOATS);
+      if (count <= 0) continue;
+      const geometry = emptyGeometry();
+      const buf = new InstancedInterleavedBuffer(data.subarray(start * stride, (start + count) * stride), stride, 1);
       geometry.setAttribute('iCenter', new InterleavedBufferAttribute(buf, 3, 0));
       geometry.setAttribute('iU', new InterleavedBufferAttribute(buf, 3, 3));
       geometry.setAttribute('iV', new InterleavedBufferAttribute(buf, 3, 6));
       geometry.setAttribute('iColor', new InterleavedBufferAttribute(buf, 4, 9));
       geometry.setAttribute('iGlyph', new InterleavedBufferAttribute(buf, 1, 13));
       geometry.setAttribute('iLight', new InterleavedBufferAttribute(buf, 2, 14));
+      geometry.instanceCount = count;
+      const lo = new Vector3(lx, ly, lz);
+      const hi = new Vector3(hx, hy, hz);
+      // Margin: card size (cards can grow up to 2.5x with LOD) plus wind sway.
+      const r = lo.distanceTo(hi) / 2 + size * 3 + 1;
+      geometry.boundingSphere = new Sphere(lo.clone().add(hi).multiplyScalar(0.5), r);
+      const mesh = new Mesh(geometry, this.material);
+      const chunk: Chunk = { mesh, count, global: global > 0.5, lo, hi };
+      // Global chunks (sky dome, rain round the camera, blown leaves) always draw.
+      mesh.frustumCulled = !chunk.global;
+      mesh.renderOrder = 1; // after the opaque body
+      mesh.onBeforeRender = (renderer, _scene, camera, _geometry, material) => this.applyLod(chunk, renderer, camera, material);
+      this.chunks.push(chunk);
+      this.group.add(mesh);
     }
-    geometry.instanceCount = count;
-    this.mesh.geometry.dispose(); // frees the previous GPU buffers
-    this.mesh.geometry = geometry;
-    this.mesh.visible = count > 0;
-    this.count = count;
+    this.count = total;
+  }
+
+  /** Per-frame level of detail for one chunk, from its size on screen. */
+  private applyLod(chunk: Chunk, renderer: WebGLRenderer, camera: Camera, material: Material): void {
+    let n = chunk.count;
+    if (this.lod && !chunk.global && camera instanceof PerspectiveCamera) {
+      const p = camera.position;
+      const c = chunk.lo.clone().add(chunk.hi).multiplyScalar(0.5);
+      const e = chunk.hi.clone().sub(chunk.lo).multiplyScalar(0.5);
+      // Distance from the eye to the chunk's box.
+      const q = new Vector3(Math.max(Math.abs(p.x - c.x) - e.x, 0), Math.max(Math.abs(p.y - c.y) - e.y, 0), Math.max(Math.abs(p.z - c.z) - e.z, 0));
+      const d = Math.max(q.length(), 1);
+      const height = renderer.domElement.clientHeight || 700;
+      const ppm = height / 2 / Math.tan((camera.fov * Math.PI) / 360) / d;
+      const span = 2 * Math.hypot(e.x, e.z);
+      const area = span * ppm * Math.max(2 * e.y, 0.35 * span) * ppm;
+      const glyphArea = this.glyphPx * this.glyphPx * 0.62;
+      const t = Math.min(1, Math.max(0, (90 - d) / 65));
+      const budget = this.lodFar + (this.lodNear - this.lodFar) * t * t * (3 - 2 * t);
+      const allowed = (budget * area) / glyphArea;
+      n = Math.max(1, Math.min(chunk.count, Math.ceil(allowed)));
+    }
+    chunk.mesh.geometry.instanceCount = n;
+    this.drawn += n;
+    const m = material as ShaderMaterial;
+    if (m.uniforms?.uThin) {
+      m.uniforms.uThin.value = chunk.count / n;
+      m.uniformsNeedUpdate = true;
+    }
+  }
+
+  private clear(): void {
+    for (const c of this.chunks) {
+      this.group.remove(c.mesh);
+      c.mesh.geometry.dispose(); // frees the GPU buffers
+    }
+    this.chunks = [];
   }
 
   dispose(): void {
-    this.mesh.geometry.dispose();
-    this.mesh.material.dispose();
+    this.clear();
+    this.material.dispose();
   }
 }
 

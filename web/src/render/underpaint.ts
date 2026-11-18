@@ -16,6 +16,7 @@ import {
   HalfFloatType,
   LinearFilter,
   Mesh,
+  type Material,
   OrthographicCamera,
   PlaneGeometry,
   Scene,
@@ -27,9 +28,6 @@ import {
 } from 'three';
 import type { CardLayer } from './cards';
 import { vertexShader } from './cards';
-
-/** Layer the underpaint card mesh lives on (the main pass renders layer 0). */
-export const UNDERPAINT_LAYER = 1;
 
 const solidFragment = /* glsl */ `
 uniform float uUnderAlpha;
@@ -94,7 +92,7 @@ export class Underpaint {
   private quad: Mesh<PlaneGeometry, ShaderMaterial>;
   private blurMat: ShaderMaterial;
   private compositeMat: ShaderMaterial;
-  readonly cardMesh: Mesh;
+  private material: ShaderMaterial;
 
   constructor(cards: CardLayer) {
     const opts = { type: HalfFloatType, minFilter: LinearFilter, magFilter: LinearFilter, depthBuffer: true };
@@ -104,18 +102,14 @@ export class Underpaint {
 
     // Same vertex shader and (shared) uniforms as the glyph cards, so every
     // card sits exactly where its glyph is, wind and all.
-    const material = new ShaderMaterial({
+    this.material = new ShaderMaterial({
       vertexShader,
       fragmentShader: solidFragment,
-      uniforms: { ...cards.mesh.material.uniforms, uUnder: { value: 1 }, uUnderAlpha: { value: this.cardAlpha } },
+      uniforms: { ...cards.material.uniforms, uUnder: { value: 1 }, uThin: { value: 1 }, uUnderAlpha: { value: this.cardAlpha } },
       depthTest: true,
       depthWrite: true,
       alphaToCoverage: true,
     });
-    this.cardMesh = new Mesh(cards.mesh.geometry, material);
-    this.cardMesh.frustumCulled = false;
-    this.cardMesh.renderOrder = 1;
-    this.cardMesh.layers.set(UNDERPAINT_LAYER);
 
     this.blurMat = new ShaderMaterial({
       vertexShader: quadVertex,
@@ -150,21 +144,20 @@ export class Underpaint {
    * draws the glyph scene on top without clearing.
    */
   render(renderer: WebGLRenderer, scene: Scene, camera: Camera, cards: CardLayer, background: Color): void {
-    this.cardMesh.geometry = cards.mesh.geometry;
-    this.cardMesh.visible = cards.mesh.visible;
-    (this.cardMesh.material as ShaderMaterial).uniforms.uUnderAlpha!.value = this.cardAlpha;
-
+    this.material.uniforms.uUnderAlpha!.value = this.cardAlpha;
     const clear = renderer.getClearColor(new Color());
     const clearAlpha = renderer.getClearAlpha();
-    const layers = camera.layers.mask;
 
-    // 1. Solid card colours, depth tested against the opaque bodies.
+    // 1. Solid card colours (same chunks, same culling and LOD), depth
+    //    tested against the opaque bodies.
+    const meshes = cards.meshes;
+    const saved: Material[] = meshes.map((m) => m.material);
+    for (const m of meshes) m.material = this.material;
     renderer.setRenderTarget(this.rtScene);
     renderer.setClearColor(0x000000, 0);
     renderer.clear();
-    camera.layers.set(UNDERPAINT_LAYER);
     renderer.render(scene, camera);
-    camera.layers.mask = layers;
+    meshes.forEach((m, i) => (m.material = saved[i] as ShaderMaterial));
 
     // 2. Blur horizontally then vertically.
     const { width, height } = this.rtA;
@@ -195,7 +188,7 @@ export class Underpaint {
     this.rtB.dispose();
     this.blurMat.dispose();
     this.compositeMat.dispose();
-    (this.cardMesh.material as ShaderMaterial).dispose();
+    this.material.dispose();
     this.quad.geometry.dispose();
   }
 }

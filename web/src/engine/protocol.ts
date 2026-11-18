@@ -52,6 +52,8 @@ export interface EngineResult {
   materialFloats?: number;
   /** Procedural scenes: time of day, wind direction, particle boxes. */
   env?: SceneEnv;
+  /** Render chunks (see engine/chunks.ts): CHUNK_FLOATS per chunk. */
+  chunks?: Float32Array;
 }
 
 export interface SceneEnv {

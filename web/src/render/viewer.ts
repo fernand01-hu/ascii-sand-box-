@@ -19,7 +19,7 @@ import {
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { GlyphAtlas } from './atlas';
 import { CardLayer } from './cards';
-import { Underpaint, UNDERPAINT_LAYER } from './underpaint';
+import { Underpaint } from './underpaint';
 
 export const BACKGROUND = new Color(0x090c13);
 
@@ -53,10 +53,9 @@ export class Viewer {
     // background (or the underpaint wash) shows where they are.
     this.body = new Mesh(new BufferGeometry(), new MeshBasicMaterial({ color: BACKGROUND, colorWrite: false }));
     this.body.visible = false;
-    this.body.layers.enable(UNDERPAINT_LAYER);
     this.cards = new CardLayer(atlas);
     this.underpaint = new Underpaint(this.cards);
-    this.scene.add(this.body, this.cards.mesh, this.underpaint.cardMesh);
+    this.scene.add(this.body, this.cards.group);
 
     this.camera.position.set(3, 2, 5);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -131,8 +130,8 @@ export class Viewer {
     this.requestRender();
   }
 
-  setCards(data: Float32Array, stride: number): void {
-    this.cards.setCards(data, stride);
+  setCards(data: Float32Array, stride: number, chunks?: Float32Array): void {
+    this.cards.setCards(data, stride, chunks);
     this.requestRender();
   }
 
@@ -142,6 +141,7 @@ export class Viewer {
 
   /** Draw one frame: background (or underpaint wash), then the glyphs. */
   private draw(): void {
+    this.cards.drawn = 0;
     if (this.underpaint.enabled) {
       this.underpaint.render(this.renderer, this.scene, this.camera, this.cards, this.background);
     } else {

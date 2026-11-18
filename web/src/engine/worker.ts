@@ -8,6 +8,7 @@
 
 import init, * as wasm from '../pkg/ascii_engine.js';
 import wasmUrl from '../pkg/ascii_engine_bg.wasm?url';
+import { chunkCards } from './chunks';
 import { GLYPH_RULES, type CardSettings, type WorkerRequest, type WorkerResponse } from './protocol';
 
 const TESTBED = import.meta.env.DEV || import.meta.env.MODE === 'test';
@@ -17,6 +18,16 @@ interface WorkerScope {
   postMessage(msg: WorkerResponse, transfer?: Transferable[]): void;
 }
 const ctx = self as unknown as WorkerScope;
+
+/**
+ * Post a result with its cards split into render chunks (culling + level of
+ * detail). STL models stay one unthinned chunk: their glyphs tile a surface.
+ */
+function postResult(msg: Extract<WorkerResponse, { kind: 'result' }>, transfer: Transferable[], allGlobal = false): void {
+  const { cards, chunks } = chunkCards(msg.cards, msg.stride, allGlobal);
+  const rest = transfer.filter((t) => t !== msg.cards.buffer);
+  ctx.postMessage({ ...msg, cards, chunks }, [...rest, cards.buffer, chunks.buffer]);
+}
 
 const ready: Promise<wasm.Engine> = init({ module_or_path: wasmUrl }).then(() => new wasm.Engine());
 
@@ -82,7 +93,7 @@ async function handle(req: WorkerRequest): Promise<void> {
         const generateMs = performance.now() - t0;
         const stride = wasm.cardStride();
         const materials = wasm.sceneryMaterials();
-        ctx.postMessage(
+        postResult(
           {
             kind: 'result', id: req.id, cards, stride, count: cards.length / stride, charset: wasm.sceneryCharset(),
             mesh: { positions, normals, triangles: positions.length / 9, dropped: 0 },
@@ -107,7 +118,7 @@ async function handle(req: WorkerRequest): Promise<void> {
       if (TESTBED) {
         const { runTestbed } = await import('../testbed/worker-scenes');
         const res = runTestbed(wasm, req);
-        ctx.postMessage({ kind: 'result', id: req.id, ...res }, [res.cards.buffer]);
+        postResult({ kind: 'result', id: req.id, ...res }, [res.cards.buffer]);
         return;
       }
       throw new Error('test scenes are not part of this build');
@@ -132,9 +143,10 @@ async function handle(req: WorkerRequest): Promise<void> {
     const stride = wasm.cardStride();
     const transfer: Transferable[] = [cards.buffer];
     if (mesh) transfer.push(mesh.positions.buffer, mesh.normals.buffer);
-    ctx.postMessage(
+    postResult(
       { kind: 'result', id: req.id, mesh, cards, stride, count: cards.length / stride, charset, timings: { loadMs, generateMs } },
       transfer,
+      true,
     );
   } catch (err) {
     // A WebAssembly trap (panic, out of memory) leaves the instance unusable:
