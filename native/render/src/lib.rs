@@ -434,8 +434,12 @@ impl Renderer {
                         layout: &self.draw_layout,
                         entries: &[wgpu::BindGroupEntry { binding: 0, resource: out.as_entire_binding() }],
                     });
-                    let old = self.sets.insert(key, CardSet { buf, out, eval_bg, draw_bg, chunks, fade_start: now, lod });
-                    if let (Some(mut old), true) = (old, self.fade_secs > 0.0) {
+                    // Only streamed chunks (sets with continuous detail) dissolve:
+                    // a model or scene appears at once.
+                    let streamed = lod.is_some();
+                    let fade_start = if streamed { now } else { f64::NEG_INFINITY };
+                    let old = self.sets.insert(key, CardSet { buf, out, eval_bg, draw_bg, chunks, fade_start, lod });
+                    if let (Some(mut old), true) = (old, self.fade_secs > 0.0 && streamed) {
                         // Keep the replaced version until the new one has dissolved in.
                         old.fade_start = now;
                         self.outgoing.insert(key, old);
@@ -767,5 +771,80 @@ fn depth_att(view: &wgpu::TextureView) -> wgpu::RenderPassDepthStencilAttachment
         view,
         depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
         stencil_ops: None,
+    }
+}
+
+/// A frame being read back from the GPU (tests, screenshots). Mapping is
+/// asynchronous everywhere and only completes later in a browser, so the
+/// caller polls `try_take` on following frames.
+pub struct Capture {
+    buf: wgpu::Buffer,
+    size: (u32, u32),
+    padded_row: u32,
+    bgra: bool,
+    /// 0 pending, 1 mapped, 2 failed.
+    state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+}
+
+impl Renderer {
+    /// Render `f` off-screen at `size` and start reading it back.
+    pub fn capture(&mut self, size: (u32, u32), f: &FrameParams) -> Capture {
+        let device = self.device.clone();
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("capture"),
+            size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let padded_row = (size.0 * 4).div_ceil(256) * 256;
+        let buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("capture readback"), size: u64::from(padded_row * size.1), usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("capture") });
+        self.render(&mut enc, &view, size, f);
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &target, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded_row), rows_per_image: Some(size.1) } },
+            wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+        );
+        self.queue.submit([enc.finish()]);
+        let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let s = state.clone();
+        buf.slice(..).map_async(wgpu::MapMode::Read, move |r| s.store(if r.is_ok() { 1 } else { 2 }, std::sync::atomic::Ordering::Release));
+        Capture { buf, size, padded_row, bgra: matches!(self.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb), state }
+    }
+}
+
+impl Capture {
+    /// The image as tightly packed RGBA8 rows, top row first, once read back.
+    pub fn try_take(&self, device: &wgpu::Device) -> Option<Result<Vec<u8>, String>> {
+        let _ = device.poll(wgpu::PollType::Poll);
+        match self.state.load(std::sync::atomic::Ordering::Acquire) {
+            0 => None,
+            2 => Some(Err("could not read the frame back".into())),
+            _ => {
+                let data = self.buf.slice(..).get_mapped_range();
+                let row = (self.size.0 * 4) as usize;
+                let mut out = Vec::with_capacity(row * self.size.1 as usize);
+                for y in 0..self.size.1 as usize {
+                    out.extend_from_slice(&data[y * self.padded_row as usize..][..row]);
+                }
+                drop(data);
+                self.buf.unmap();
+                if self.bgra {
+                    for px in out.chunks_exact_mut(4) {
+                        px.swap(0, 2);
+                    }
+                }
+                Some(Ok(out))
+            }
+        }
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        self.size
     }
 }

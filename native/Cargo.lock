@@ -119,8 +119,13 @@ dependencies = [
  "ascii_engine",
  "ascii_render",
  "glam",
+ "js-sys",
  "png",
  "pollster",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
  "wgpu",
  "winit",
 ]

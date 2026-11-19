@@ -1,17 +1,24 @@
-mod args;
-mod headless;
-mod models;
-mod pool;
-mod window;
+//! Desktop entry point: the window, or an off-screen tool.
+
+#[cfg(not(target_arch = "wasm32"))]
+use ascii_app::{args, headless, models, pool, shell as window};
 
 const USAGE: &str = "ascii-scene [FILE.stl] [--world [--seed N] [--day]] [--scene NAME] [--gallery NAME] [--perf] [--size WxH]
   keys: 1-4 models, 6-9 galleries, M F L V A landscapes, I world, P walk, W wind, R rain, B leaves,
         F3 perf log, Esc release mouse; drop an .stl on the window
   tools: ascii-scene shot|golden|bench ... (off-screen, see native/README.md)";
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_window(argv: &[String]) -> Result<window::Options, String> {
     use ascii_core::input::Command;
-    let mut o = window::Options { start: Vec::new(), world: None, perf: std::env::var_os("ASCII_PERF").is_some(), size: (1000, 800) };
+    let mut o = window::Options {
+        start: Vec::new(),
+        world: None,
+        perf: std::env::var_os("ASCII_PERF").is_some(),
+        size: (1000, 800),
+        fade_secs: std::env::var("ASCII_FADE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.8),
+        present: std::env::var("ASCII_PRESENT").ok(),
+    };
     let (mut seed, mut day, mut world) = (1u32, false, false);
     let mut it = argv.iter();
     while let Some(a) = it.next() {
@@ -48,13 +55,17 @@ fn parse_window(argv: &[String]) -> Result<window::Options, String> {
     Ok(o)
 }
 
+#[cfg(target_arch = "wasm32")]
+fn main() {}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let result = match argv.first().map(String::as_str) {
         Some("shot") => headless::shot_cmd(&argv[1..]),
         Some("golden") => headless::golden_cmd(&argv[1..]),
         Some("bench") => headless::bench_cmd(&argv[1..]),
-        _ => parse_window(&argv).and_then(window::run),
+        _ => parse_window(&argv).and_then(|o| window::run(o, pool::ThreadPool::new(pool::default_workers()))),
     };
     if let Err(e) = result {
         eprintln!("{e}");

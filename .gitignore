@@ -1,7 +1,7 @@
 node_modules/
 dist/
 engine/target/
-web/src/pkg/
+web/src/app-pkg/
 test-results/
 __pycache__/
 native/target/

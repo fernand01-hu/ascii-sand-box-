@@ -5,8 +5,8 @@
 //!
 //! This file is the platform-neutral Rust API (`Engine`, `CardConfig`,
 //! `build_scene`, `build_gallery`, `InfiniteWorld`): plain types, `String`
-//! errors, no wasm-bindgen. The WebAssembly bindings the browser calls live in
-//! `wasm.rs`, behind the `wasm` feature, and wrap these same types.
+//! errors, no platform code. The app (native/app) runs it on every platform,
+//! the browser included (compiled to WebAssembly with the rest of the app).
 //!
 //! Test scenes live in `testbed` and only exist with the `testbed` feature.
 
@@ -21,8 +21,6 @@ pub mod stl;
 
 #[cfg(feature = "testbed")]
 pub mod testbed;
-#[cfg(feature = "wasm")]
-pub mod wasm;
 
 pub use cards::{CardParams, GlyphRule, STRIDE};
 pub use mesh::Mesh;

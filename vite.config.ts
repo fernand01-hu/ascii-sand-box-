@@ -8,8 +8,6 @@ export default defineConfig({
     outDir: '../dist',
     emptyOutDir: true,
     target: 'es2022',
-    // three.js alone is ~140 kB gzipped; that's expected, not a bloat signal.
-    chunkSizeWarningLimit: 700,
   },
   worker: { format: 'es' },
 });

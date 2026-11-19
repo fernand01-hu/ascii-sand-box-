@@ -46,6 +46,21 @@ pub enum Status {
     Error(String),
 }
 
+/// What `walk_steps` saw.
+#[derive(Clone, Copy, Debug)]
+pub struct WalkReport {
+    /// Lowest height of the feet over the ground.
+    pub min_clearance: f64,
+    pub in_water: bool,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    /// Horizontal distance covered.
+    pub moved: f64,
+    /// Ground height under the final position.
+    pub ground: f64,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Stats {
     pub model: String,
@@ -614,6 +629,50 @@ impl<E: JobExecutor> Session<E> {
         self.orbit.enabled = false;
         self.near = 0.05;
         true
+    }
+
+    /// Set the weather outright (tests); `None` keeps that part.
+    pub fn set_weather(&mut self, wind: Option<f32>, rain: Option<f32>, leaves: Option<f32>) {
+        self.dirty = true;
+        if let Some(w) = wind {
+            self.env.wind = w;
+        }
+        if let Some(r) = rain {
+            self.env.rain = r;
+        }
+        if let Some(l) = leaves {
+            self.env.leaves = l;
+        }
+    }
+
+    /// Slide the orbit camera and its focus by (dx, dz) metres (tests: travel).
+    pub fn travel(&mut self, dx: f64, dz: f64) {
+        let d = DVec3::new(dx, 0.0, dz);
+        let (eye, target) = (self.orbit.position + d, self.orbit.target + d);
+        self.orbit.set_view(eye, target);
+        self.orbit.update();
+        self.dirty = true;
+    }
+
+    /// Run the player for `seconds` in fixed steps with a fixed input (tests),
+    /// optionally facing `yaw` first. None when not playing.
+    pub fn walk_steps(&mut self, input: &InputState, yaw: Option<f64>, seconds: f64) -> Option<WalkReport> {
+        let p = self.player.as_mut()?;
+        if let Some(y) = yaw {
+            p.state.yaw = y;
+        }
+        let (x0, z0) = (p.state.x, p.state.z);
+        let mut min_clearance = f64::INFINITY;
+        let mut in_water = false;
+        let dt = 1.0 / 120.0;
+        for _ in 0..(seconds * 120.0).round() as usize {
+            p.update(&self.ground, input, dt);
+            min_clearance = min_clearance.min(p.state.y - self.ground.height(p.state.x, p.state.z));
+            in_water |= self.ground.is_water(p.state.x, p.state.z);
+        }
+        self.dirty = true;
+        let s = &p.state;
+        Some(WalkReport { min_clearance, in_water, x: s.x, y: s.y, z: s.z, moved: (s.x - x0).hypot(s.z - z0), ground: self.ground.height(s.x, s.z) })
     }
 
     /// Back to orbiting, around a point in front of where the player stood.

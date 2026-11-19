@@ -4,24 +4,18 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "wasm": "wasm-pack build engine --target web --release --out-dir ../web/src/pkg --no-pack -- --features wasm",
-    "wasm:testbed": "wasm-pack build engine --target web --release --out-dir ../web/src/pkg --no-pack -- --features wasm,testbed",
+    "wasm": "wasm-pack build native/app --target web --release --out-dir ../../web/src/app-pkg --no-pack --out-name ascii_app",
     "models": "node scripts/make-models.mjs",
-    "dev": "npm run wasm:testbed && vite",
+    "dev": "npm run wasm && vite",
     "build": "npm run wasm && tsc --noEmit && vite build",
-    "build:test": "npm run wasm:testbed && tsc --noEmit && vite build --mode test",
+    "build:test": "npm run wasm && tsc --noEmit && vite build --mode test",
     "preview": "vite preview",
-    "test:rust": "cargo test --release --features testbed --manifest-path engine/Cargo.toml && cargo clippy --release --all-targets --all-features --manifest-path engine/Cargo.toml -- -D warnings",
-    "test:wasm": "node scripts/smoke-test.mjs",
+    "test:rust": "cargo test --release --features testbed --manifest-path engine/Cargo.toml && cargo clippy --release --all-targets --all-features --manifest-path engine/Cargo.toml -- -D warnings && cargo test --release --manifest-path native/Cargo.toml",
     "test:e2e": "node scripts/e2e-test.mjs",
     "test:prod": "npm run build && node scripts/check-prod.mjs",
-    "test": "npm run test:rust && npm run build:test && npm run test:wasm && npm run test:e2e && npm run test:prod"
-  },
-  "dependencies": {
-    "three": "^0.187.0"
+    "test": "npm run test:rust && npm run build:test && npm run test:e2e && npm run test:prod"
   },
   "devDependencies": {
-    "@types/three": "^0.187.0",
     "puppeteer-core": "^25.18.1",
     "typescript": "^7.0.2",
     "vite": "^8.3.8"

@@ -20,6 +20,7 @@ pub mod render_data;
 pub mod session;
 pub mod streamer;
 pub mod weather;
+pub mod wire;
 
 pub use input::{Command, InputState};
 pub use jobs::{InlineExecutor, JobExecutor};

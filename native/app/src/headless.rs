@@ -199,8 +199,11 @@ fn goldens() -> Vec<(&'static str, SourceKind, Option<f64>)> {
     ]
 }
 
-/// `golden DIR [OUTDIR] [only]`: render each reference scene and compare.
+/// `golden DIR [OUTDIR] [only] [--update]`: render each reference scene and
+/// compare, or (`--update`) write the references from this renderer.
 pub fn golden_cmd(args: &[String]) -> Result<(), String> {
+    let update = args.iter().any(|a| a == "--update");
+    let args: Vec<String> = args.iter().filter(|a| *a != "--update").cloned().collect();
     let dir = std::path::PathBuf::from(args.first().ok_or("golden needs the tests/golden directory")?);
     let out = std::path::PathBuf::from(args.get(1).map_or("golden-out", String::as_str));
     let only = args.get(2);
@@ -221,6 +224,12 @@ pub fn golden_cmd(args: &[String]) -> Result<(), String> {
         let mut thumb = Vec::with_capacity(top_first.len());
         for row in (0..36).rev() {
             thumb.extend_from_slice(&top_first[row * 48 * 3..(row + 1) * 48 * 3]);
+        }
+        if update {
+            let data: Vec<String> = thumb.iter().map(|v| format!("{v}")).collect();
+            std::fs::write(dir.join(format!("{name}.json")), format!("{{\"w\":48,\"h\":36,\"data\":[{}]}}\n", data.join(","))).map_err(|e| e.to_string())?;
+            println!("{name}: reference written");
+            continue;
         }
         let reference = read_golden(&dir.join(format!("{name}.json")))?;
         let d = content_diff(&thumb, &reference);
