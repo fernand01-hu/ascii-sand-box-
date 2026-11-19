@@ -2,7 +2,8 @@
 
 Turns any 3D model (STL) into a scene made of ASCII characters, each one a
 small card oriented in 3D. See `how-it-works.md` for the technique and
-`improvements.md` for planned features.
+`improvements.md` for ideas, and `TODO.md` for the roadmap: the procedural world is
+being replaced by a painted, chunked scene editor (work happens on the `dev` branch).
 
 ## Layout
 
