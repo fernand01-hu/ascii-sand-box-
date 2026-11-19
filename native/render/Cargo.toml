@@ -10,5 +10,5 @@ ascii_core.workspace = true
 wgpu.workspace = true
 bytemuck.workspace = true
 fontdue.workspace = true
-pollster.workspace = true
 glam.workspace = true
+pollster.workspace = true
