@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "wasm": "wasm-pack build engine --target web --release --out-dir ../web/src/pkg --no-pack",
-    "wasm:testbed": "wasm-pack build engine --target web --release --out-dir ../web/src/pkg --no-pack -- --features testbed",
+    "wasm": "wasm-pack build engine --target web --release --out-dir ../web/src/pkg --no-pack -- --features wasm",
+    "wasm:testbed": "wasm-pack build engine --target web --release --out-dir ../web/src/pkg --no-pack -- --features wasm,testbed",
     "models": "node scripts/make-models.mjs",
     "dev": "npm run wasm:testbed && vite",
     "build": "npm run wasm && tsc --noEmit && vite build",
