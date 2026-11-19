@@ -197,7 +197,7 @@ impl Renderer {
                 layout: Some(&frame_pl),
                 vertex: wgpu::VertexState { module: &module, entry_point: Some("vs_main"), compilation_options: opts.clone(), buffers: &[inst_layout.clone()] },
                 fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some(fs), compilation_options: opts.clone(), targets: &[target(f, b, wgpu::ColorWrites::ALL)] }),
-                primitive: prim(if std::env::var("ASCII_CULL").is_ok_and(|v| v == "none") { None } else { Some(wgpu::Face::Back) }),
+                primitive: prim(Some(wgpu::Face::Back)),
                 depth_stencil: Some(depth_state(write, wgpu::CompareFunction::LessEqual)),
                 multisample: ms(a2c),
                 multiview: None,

@@ -16,6 +16,7 @@
 //! Which character goes where is decided by a `GlyphRule`. The charset is a
 //! ramp ordered from light to dense ink (like the script's sky ramp), and the
 //! surface-driven rules map a pattern value to a position on that ramp.
+use crate::fm;
 
 use crate::math::Vec3;
 use crate::mesh::Mesh;
@@ -230,7 +231,7 @@ pub fn generate(mesh: &Mesh, p: &CardParams) -> Result<Vec<f32>, ParamError> {
 
         // Spin around the normal...
         let tw = rng.normal() * p.twist;
-        let (s, co) = tw.sin_cos();
+        let (s, co) = fm::sin_cos(tw);
         (u, v) = (u * co + v * s, v * co - u * s);
         // ...and tilt a little off the surface, like the bark in the pine script.
         u = (u + normal * (rng.normal() * p.tilt)).try_normalize().unwrap_or(u);

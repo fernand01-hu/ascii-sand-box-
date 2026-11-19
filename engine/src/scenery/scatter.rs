@@ -10,6 +10,7 @@
 //!
 //! Orbit-friendly change: small things are placed near the camera *or* near
 //! the orbit focus, and nothing is culled by the original's fixed frustum.
+use crate::fm;
 
 use super::asset::{smoothstep, Asset, Placement, RngExt};
 use super::bushes::{make_bush, BushKind};
@@ -211,8 +212,8 @@ pub fn scatter(t: &Terrain, eye: Vec3, focus: Vec3, biome: Biome, seed: u32) -> 
                 if x.abs() >= lim || z.abs() >= lim {
                     continue;
                 }
-                let d_eye = (x - eye.x).hypot(z - eye.z);
-                let d_focus = (x - focus.x).hypot(z - focus.z);
+                let d_eye = fm::hypot(x - eye.x, z - eye.z);
+                let d_focus = fm::hypot(x - focus.x, z - focus.z);
                 let d = if small { d_eye.min(d_focus) } else { d_eye };
                 if d > layer.max_dist || d_eye < min_dist {
                     continue;
@@ -223,7 +224,7 @@ pub fn scatter(t: &Terrain, eye: Vec3, focus: Vec3, biome: Biome, seed: u32) -> 
                 if d_eye > 110.0 {
                     let fwd = Vec3::new(focus.x - eye.x, 0.0, focus.z - eye.z);
                     let to = Vec3::new(x - eye.x, 0.0, z - eye.z);
-                    if fwd.dot(to) < fwd.length() * to.length() * 75f32.to_radians().cos() {
+                    if fwd.dot(to) < fwd.length() * to.length() * fm::cos(75f32.to_radians()) {
                         continue;
                     }
                 }
@@ -302,7 +303,7 @@ pub fn scatter(t: &Terrain, eye: Vec3, focus: Vec3, biome: Biome, seed: u32) -> 
                     let r = (hi.x - lo.x).max(hi.z - lo.z) * sc / 2.0;
                     for k in 0..6 {
                         let a = k as f32 / 6.0 * TAU;
-                        yy = yy.min(t.height(x + r * a.cos(), z + r * a.sin()));
+                        yy = yy.min(t.height(x + r * fm::cos(a), z + r * fm::sin(a)));
                     }
                 }
                 let sink = if layer.which == LayerKind::Trees { 0.12 } else { 0.03 };
@@ -331,7 +332,7 @@ pub fn scatter(t: &Terrain, eye: Vec3, focus: Vec3, biome: Biome, seed: u32) -> 
                     continue;
                 }
                 let (px, pz) = (-t.half + ix as f32 * res, -t.half + iz as f32 * res);
-                let v = (-((px - x).powi(2) + (pz - z).powi(2)) / (r * r)).exp();
+                let v = fm::exp(-((px - x).powi(2) + (pz - z).powi(2)) / (r * r));
                 let i = iz as usize * n + ix as usize;
                 g[i] = g[i].max(v);
             }
@@ -365,7 +366,7 @@ mod tests {
             assert!(!t.is_water(x, z), "nothing in the water");
             assert!(t.trail_strength(x, z) < 0.45, "nothing on the trail at ({x}, {z})");
             if let Kind::Tree(_) = p.kind {
-                assert!((x - eye.x).hypot(z - eye.z) >= 18.0, "foreground kept clear of trees");
+                assert!(fm::hypot(x - eye.x, z - eye.z) >= 18.0, "foreground kept clear of trees");
             }
         }
         // At most (kinds x variants) base assets, each in up to 3 levels of detail.

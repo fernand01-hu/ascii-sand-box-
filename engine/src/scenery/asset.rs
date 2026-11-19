@@ -8,6 +8,7 @@
 //!
 //! plus `solids`: triangles of opaque bodies (rocks, thick trunks) that hide
 //! whatever is behind them. Local coordinates: metres, +y up, base at y = 0.
+use crate::fm;
 
 use super::style::{Bark, Mat};
 use crate::math::Vec3;
@@ -180,13 +181,13 @@ pub fn unit(v: Vec3) -> Vec3 {
 }
 
 pub fn rot_y(v: Vec3, a: f32) -> Vec3 {
-    let (s, c) = a.sin_cos();
+    let (s, c) = fm::sin_cos(a);
     Vec3::new(v.x * c + v.z * s, v.y, -v.x * s + v.z * c)
 }
 
 /// Direction from azimuth (around +y, 0 = +z) and elevation.
 pub fn dir(az: f32, el: f32) -> Vec3 {
-    Vec3::new(el.cos() * az.sin(), el.sin(), el.cos() * az.cos())
+    Vec3::new(fm::cos(el) * fm::sin(az), fm::sin(el), fm::cos(el) * fm::cos(az))
 }
 
 /// Two unit vectors perpendicular to unit `t` and to each other.

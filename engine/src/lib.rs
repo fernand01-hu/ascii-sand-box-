@@ -11,6 +11,7 @@
 //! Test scenes live in `testbed` and only exist with the `testbed` feature.
 
 pub mod cards;
+pub mod fm;
 pub mod math;
 pub mod mesh;
 pub mod noise;

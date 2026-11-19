@@ -7,7 +7,7 @@ use crate::pool::{default_workers, ThreadPool};
 use ascii_core::input::{Command, Gallery, InputState, Preset};
 use ascii_core::session::Status;
 use ascii_core::Session;
-use ascii_render::headless::{open_gpu, thumbnail, Gpu, Headless};
+use ascii_render::headless::{content_diff, open_gpu, read_golden, thumbnail, Gpu, Headless};
 use std::time::{Duration, Instant};
 
 #[derive(Clone)]
@@ -187,31 +187,6 @@ fn goldens() -> Vec<(&'static str, SourceKind, Option<f64>)> {
         ("14-scene-lake", SourceKind::Scene(Lake), Some(3.0)),
         ("15-scene-valley", SourceKind::Scene(Valley), Some(3.0)),
     ]
-}
-
-fn read_golden(path: &std::path::Path) -> Result<Vec<f64>, String> {
-    let s = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let start = s.find('[').ok_or("no data")?;
-    let end = s.rfind(']').ok_or("no data")?;
-    s[start + 1..end].split(',').map(|v| v.trim().parse::<f64>().map_err(|e| e.to_string())).collect()
-}
-
-/// Mean absolute difference over tiles where either image shows content
-/// (the webapp's `contentDiff`).
-fn content_diff(a: &[f64], b: &[f64]) -> f64 {
-    let bg = [9.0, 12.0, 19.0];
-    let (mut sum, mut n) = (0.0, 0.0);
-    for t in (0..a.len()).step_by(3) {
-        let content = (0..3).any(|k| (a[t + k] - bg[k]).abs() > 6.0 || (b[t + k] - bg[k]).abs() > 6.0);
-        if !content {
-            continue;
-        }
-        for k in 0..3 {
-            sum += (a[t + k] - b[t + k]).abs();
-        }
-        n += 3.0;
-    }
-    if n > 0.0 { sum / n } else { 0.0 }
 }
 
 /// `golden DIR [OUTDIR] [only]`: render each reference scene and compare.

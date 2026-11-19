@@ -8,6 +8,7 @@
 //! 5. area-weighted surfels painted rock / crack / lichen / moss.
 //!
 //! The cut mesh also becomes a solid body that hides what is behind it.
+use crate::fm;
 
 use super::asset::{unit, Asset, RngExt};
 use super::perlin::Perlin;
@@ -195,7 +196,7 @@ pub fn make_rock(seed: u32, kind: RockKind) -> Asset {
         let sc = [0, 1, 2].map(|k| p.scale[k] * rng.uniform(0.85, 1.15));
         let (mut pts, f) = stone_mesh(rng, &noise, radius, sc, p.lump, cuts, level);
         let yaw = rng.uniform(0.0, TAU);
-        let (s, c) = yaw.sin_cos();
+        let (s, c) = fm::sin_cos(yaw);
         for q in &mut pts {
             *q = Vec3::new(q.x * c + q.z * s, q.y, -q.x * s + q.z * c) + center;
         }
@@ -226,7 +227,7 @@ pub fn make_rock(seed: u32, kind: RockKind) -> Asset {
                 let (ang, rr) = (rng.uniform(0.0, TAU), 0.6 * rng.next_f32().sqrt());
                 let r = rng.uniform(p.r.0, p.r.1);
                 let cuts = rng.int(p.cuts.0, p.cuts.1);
-                stone(&mut rng, Vec3::new(rr * ang.cos(), 0.0, rr * ang.sin()), r, cuts, 2, Some(0.0));
+                stone(&mut rng, Vec3::new(rr * fm::cos(ang), 0.0, rr * fm::sin(ang)), r, cuts, 2, Some(0.0));
             }
         }
         RockKind::Outcrop => {
@@ -237,13 +238,13 @@ pub fn make_rock(seed: u32, kind: RockKind) -> Asset {
                 let y = -rng.uniform(0.0, 0.3) * big;
                 let r = big * rng.uniform(0.45, 1.0) * if i == 0 { 1.0 } else { 0.8 };
                 let cuts = rng.int(p.cuts.0, p.cuts.1);
-                stone(&mut rng, Vec3::new(rr * ang.cos(), y, rr * ang.sin()), r, cuts, 4, None);
+                stone(&mut rng, Vec3::new(rr * fm::cos(ang), y, rr * fm::sin(ang)), r, cuts, 4, None);
             }
             for _ in 0..rng.int(4, 9) {
                 let (ang, rr) = (rng.uniform(0.0, TAU), big * rng.uniform(1.1, 1.8));
                 let r = rng.uniform(0.1, 0.3);
                 let cuts = rng.int(2, 5);
-                stone(&mut rng, Vec3::new(rr * ang.cos(), 0.0, rr * ang.sin()), r, cuts, 2, Some(0.0));
+                stone(&mut rng, Vec3::new(rr * fm::cos(ang), 0.0, rr * fm::sin(ang)), r, cuts, 2, Some(0.0));
             }
         }
         _ => {

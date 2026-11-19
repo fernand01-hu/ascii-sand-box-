@@ -1,6 +1,7 @@
 //! Space colonization (Runions et al. 2007) for broadleaf trees and bushes.
 //! Port of `scenery/colonize.py`, with a uniform grid hash in place of
 //! scipy's k-d tree for the nearest-node queries (as the README suggests).
+use crate::fm;
 
 use super::asset::{unit, RngExt};
 use super::perlin::Perlin;
@@ -135,9 +136,9 @@ pub fn pipe_radii(par: &[i32], r_tip: f32, e: f32) -> Vec<f32> {
     let mut acc = vec![0.0f32; n];
     let mut r = vec![0.0f32; n];
     for i in (0..n).rev() {
-        r[i] = if acc[i] == 0.0 { r_tip } else { acc[i].powf(1.0 / e) };
+        r[i] = if acc[i] == 0.0 { r_tip } else { fm::powf(acc[i], 1.0 / e) };
         if par[i] >= 0 {
-            acc[par[i] as usize] += r[i].powf(e);
+            acc[par[i] as usize] += fm::powf(r[i], e);
         }
     }
     r

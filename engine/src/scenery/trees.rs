@@ -6,6 +6,7 @@
 //!
 //! Broadleaf (oak, birch, maple, dead snag): space colonization inside a
 //! crown envelope, pipe-model radii, root flare, leaves on the twigs.
+use crate::fm;
 
 use super::asset::{dir, polyline, unit, Asset, RngExt, UP};
 use super::colonize::{colonize, envelope_points, pipe_radii, smooth};
@@ -119,23 +120,23 @@ impl Conifer {
         let t = y / self.h;
         let s = self.p.sway;
         (
-            t * (s * (1.8 * t + self.ph[0]).sin() + s * 0.25 * (5.5 * t + self.ph[1]).sin()),
-            t * (s * 0.7 * (1.4 * t + self.ph[2]).sin()),
+            t * (s * fm::sin(1.8 * t + self.ph[0]) + s * 0.25 * fm::sin(5.5 * t + self.ph[1])),
+            t * (s * 0.7 * fm::sin(1.4 * t + self.ph[2])),
         )
     }
 
     fn radius(&self, y: f32) -> f32 {
         let y = y.max(0.0);
         let t = (y / self.h).min(1.0);
-        (0.02 + self.p.r0 * (1.0 - t).powf(1.15)) * self.k + 0.11 * self.k * (-y / 0.35).exp()
+        (0.02 + self.p.r0 * fm::powf(1.0 - t, 1.15)) * self.k + 0.11 * self.k * fm::exp(-y / 0.35)
     }
 
     fn envelope(&self, t: f32) -> f32 {
         let l = self.p.lmax * self.k;
         if self.p.cone {
-            0.25 + l * (1.0 - t).powf(1.05)
+            0.25 + l * fm::powf(1.0 - t, 1.05)
         } else {
-            0.3 + l * (1.0 - t).powf(0.85) * (0.8 + 0.2 * (t / 0.2).min(1.0))
+            0.3 + l * fm::powf(1.0 - t, 0.85) * (0.8 + 0.2 * (t / 0.2).min(1.0))
         }
     }
 
@@ -172,7 +173,7 @@ impl Conifer {
                 let yb = yw + self.rng.uniform(-0.05, 0.05);
                 let (cx, cz) = self.center(yb);
                 let rad = self.radius(yb);
-                let base = Vec3::new(cx + 0.7 * rad * az.sin(), yb, cz + 0.7 * rad * az.cos());
+                let base = Vec3::new(cx + 0.7 * rad * fm::sin(az), yb, cz + 0.7 * rad * fm::cos(az));
                 let len = self.envelope(t) * self.rng.uniform(0.6, 1.18);
                 self.primary(base, az, len, t);
             }
@@ -192,7 +193,7 @@ impl Conifer {
                 let (az, el, len) = (self.rng.uniform(0.0, TAU), self.rng.uniform(-0.3, 0.2), self.rng.uniform(0.1, 0.4));
                 let (cx, cz) = self.center(yb);
                 let rad = self.radius(yb);
-                let mut q = vec![Vec3::new(cx, yb, cz) + Vec3::new(az.sin(), 0.0, az.cos()) * (0.8 * rad)];
+                let mut q = vec![Vec3::new(cx, yb, cz) + Vec3::new(fm::sin(az), 0.0, fm::cos(az)) * (0.8 * rad)];
                 for s in [1.0 / 3.0, 2.0 / 3.0, 1.0] {
                     let last = q[q.len() - 1];
                     q.push(last + dir(az, el - 0.5 * s) * (len / 3.0));
@@ -274,15 +275,15 @@ impl Conifer {
                     continue;
                 }
                 let roll = self.rng.gauss(0.55);
-                let sv = sv0 * roll.cos() + t.cross(sv0) * roll.sin();
+                let sv = sv0 * fm::cos(roll) + t.cross(sv0) * fm::sin(roll);
                 let al = self.rng.uniform(0.55, 1.05);
                 let lift = self.rng.uniform(-0.1, 0.35);
-                let dc = unit(t * al.cos() + sv * (sg * al.sin()) + UP * lift);
+                let dc = unit(t * fm::cos(al) + sv * (sg * fm::sin(al)) + UP * lift);
                 let (lc, dead) = if level == 1 {
-                    let lc = len * 0.38 * (1.0 - s).powf(0.6) * (0.5 + 0.8 * s) * self.rng.uniform(0.6, 1.15);
+                    let lc = len * 0.38 * fm::powf(1.0 - s, 0.6) * (0.5 + 0.8 * s) * self.rng.uniform(0.6, 1.15);
                     (lc, s < 0.42 && self.rng.chance(self.p.dead))
                 } else {
-                    (len * 0.55 * (1.0 - s).powf(0.7) * self.rng.uniform(0.6, 1.1), false)
+                    (len * 0.55 * fm::powf(1.0 - s, 0.7) * self.rng.uniform(0.6, 1.1), false)
                 };
                 if lc > 0.08 {
                     self.shoot(q, dc, lc, level + 1, dead, false);
@@ -300,7 +301,7 @@ impl Conifer {
         let last = segs.len() - 1;
         self.tips.push((pts[pts.len() - 1], segs[last] * (1.0 / sl[last])));
         for _ in 0..cnt {
-            let x = self.rng.next_f32().powf(1.5);
+            let x = fm::powf(self.rng.next_f32(), 1.5);
             let u = total - fol * x;
             let i = cum.partition_point(|&c| c <= u).saturating_sub(1).min(last);
             let base = pts[i] + segs[i] * ((u - cum[i]) / sl[i]);
@@ -310,7 +311,7 @@ impl Conifer {
             let b2 = t.cross(b1);
             let psi = self.rng.uniform(0.0, TAU);
             let al = self.rng.uniform(0.55, 1.05) * (0.45 + 0.55 * (x / 0.15).min(1.0));
-            let mut dv = t * al.cos() + (b1 * psi.cos() + b2 * psi.sin()) * al.sin();
+            let mut dv = t * fm::cos(al) + (b1 * fm::cos(psi) + b2 * fm::sin(psi)) * fm::sin(al);
             dv.y += 0.22;
             let dv = unit(dv);
             let h = self.rng.uniform(self.p.nsize.0, self.p.nsize.1);
@@ -420,7 +421,7 @@ fn broadleaf(seed: u32, kind: TreeKind) -> Asset {
     let scale = target / r[0].max(1e-6);
     r.iter_mut().for_each(|x| *x = r_tip + (*x - r_tip) * scale);
     for i in 0..nt {
-        r[i] *= 1.0 + 0.55 * (-pts[i].y / (0.35 * h / 11.0)).exp(); // root flare
+        r[i] *= 1.0 + 0.55 * fm::exp(-pts[i].y / (0.35 * h / 11.0)); // root flare
     }
     let mut keep = vec![true; pts.len()];
     if kind == TreeKind::Dead {

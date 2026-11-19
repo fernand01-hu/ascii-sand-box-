@@ -12,6 +12,7 @@
 //! One rule from the original drives sizes: a character is about `g` metres
 //! tall (the gallery picks `g` so that is ~15 px at its viewing distance).
 //! Smaller sprites are enlarged and thinned out, bigger ones split.
+use crate::fm;
 
 use super::asset::{basis, smoothstep, unit, Asset, Placement, RngExt, UP};
 use super::style::{charset, Bark, Mat, Pattern, MATERIALS, MID_CHARS};
@@ -163,7 +164,7 @@ impl BarkPattern {
                 h = h.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
                 h ^= h >> 33;
                 let (jx, jy) = ((h & 0xFFFF) as f32 / 65535.0, ((h >> 16) & 0xFFFF) as f32 / 65535.0);
-                let d = ((a - (ca as f32 + jx) * cw) / cw).hypot((b - (cb as f32 + jy) * ch) / ch);
+                let d = fm::hypot((a - (ca as f32 + jx) * cw) / cw, (b - (cb as f32 + jy) * ch) / ch);
                 if d < f1 {
                     f2 = f1;
                     f1 = d;
@@ -233,7 +234,7 @@ pub struct Skinner<'a> {
 /// Opacity of one card that stands in for `n` cards of opacity `a`
 /// (the chance that at least one of them would have covered a point).
 pub fn opaque(a: f32, n: f32) -> f32 {
-    (1.0 - (1.0 - a.clamp(0.0, 1.0)).powf(n.max(1.0))).min(1.0)
+    (1.0 - fm::powf(1.0 - a.clamp(0.0, 1.0), n.max(1.0))).min(1.0)
 }
 
 impl<'a> Skinner<'a> {
@@ -299,7 +300,7 @@ impl<'a> Skinner<'a> {
         }
         self.cards.truncate((start + cap) * STRIDE);
         let r = n as f32 / cap as f32;
-        let grow = r.powf(0.25).min(1.6);
+        let grow = fm::powf(r, 0.25).min(1.6);
         // Foliage keeps the area it covered: half as many leaves, sqrt(2) as big.
         let grow_leaf = r.sqrt().min(2.2);
         let keep_ramp = r < 1.5;
@@ -391,7 +392,7 @@ impl<'a> Skinner<'a> {
             }
             let g = self.g * md.size;
             let k = (0.85 * g / size).max(1.0); // far: enlarge ...
-            if self.rng.next_f32() >= 1.0 / k.powf(md.keep) {
+            if self.rng.next_f32() >= 1.0 / fm::powf(k, md.keep) {
                 continue; // ... and thin out
             }
             let reps = ((size / (1.5 * g)).powi(2).round() as usize).clamp(1, 9); // near: split
@@ -407,14 +408,14 @@ impl<'a> Skinner<'a> {
                 }
                 let (u, mode) = if has_n {
                     let tw = self.rng.gauss(0.15);
-                    (side * tw.cos() + axis.cross(side) * tw.sin(), CardMode::Fixed)
+                    (side * fm::cos(tw) + axis.cross(side) * fm::sin(tw), CardMode::Fixed)
                 } else {
                     (side, CardMode::BillboardV)
                 };
                 let alb = self.albedo(s.mat, pl.tint);
                 // Fewer leaves -> each one more opaque (and no light "shade"
                 // glyphs), so a thinned crown keeps its body.
-                let thin = s.thin * k.powf(md.keep);
+                let thin = s.thin * fm::powf(k, md.keep);
                 let alpha = opaque(self.alpha(s.mat), thin);
                 let glyph = self.glyph(s.mat);
                 self.no_ramp = thin > 1.5;
@@ -443,7 +444,7 @@ impl<'a> Skinner<'a> {
             let n = if n == Vec3::ZERO { UP } else { n };
             let (b1, b2) = basis(n);
             let ang = self.rng.uniform(0.0, TAU);
-            let ud = b1 * ang.cos() + b2 * ang.sin();
+            let ud = b1 * fm::cos(ang) + b2 * fm::sin(ang);
             let vd = n.cross(ud);
             let sz = gw.max(sp * 1.4);
             let c = pos + nrm * (0.002 + 0.01 * sz);
@@ -527,12 +528,12 @@ impl<'a> Skinner<'a> {
                     let tt = (row as f32 + self.rng.uniform(0.1, 0.9)) / rows as f32;
                     let phi = (col as f32 + self.rng.uniform(0.15, 0.85)) / around as f32 * TAU;
                     let a = p0 + (p1 - p0) * tt;
-                    let nrm = f0 * phi.cos() + s0 * phi.sin();
+                    let nrm = f0 * fm::cos(phi) + s0 * fm::sin(phi);
                     let c = a + nrm * (r * (1.0 + self.rng.uniform(0.0, 0.05)));
                     let rot = self.rng.gauss(0.15);
                     let tang = t.cross(nrm);
-                    let ud = unit(tang * rot.cos() + t * rot.sin() + nrm * self.rng.gauss(0.25));
-                    let vd = unit(-tang * rot.sin() + t * rot.cos() + nrm * self.rng.gauss(0.25));
+                    let ud = unit(tang * fm::cos(rot) + t * fm::sin(rot) + nrm * self.rng.gauss(0.25));
+                    let vd = unit(-tang * fm::sin(rot) + t * fm::cos(rot) + nrm * self.rng.gauss(0.25));
                     let hh = g * self.rng.uniform(0.9, 1.1);
                     let arc = (phi - PI) * r;
                     let (part, alb) = self.bark.sample(w.bark, arc, c.y, rel_h);
@@ -546,7 +547,7 @@ impl<'a> Skinner<'a> {
             let sides = if self.solids_on && w.level == 0 { 8 } else { 0 };
             for k in 0..sides {
                 let (a0, a1) = (k as f32 / sides as f32 * TAU, (k + 1) as f32 / sides as f32 * TAU);
-                let ring = |p: Vec3, a: f32| p + (f0 * a.cos() + s0 * a.sin()) * (r * 0.9);
+                let ring = |p: Vec3, a: f32| p + (f0 * fm::cos(a) + s0 * fm::sin(a)) * (r * 0.9);
                 let (q00, q01, q10, q11) = (ring(p0, a0), ring(p0, a1), ring(p1, a0), ring(p1, a1));
                 self.solids.push([q00, q01, q11]);
                 self.solids.push([q00, q11, q10]);

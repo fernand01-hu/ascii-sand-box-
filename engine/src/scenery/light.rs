@@ -5,6 +5,7 @@
 //! sun (5 m sharp, then 5-36 m through a blurrier copy for long cast shadows
 //! between plants), its skylight the same toward five sky directions. The
 //! shader does the rest of the shading per frame.
+use crate::fm;
 
 use super::asset::unit;
 use crate::math::Vec3;
@@ -83,7 +84,7 @@ impl Occlusion {
                 acc += grid[idx];
             }
         }
-        (-k * acc * step).exp()
+        fm::exp(-k * acc * step)
     }
 
     pub fn sun(&self, p: Vec3, sun: Vec3) -> f32 {
@@ -107,7 +108,7 @@ impl Occlusion {
 /// Separable Gaussian blur of a 3D grid (zero outside).
 pub fn blur3(g: &mut [f32], dims: [usize; 3], sigma: f32) {
     let rad = (3.0 * sigma).ceil() as isize;
-    let mut k: Vec<f32> = (-rad..=rad).map(|i| (-(i * i) as f32 / (2.0 * sigma * sigma)).exp()).collect();
+    let mut k: Vec<f32> = (-rad..=rad).map(|i| fm::exp(-(i * i) as f32 / (2.0 * sigma * sigma))).collect();
     let sum: f32 = k.iter().sum();
     k.iter_mut().for_each(|v| *v /= sum);
     let [nx, ny, nz] = dims;
@@ -146,7 +147,7 @@ mod tests {
         let mut occ = Vec::new();
         for i in 0..4000 {
             let t = i as f32 * 0.618;
-            let p = Vec3::new(t.sin() * (i % 7) as f32 * 0.12, 3.0 + t.cos() * (i % 5) as f32 * 0.15, (t * 1.7).sin() * (i % 6) as f32 * 0.12);
+            let p = Vec3::new(fm::sin(t) * (i % 7) as f32 * 0.12, 3.0 + fm::cos(t) * (i % 5) as f32 * 0.15, fm::sin(t * 1.7) * (i % 6) as f32 * 0.12);
             occ.push((p, 0.02));
         }
         let o = Occlusion::new(&occ);

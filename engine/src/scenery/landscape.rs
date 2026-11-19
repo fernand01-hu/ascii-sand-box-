@@ -10,6 +10,7 @@
 //! * lake water is '~' cards coloured by the reflected sky; streams get cards
 //!   that the shader slides along the flow;
 //! * rain and blowing leaves are particle cards animated in the shader.
+use crate::fm;
 
 use super::asset::{basis, smoothstep, unit, RngExt, UP};
 use super::perlin::Perlin;
@@ -103,7 +104,7 @@ impl Sky {
 
     /// Colour (0-255), brightness (ramp position) and elevation (degrees).
     pub fn color(&self, d: Vec3) -> ([f32; 3], f32, f32) {
-        let el = d.y.clamp(-1.0, 1.0).asin().to_degrees();
+        let el = fm::asin(d.y.clamp(-1.0, 1.0)).to_degrees();
         let p = self.pal;
         let col = [0, 1, 2].map(|k| interp(el, p.el, &p.col.iter().map(|c| c[k]).collect::<Vec<_>>()));
         (col, interp(el, p.b_el, p.b), el)
@@ -134,7 +135,7 @@ pub fn sky_dome(sk: &mut Skinner, sky: &Sky, center: Vec3, radius: f32, view: &V
         let r = (1.0 - y * y).sqrt();
         let phi = i as f32 * 2.399_963;
         // Jitter about half a spacing so the spiral lattice doesn't show as stripes.
-        let d0 = Vec3::new(r * phi.cos(), y, r * phi.sin());
+        let d0 = Vec3::new(r * fm::cos(phi), y, r * fm::sin(phi));
         let (t1, t2) = basis(d0);
         let d = unit(d0 + (t1 * rng.uniform(-0.5, 0.5) + t2 * rng.uniform(-0.5, 0.5)) * spacing);
         let (mut col, b, el) = sky.color(d);
@@ -165,8 +166,8 @@ fn facing(d: Vec3, rng: &mut Pcg32) -> (Vec3, Vec3) {
     let right = if right == Vec3::ZERO { Vec3::X } else { right };
     let up = right.cross(d);
     let (yaw, roll) = (rng.gauss(0.3), rng.gauss(0.08));
-    let u = right * yaw.cos() + d * yaw.sin();
-    let u = u * roll.cos() + up * roll.sin();
+    let u = right * fm::cos(yaw) + d * fm::sin(yaw);
+    let u = u * fm::cos(roll) + up * fm::sin(roll);
     let mut v = unit(u.cross(d) * -1.0);
     if v.dot(up) < 0.0 {
         v = -v;
@@ -333,7 +334,7 @@ pub fn ground_region(
                             let q = pw + Vec3::new(rng.gauss(1.0), 0.0, rng.gauss(1.0)) * (g * 0.5);
                             // Stored flat; the shader tilts it toward whoever looks.
                             let a = rng.uniform(0.0, TAU);
-                            let ud = Vec3::new(a.cos(), 0.0, a.sin());
+                            let ud = Vec3::new(fm::cos(a), 0.0, fm::sin(a));
                             let vd = UP.cross(ud); // ud x vd = up
                             let s = g * rng.uniform(0.9, 1.15);
                             let col = water_color(sky, view.eye, q, sun, glint, rng).map(|v| v * rng.uniform(0.85, 1.15));
@@ -382,7 +383,7 @@ pub fn ground_region(
                 if mat == Mat::GroundGrass && rng.chance(p_blade) {
                     let h = g * rng.uniform(0.9, 1.4);
                     let (tilt, tdir) = (rng.gauss(0.3), rng.uniform(0.0, TAU));
-                    let vb = unit(n * 1.5 + Vec3::new(tilt.sin() * tdir.cos(), 0.0, tilt.sin() * tdir.sin()));
+                    let vb = unit(n * 1.5 + Vec3::new(fm::sin(tilt) * fm::cos(tdir), 0.0, fm::sin(tilt) * fm::sin(tdir)));
                     let ub = unit(vb.cross(Vec3::X + Vec3::Z * 0.3));
                     let slope_light = 0.4 + 0.6 * (n.dot(sun) / sun.y.max(0.25)).clamp(0.0, 1.15);
                     let gb = Mat::GrassBlade.def();

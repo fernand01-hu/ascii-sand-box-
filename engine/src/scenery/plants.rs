@@ -1,5 +1,6 @@
 //! Small plants: fern, big-leaf rosettes (hosta, variegated hosta, elephant
 //! ear, rhubarb), grass tuft, reeds, wildflowers. Port of `scenery/plants.py`.
+use crate::fm;
 
 use super::asset::{dir, polyline, unit, Asset, RngExt, UP};
 use super::style::{Bark, Mat};
@@ -60,8 +61,8 @@ fn fern(rng: &mut Pcg32, size: f32) -> Asset {
         let az = TAU * i as f32 / nf as f32 + rng.gauss(0.25);
         let len = size * rng.uniform(0.55, 1.0);
         let (e0, curl) = (rng.uniform(0.95, 1.25), rng.uniform(1.3, 2.1));
-        let base = Vec3::new(az.sin(), 0.0, az.cos()) * (0.03 * size);
-        let pts = curve(base, az, |s| e0 - curl * s.powf(1.4), len, 16);
+        let base = Vec3::new(fm::sin(az), 0.0, fm::cos(az)) * (0.03 * size);
+        let pts = curve(base, az, |s| e0 - curl * fm::powf(s, 1.4), len, 16);
         a.wood_chain(&pts, |i, n| 0.006 * size * (1.0 - 0.6 * i as f32 / (n - 1) as f32), 3, Bark::Stem);
         let mat = if rng.chance(0.12) { Mat::FernOld } else { Mat::Fern };
         let (segs, sl, cum) = polyline(&pts);
@@ -75,7 +76,7 @@ fn fern(rng: &mut Pcg32, size: f32) -> Asset {
             let t = segs[k] * (1.0 / sl[k]);
             let side = unit(t.cross(UP));
             let nf_ = unit(side.cross(t));
-            let lp = len * 0.3 * (PI * (s * 1.25).min(1.0)).sin().max(0.0).powf(0.6) * (1.0 - 0.45 * s);
+            let lp = len * 0.3 * fm::powf(fm::sin(PI * (s * 1.25).min(1.0)).max(0.0), 0.6) * (1.0 - 0.45 * s);
             for sg in [-1.0f32, 1.0] {
                 let d = unit(t * 0.4 + side * sg - nf_ * 0.15);
                 let npin = ((lp / 0.028) as usize).max(2);
@@ -92,7 +93,7 @@ fn fern(rng: &mut Pcg32, size: f32) -> Asset {
     }
     for _ in 0..rng.int(0, 4) {
         let (az, h) = (rng.uniform(0.0, TAU), rng.uniform(0.08, 0.22) * size);
-        let p = Vec3::new(az.sin() * 0.03, h, az.cos() * 0.03);
+        let p = Vec3::new(fm::sin(az) * 0.03, h, fm::cos(az) * 0.03);
         a.wood(Vec3::ZERO, p, 0.005, 3, Bark::Stem);
         a.sprite(p + UP * 0.02, UP, 0.06 * size, Mat::Fiddlehead, None);
     }
@@ -159,7 +160,7 @@ fn width(u: f32, shape: Shape) -> f32 {
             let x = (u + 0.12) / 1.12;
             (1.0 - ((x - 0.48) / 0.52).powi(2)).clamp(0.0, 1.0).sqrt()
         }
-        Shape::Ovate => (PI * u.clamp(0.0, 1.0)).sin().max(0.0).powf(0.75) * (1.0 - 0.2 * u),
+        Shape::Ovate => fm::powf(fm::sin(PI * u.clamp(0.0, 1.0)).max(0.0), 0.75) * (1.0 - 0.2 * u),
     }
 }
 
@@ -189,7 +190,7 @@ fn rosette(rng: &mut Pcg32, kind: PlantKind, size: f32) -> Asset {
         // Midrib on a fine grid of u, from the lobes (u0 < 0) to the tip.
         let nu_grid = 60;
         let uu: Vec<f32> = (0..nu_grid).map(|k| u0 + (1.0 - u0) * k as f32 / (nu_grid - 1) as f32).collect();
-        let dirs: Vec<Vec3> = uu.iter().map(|&u| dir(az, eb - droop * u.max(0.0).powf(1.5))).collect();
+        let dirs: Vec<Vec3> = uu.iter().map(|&u| dir(az, eb - droop * fm::powf(u.max(0.0), 1.5))).collect();
         let stepl = len * (1.0 - u0) / nu_grid as f32;
         let mut mid = Vec::with_capacity(nu_grid);
         let mut acc = Vec3::ZERO;
@@ -204,9 +205,9 @@ fn rosette(rng: &mut Pcg32, kind: PlantKind, size: f32) -> Asset {
             let k = (((u - u0) / (1.0 - u0) * (nu_grid - 1) as f32) as isize).clamp(0, nu_grid as isize - 1) as usize;
             let t = dirs[k];
             let side = unit(t.cross(UP));
-            let side = unit(side * roll.cos() + t.cross(side) * roll.sin());
+            let side = unit(side * fm::cos(roll) + t.cross(side) * fm::sin(roll));
             let nrm = unit(side.cross(t));
-            let lift = p.cup * v * v * wb * 0.6 + p.wavy * size * (v * 9.0 + u * 14.0).sin() * v.abs();
+            let lift = p.cup * v * v * wb * 0.6 + p.wavy * size * fm::sin(v * 9.0 + u * 14.0) * v.abs();
             (mid[k] + side * (v * wb / 2.0) + nrm * lift, nrm)
         };
         for iu in 0..nu {
@@ -217,7 +218,7 @@ fn rosette(rng: &mut Pcg32, kind: PlantKind, size: f32) -> Asset {
                 if v.abs() >= w {
                     continue;
                 }
-                if p.shape == Shape::Heart && u < 0.0 && v.abs() < 0.5 * ((-u).max(0.0) / -u0).powf(0.7) {
+                if p.shape == Shape::Heart && u < 0.0 && v.abs() < 0.5 * fm::powf((-u).max(0.0) / -u0, 0.7) {
                     continue; // notch between the lobes
                 }
                 let (mut pos, _) = surface(u, v);
@@ -255,7 +256,7 @@ fn grass_tuft(rng: &mut Pcg32, size: f32) -> Asset {
         let (az, r0) = (rng.uniform(0.0, TAU), rng.uniform(0.0, 0.06) * size);
         let h = rng.uniform(0.3, 0.75) * size;
         let (lean, bend) = (rng.uniform(0.05, 0.45), rng.uniform(0.4, 1.3));
-        let pts = curve(Vec3::new(az.sin() * r0, 0.0, az.cos() * r0), az, |s| FRAC_PI_2 - lean - bend * s.powf(1.6), h, 6);
+        let pts = curve(Vec3::new(fm::sin(az) * r0, 0.0, fm::cos(az) * r0), az, |s| FRAC_PI_2 - lean - bend * fm::powf(s, 1.6), h, 6);
         chain(&mut a, &pts, |s| 1.35 - 0.3 * s, Mat::GrassTall);
     }
     a
@@ -267,7 +268,7 @@ fn reeds(rng: &mut Pcg32, size: f32) -> Asset {
         let (az, r0) = (rng.uniform(0.0, TAU), rng.next_f32().sqrt() * 0.25 * size);
         let h = rng.uniform(1.0, 1.8) * size;
         let lean = rng.gauss(0.06);
-        let base = Vec3::new(az.sin() * r0, 0.0, az.cos() * r0);
+        let base = Vec3::new(fm::sin(az) * r0, 0.0, fm::cos(az) * r0);
         let pts = curve(base, az, |s| FRAC_PI_2 - lean.abs() - 0.1 * s, h, 9);
         chain(&mut a, &pts, |_| 1.3, Mat::Reed);
         if rng.chance(0.45) {
@@ -281,7 +282,7 @@ fn reeds(rng: &mut Pcg32, size: f32) -> Asset {
         for _ in 0..rng.int(1, 3) {
             let laz = az + rng.gauss(0.8);
             let lh = h * rng.uniform(0.5, 0.8);
-            let lpts = curve(base, laz, |s| 1.35 - 1.4 * s.powf(1.5), lh, 7);
+            let lpts = curve(base, laz, |s| 1.35 - 1.4 * fm::powf(s, 1.5), lh, 7);
             chain(&mut a, &lpts, |_| 1.3, Mat::GrassTall);
         }
     }
@@ -296,7 +297,7 @@ fn wildflowers(rng: &mut Pcg32, size: f32) -> Asset {
         let (az, r0) = (rng.uniform(0.0, TAU), rng.next_f32().sqrt() * 0.18 * size);
         let h = rng.uniform(0.2, 0.55) * size;
         let lean = rng.uniform(0.0, 0.35);
-        let base = Vec3::new(az.sin() * r0, 0.0, az.cos() * r0);
+        let base = Vec3::new(fm::sin(az) * r0, 0.0, fm::cos(az) * r0);
         let pts = curve(base, az, |s| FRAC_PI_2 - lean - 0.3 * s, h, 6);
         a.wood_chain(&pts, |_, _| 0.003 * size, 3, Bark::Stem);
         for j in [1, 2] {

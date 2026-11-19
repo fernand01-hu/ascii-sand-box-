@@ -11,7 +11,7 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-ascii_engine = { path = "../engine", default-features = false }
+ascii_engine = { path = "../engine", default-features = false, features = ["libm"] }
 ascii_core = { path = "core" }
 ascii_render = { path = "render" }
 glam = "0.30"

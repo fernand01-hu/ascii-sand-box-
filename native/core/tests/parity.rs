@@ -150,6 +150,9 @@ fn native_engine_matches_wasm_engine() {
     let aspect = f(&fx["aspect"]) as f32;
     let mut got: std::collections::HashMap<String, (usize, u32, f64, f64)> = Default::default();
     let mut put = |name: &str, v: &[f32]| {
+        if let Ok(dir) = std::env::var("ASCII_DUMP") {
+            std::fs::write(format!("{dir}/{name}.native.f32"), bytemuck_cast(v)).unwrap();
+        }
         let (sum, abs) = v.iter().fold((0.0f64, 0.0f64), |(s, a), x| (s + f64::from(*x), a + f64::from(x.abs())));
         got.insert(name.to_string(), (v.len(), fnv(v), sum, abs));
     };
@@ -192,6 +195,8 @@ fn native_engine_matches_wasm_engine() {
         let (wl, wh) = (it["len"].as_u64().unwrap() as usize, it["hash"].as_u64().unwrap() as u32);
         if hash == wh && len == wl {
             exact += 1;
+        } else {
+            eprintln!("not bit-identical: {name} (native {len} floats {hash:08x}, wasm {wl} floats {wh:08x})");
         }
         let tol = 1e-4 * f(&it["abs"]).max(1.0);
         if len != wl || (sum - f(&it["sum"])).abs() > tol || (abs - f(&it["abs"])).abs() > tol {
@@ -200,4 +205,8 @@ fn native_engine_matches_wasm_engine() {
     }
     eprintln!("bit-identical buffers: {exact} of {}", fx["items"].as_array().unwrap().len());
     assert!(bad.is_empty(), "native and WASM engines differ:\n{}", bad.join("\n"));
+}
+
+fn bytemuck_cast(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }

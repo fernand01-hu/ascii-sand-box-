@@ -1,0 +1,30 @@
+# Native macOS port: compile and test on an Apple Silicon runner.
+# Proposed, not required: it uses no secrets and only reads the repository.
+name: native-macos
+on:
+  push:
+    branches: [grosminet/native-macos]
+    paths: ['native/**', 'engine/**', 'scripts/build-macos.sh', '.github/workflows/native-macos.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup target add aarch64-apple-darwin
+      - name: Core and renderer unit tests
+        working-directory: native
+        run: cargo test --release -p ascii_core -p ascii_render
+      - name: Build the app
+        run: scripts/build-macos.sh
+      - name: Off-screen render check (Metal may be unavailable on the runner)
+        continue-on-error: true
+        working-directory: native
+        run: ./target/aarch64-apple-darwin/release/ascii-scene golden ../tests/golden golden-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ascii-scene-macos-arm64
+          path: dist-macos/ASCII Scene.app

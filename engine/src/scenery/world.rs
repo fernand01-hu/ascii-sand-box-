@@ -15,6 +15,7 @@
 //!   or camera when the chunk was built): ~15 px tall at any distance. The
 //!   renderer rebuilds a chunk when the eye has moved enough for that to be
 //!   off, so detail follows you around.
+use crate::fm;
 
 use super::asset::{smoothstep, unit, Asset, Placement, RngExt};
 use super::landscape::{self, Land, Sky, View, DAY, DUSK};
@@ -73,7 +74,7 @@ impl WorldGen {
         let hills = 9.0 * n.fbm(wx / 85.0, wz / 85.0, 0.1, 5) + 2.5 * n.fbm(wx / 22.0, wz / 22.0, 4.0, 4);
         let region = self.region.fbm(x / 700.0, z / 700.0, 3.0, 3);
         let (mx, mz) = self.warp(x, z, 90.0, 30.0);
-        let mountains = 70.0 * n.ridged(mx / 260.0, mz / 260.0, 6).powf(1.6) * smoothstep(0.05, 0.35, region);
+        let mountains = 70.0 * fm::powf(n.ridged(mx / 260.0, mz / 260.0, 6), 1.6) * smoothstep(0.05, 0.35, region);
         hills + mountains + 2.0
     }
 
@@ -84,7 +85,7 @@ impl WorldGen {
         let e = 1.0;
         let gx = (f(x + e, z) - f(x - e, z)) / (2.0 * e);
         let gz = (f(x, z + e) - f(x, z - e)) / (2.0 * e);
-        v.abs() / gx.hypot(gz).max(1e-6)
+        v.abs() / fm::hypot(gx, gz).max(1e-6)
     }
 
     /// Footpath strength (0..1), ~1.2 m wide.
@@ -267,7 +268,7 @@ fn scatter_rect(w: &WorldGen, land: &dyn Land, lib: &mut Library, eye: Vec3, rec
                 let (x, z) = ((ix as f32 + rng.next_f32()) * cell, (iz as f32 + rng.next_f32()) * cell);
                 let keep_roll = rng.next_f32();
                 let kind_roll = rng.next_f32();
-                let d_eye = (x - eye.x).hypot(z - eye.z);
+                let d_eye = fm::hypot(x - eye.x, z - eye.z);
                 let y = land.height(x, z);
                 let n = land.normal(x, z);
                 let slope = 1.0 - n.y;
@@ -340,7 +341,7 @@ fn scatter_rect(w: &WorldGen, land: &dyn Land, lib: &mut Library, eye: Vec3, rec
                     let rr = (hi.x - lo.x).max(hi.z - lo.z) * sc / 2.0;
                     for k in 0..6 {
                         let a = k as f32 / 6.0 * TAU;
-                        yy = yy.min(land.height(x + rr * a.cos(), z + rr * a.sin()));
+                        yy = yy.min(land.height(x + rr * fm::cos(a), z + rr * fm::sin(a)));
                     }
                 }
                 let sink = if which == LayerKind::Trees { 0.12 } else { 0.03 };
@@ -456,7 +457,7 @@ impl World {
                 trees.push((p.pl.pos.x, p.pl.pos.z, ((hi.x - lo.x) * p.pl.scale * 0.45).max(1.5)));
             }
         }
-        let canopy = |x: f32, z: f32| trees.iter().map(|&(tx, tz, r)| (-((x - tx).powi(2) + (z - tz).powi(2)) / (r * r)).exp()).fold(0.0, f32::max);
+        let canopy = |x: f32, z: f32| trees.iter().map(|&(tx, tz, r)| fm::exp(-((x - tx).powi(2) + (z - tz).powi(2)) / (r * r))).fold(0.0, f32::max);
         let mut rng = Pcg32::new(seed, 0x960d);
         let flow = |x: f32, z: f32| w.flow(x, z);
         landscape::ground_region(&mut sk, &land, &canopy, &sky, &view, sun, glint, &mut rng, rect, Some(&flow));
