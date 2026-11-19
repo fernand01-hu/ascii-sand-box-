@@ -6,6 +6,7 @@
 //!   its largest dimension is `TARGET_SIZE`,
 //! * welds shared vertices and computes per-corner normals that are smooth
 //!   across gentle curves but stay sharp across hard edges (crease angle).
+use crate::fm;
 
 use crate::math::Vec3;
 use crate::stl::Triangle;
@@ -182,7 +183,7 @@ fn corner_normals(tris: &[Triangle], face_n: &[Vec3], areas: &[f32]) -> Vec<[Vec
         fill[v as usize] += 1;
     }
 
-    let cos_crease = CREASE_DEG.to_radians().cos();
+    let cos_crease = fm::cos(CREASE_DEG.to_radians());
     let mut out = Vec::with_capacity(tris.len());
     for f in 0..tris.len() {
         let fnorm = face_n[f];

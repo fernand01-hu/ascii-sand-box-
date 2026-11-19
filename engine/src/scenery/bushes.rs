@@ -1,5 +1,6 @@
 //! Bushes: several stems from the ground, branching by space colonization
 //! inside a rounded envelope, leaves on the twigs. Port of `scenery/bushes.py`.
+use crate::fm;
 
 use super::asset::{unit, Asset, RngExt, UP};
 use super::colonize::{colonize, envelope_points, pipe_radii, smooth};
@@ -78,7 +79,7 @@ pub fn make_bush(seed: u32, kind: BushKind) -> Asset {
     let (mut nodes, mut parents) = (Vec::new(), Vec::new());
     for _ in 0..rng.int(p.stems.0, p.stems.1) {
         let (a, rr) = (rng.uniform(0.0, TAU), rng.uniform(0.0, 0.12) * size);
-        let b = Vec3::new(a.cos() * rr, 0.0, a.sin() * rr);
+        let b = Vec3::new(fm::cos(a) * rr, 0.0, fm::sin(a) * rr);
         nodes.push(b);
         parents.push(-1);
         nodes.push(b + unit(UP + rng.gauss3(0.25)) * d);

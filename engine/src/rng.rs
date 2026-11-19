@@ -2,6 +2,7 @@
 //!
 //! Implemented here instead of pulling a crate so the sequence for a given
 //! seed can never change under us: same seed, same scene, forever.
+use crate::fm;
 
 #[derive(Clone, Debug)]
 pub struct Pcg32 {
@@ -45,7 +46,7 @@ impl Pcg32 {
     pub fn normal(&mut self) -> f32 {
         let u1 = 1.0 - self.next_f32(); // (0, 1], so ln is finite
         let u2 = self.next_f32();
-        (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos()
+        (-2.0 * fm::ln(u1)).sqrt() * fm::cos(std::f32::consts::TAU * u2)
     }
 }
 

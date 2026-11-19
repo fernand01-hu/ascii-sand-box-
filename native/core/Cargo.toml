@@ -1,0 +1,13 @@
+[package]
+name = "ascii_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ascii_engine.workspace = true
+glam.workspace = true
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }

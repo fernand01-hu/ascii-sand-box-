@@ -10,6 +10,7 @@
 //!
 //! Orbit-friendly change: small things are placed near the camera *or* near
 //! the orbit focus, and nothing is culled by the original's fixed frustum.
+use crate::fm;
 
 use super::asset::{smoothstep, Asset, Placement, RngExt};
 use super::bushes::{make_bush, BushKind};
@@ -20,6 +21,7 @@ use super::trees::{make_tree, TreeKind};
 use crate::math::Vec3;
 use crate::rng::Pcg32;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::f32::consts::TAU;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -121,7 +123,19 @@ pub(crate) fn layers(b: Biome) -> Vec<Layer> {
 pub struct Library {
     seed: u32,
     index: HashMap<(Kind, u32, u8), usize>,
-    pub assets: Vec<Asset>,
+    pub assets: Vec<Arc<Asset>>,
+}
+
+type AssetKey = (u32, Kind, u32, u8);
+type AssetCell = Arc<OnceLock<Arc<Asset>>>;
+
+/// Assets are a pure function of (library seed, kind, variant, lod), so every
+/// `Library` of the process shares them: each one is built once, by whichever
+/// thread needs it first, while the others wait for it instead of building
+/// their own copy.
+fn shared_assets() -> &'static Mutex<HashMap<AssetKey, AssetCell>> {
+    static CACHE: OnceLock<Mutex<HashMap<AssetKey, AssetCell>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 impl Library {
@@ -133,7 +147,19 @@ impl Library {
         if let Some(&i) = self.index.get(&(kind, variant, lod)) {
             return i;
         }
-        let base = if lod == 0 {
+        let cell = {
+            let mut m = shared_assets().lock().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(m.entry((self.seed, kind, variant, lod)).or_default())
+        };
+        let asset = Arc::clone(cell.get_or_init(|| Arc::new(self.build(kind, variant, lod))));
+        self.assets.push(asset);
+        let i = self.assets.len() - 1;
+        self.index.insert((kind, variant, lod), i);
+        i
+    }
+
+    fn build(&mut self, kind: Kind, variant: u32, lod: u8) -> Asset {
+        if lod == 0 {
             let k = match kind {
                 Kind::Tree(t) => t as u32,
                 Kind::Bush(b) => 10 + b as u32,
@@ -150,11 +176,7 @@ impl Library {
         } else {
             let i0 = self.get(kind, variant, 0);
             self.assets[i0].lod(lod, self.seed as u64)
-        };
-        self.assets.push(base);
-        let i = self.assets.len() - 1;
-        self.index.insert((kind, variant, lod), i);
-        i
+        }
     }
 }
 
@@ -211,8 +233,8 @@ pub fn scatter(t: &Terrain, eye: Vec3, focus: Vec3, biome: Biome, seed: u32) -> 
                 if x.abs() >= lim || z.abs() >= lim {
                     continue;
                 }
-                let d_eye = (x - eye.x).hypot(z - eye.z);
-                let d_focus = (x - focus.x).hypot(z - focus.z);
+                let d_eye = fm::hypot(x - eye.x, z - eye.z);
+                let d_focus = fm::hypot(x - focus.x, z - focus.z);
                 let d = if small { d_eye.min(d_focus) } else { d_eye };
                 if d > layer.max_dist || d_eye < min_dist {
                     continue;
@@ -223,7 +245,7 @@ pub fn scatter(t: &Terrain, eye: Vec3, focus: Vec3, biome: Biome, seed: u32) -> 
                 if d_eye > 110.0 {
                     let fwd = Vec3::new(focus.x - eye.x, 0.0, focus.z - eye.z);
                     let to = Vec3::new(x - eye.x, 0.0, z - eye.z);
-                    if fwd.dot(to) < fwd.length() * to.length() * 75f32.to_radians().cos() {
+                    if fwd.dot(to) < fwd.length() * to.length() * fm::cos(75f32.to_radians()) {
                         continue;
                     }
                 }
@@ -302,7 +324,7 @@ pub fn scatter(t: &Terrain, eye: Vec3, focus: Vec3, biome: Biome, seed: u32) -> 
                     let r = (hi.x - lo.x).max(hi.z - lo.z) * sc / 2.0;
                     for k in 0..6 {
                         let a = k as f32 / 6.0 * TAU;
-                        yy = yy.min(t.height(x + r * a.cos(), z + r * a.sin()));
+                        yy = yy.min(t.height(x + r * fm::cos(a), z + r * fm::sin(a)));
                     }
                 }
                 let sink = if layer.which == LayerKind::Trees { 0.12 } else { 0.03 };
@@ -331,7 +353,7 @@ pub fn scatter(t: &Terrain, eye: Vec3, focus: Vec3, biome: Biome, seed: u32) -> 
                     continue;
                 }
                 let (px, pz) = (-t.half + ix as f32 * res, -t.half + iz as f32 * res);
-                let v = (-((px - x).powi(2) + (pz - z).powi(2)) / (r * r)).exp();
+                let v = fm::exp(-((px - x).powi(2) + (pz - z).powi(2)) / (r * r));
                 let i = iz as usize * n + ix as usize;
                 g[i] = g[i].max(v);
             }
@@ -365,11 +387,47 @@ mod tests {
             assert!(!t.is_water(x, z), "nothing in the water");
             assert!(t.trail_strength(x, z) < 0.45, "nothing on the trail at ({x}, {z})");
             if let Kind::Tree(_) = p.kind {
-                assert!((x - eye.x).hypot(z - eye.z) >= 18.0, "foreground kept clear of trees");
+                assert!(fm::hypot(x - eye.x, z - eye.z) >= 18.0, "foreground kept clear of trees");
             }
         }
         // At most (kinds x variants) base assets, each in up to 3 levels of detail.
         let kinds: usize = layers(Biome::Meadow).iter().map(|l| l.kinds.len() * if l.which == LayerKind::Trees { 3 } else { 4 }).sum();
         assert!(s.library.assets.len() <= kinds * 3, "variants are cached: {} > {}", s.library.assets.len(), kinds * 3);
     }
+}
+
+/// Every (kind, variant) the world can place, in a fixed order.
+fn world_asset_keys() -> Vec<(Kind, u32)> {
+    let mut keys: Vec<(Kind, u32)> = Vec::new();
+    for b in [Biome::Meadow, Biome::Forest, Biome::Lakeside, Biome::Alpine] {
+        for layer in layers(b) {
+            let variants = if layer.which == LayerKind::Trees { 3 } else { 4 };
+            for &(kind, _) in &layer.kinds {
+                for v in 0..variants {
+                    if !keys.contains(&(kind, v)) {
+                        keys.push((kind, v));
+                    }
+                }
+            }
+        }
+    }
+    keys
+}
+
+/// Build share `part` of `parts` of the world's assets (all levels of detail)
+/// into the process-wide cache, so streaming never waits for one. Returns
+/// how many (kind, variant) pairs this share covered.
+pub fn warm_world_assets(seed: u32, part: usize, parts: usize) -> usize {
+    let mut lib = Library::new(seed);
+    let mut n = 0;
+    for (i, (kind, v)) in world_asset_keys().into_iter().enumerate() {
+        if i % parts.max(1) != part {
+            continue;
+        }
+        for lod in 0..3 {
+            lib.get(kind, v, lod);
+        }
+        n += 1;
+    }
+    n
 }

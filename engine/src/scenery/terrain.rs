@@ -12,6 +12,7 @@
 //! * new here: a stream that runs downhill into the lake in a carved channel
 //!   (least-cost path that refuses to climb), and footpaths: least-cost
 //!   routes over gentle slopes, wiggled and worn slightly into the ground
+use crate::fm;
 
 use super::asset::{smoothstep, unit, RngExt};
 use super::perlin::Perlin;
@@ -79,7 +80,7 @@ impl Terrain {
             let pond = (rng.uniform(-35.0, 35.0), rng.uniform(10.0, 60.0), rng.uniform(13.0, 20.0));
             t.water_seed = (pond.0, pond.1);
             water_offset = Some(1.7);
-            t.fill(|t, x, z| t.hills(x, z) - 4.5 * (-((x - pond.0).powi(2) + (z - pond.1).powi(2)) / pond.2.powi(2)).exp());
+            t.fill(|t, x, z| t.hills(x, z) - 4.5 * fm::exp(-((x - pond.0).powi(2) + (z - pond.1).powi(2)) / pond.2.powi(2)));
         } else {
             match preset {
                 TerrainPreset::Flat => t.fill(|t, x, z| 0.03 * t.noise.fbm(x / 3.0, z / 3.0, 0.5, 3)),
@@ -88,7 +89,7 @@ impl Terrain {
                     let lx = 12.0 * t.noise.fbm(lz / 120.0, 0.3, 0.7, 3);
                     t.water_seed = (lx, lz);
                     water_offset = Some(2.2);
-                    t.fill(move |t, x, z| t.valley(x, z) - 5.0 * (-((x - lx).powi(2) / 900.0 + (z - lz).powi(2) / 2025.0)).exp());
+                    t.fill(move |t, x, z| t.valley(x, z) - 5.0 * fm::exp(-((x - lx).powi(2) / 900.0 + (z - lz).powi(2) / 2025.0)));
                 }
                 TerrainPreset::Lake => {
                     t.water_seed = (0.0, -15.0);
@@ -139,7 +140,7 @@ impl Terrain {
 
     fn mountains(&self, x: f32, z: f32, height: f32, start: f32, full: f32) -> f32 {
         let (wx, wz) = self.warp(x, z, 90.0, 30.0);
-        height * self.noise.ridged(wx / 130.0, wz / 130.0, 6).powf(1.4) * smoothstep(start, full, z)
+        height * fm::powf(self.noise.ridged(wx / 130.0, wz / 130.0, 6), 1.4) * smoothstep(start, full, z)
     }
 
     fn hills(&self, x: f32, z: f32) -> f32 {
@@ -155,7 +156,7 @@ impl Terrain {
         let (wx, wz) = self.warp(x, z, 50.0, 18.0);
         let center = 12.0 * n.fbm(z / 120.0, 0.3, 0.7, 3);
         let dx = (wx - center).abs();
-        let mut h = 26.0 * smoothstep(14.0, 95.0, dx).powf(1.3) + 4.0 * n.fbm(wx / 30.0, wz / 30.0, 3.0, 5);
+        let mut h = 26.0 * fm::powf(smoothstep(14.0, 95.0, dx), 1.3) + 4.0 * n.fbm(wx / 30.0, wz / 30.0, 3.0, 5);
         h += 4.0 * smoothstep(-30.0, 130.0, z);
         h + self.mountains(x, z, 95.0, 10.0, -120.0)
     }
@@ -164,7 +165,7 @@ impl Terrain {
         let n = &self.noise;
         let (wx, wz) = self.warp(x, z, 70.0, 20.0);
         let mut h = 7.0 * n.fbm(wx / 70.0, wz / 70.0, 0.2, 5) + 2.0 * n.fbm(wx / 20.0, wz / 20.0, 5.0, 4);
-        let rr = (wx / 1.6).hypot(wz + 15.0);
+        let rr = fm::hypot(wx / 1.6, wz + 15.0);
         h += 9.0 * smoothstep(30.0, 75.0, rr) - 4.0;
         h *= 1.0 - 0.5 * smoothstep(70.0, 125.0, z);
         h + self.mountains(x, z, 60.0, 0.0, -120.0)
@@ -173,7 +174,7 @@ impl Terrain {
     fn rocky(&self, x: f32, z: f32) -> f32 {
         let n = &self.noise;
         let (wx, wz) = self.warp(x, z, 40.0, 12.0);
-        let mut h = 22.0 * n.ridged(wx / 55.0, wz / 55.0, 5).powf(1.6) + 3.0 * n.fbm(wx / 15.0, wz / 15.0, 2.0, 4);
+        let mut h = 22.0 * fm::powf(n.ridged(wx / 55.0, wz / 55.0, 5), 1.6) + 3.0 * n.fbm(wx / 15.0, wz / 15.0, 2.0, 4);
         h *= 0.35 + 0.65 * smoothstep(110.0, 40.0, z);
         h + self.mountains(x, z, 80.0, 20.0, -110.0)
     }
@@ -207,10 +208,10 @@ impl Terrain {
                 let hc = (h00 * (1.0 - fx) + h10 * fx) * (1.0 - fy) + (h01 * (1.0 - fx) + h11 * fx) * fy;
                 dx = dx * inertia - gx * (1.0 - inertia);
                 dy = dy * inertia - gy * (1.0 - inertia);
-                let ln = dx.hypot(dy);
+                let ln = fm::hypot(dx, dy);
                 if ln < 1e-9 {
                     let a = rng.uniform(0.0, std::f32::consts::TAU);
-                    (dx, dy) = (a.cos(), a.sin());
+                    (dx, dy) = (fm::cos(a), fm::sin(a));
                 } else {
                     (dx, dy) = (dx / ln, dy / ln);
                 }
@@ -438,7 +439,7 @@ impl Terrain {
                         continue;
                     }
                     let (ix, iz) = (ix as usize, iz as usize);
-                    let d = (self.coord(ix) - p.x).hypot(self.coord(iz) - p.z);
+                    let d = fm::hypot(self.coord(ix) - p.x, self.coord(iz) - p.z);
                     let s = smoothstep(reach, half_width * 0.4, d);
                     let i = iz * n + ix;
                     strength[i] = strength[i].max(s);
@@ -464,7 +465,7 @@ impl Terrain {
         for _ in 0..400 {
             let a = rng.uniform(0.0, std::f32::consts::TAU);
             let r = rng.uniform(60.0, 130.0);
-            let (x, z) = (wx + r * a.cos(), wz + r * a.sin());
+            let (x, z) = (wx + r * fm::cos(a), wz + r * fm::sin(a));
             if x.abs() > self.half - 20.0 || z.abs() > self.half - 20.0 || z > self.half - 60.0 {
                 continue;
             }
@@ -546,7 +547,7 @@ impl Terrain {
             let wiggle = 0.6 + 0.4 * self.noise.fbm(b.x / 25.0 + k, b.z / 25.0, 9.1, 2);
             Some(d * (wiggle + 30.0 * slope * slope))
         };
-        let near = |p: Vec3, g: (f32, f32)| (p.x - g.0).hypot(p.z - g.1) < step * 1.5 || self.shore_dist(p.x, p.z) < 3.0;
+        let near = |p: Vec3, g: (f32, f32)| fm::hypot(p.x - g.0, p.z - g.1) < step * 1.5 || self.shore_dist(p.x, p.z) < 3.0;
         let Some(path) = self.route(start, step, walk_cost, |p| near(p, goal_pt)) else { return };
         let main = Self::smooth_path(&path, 0.5);
         // Branch: from a third of the way along, off to one side.
@@ -557,7 +558,7 @@ impl Terrain {
             let target = (b.x + side * rng.uniform(45.0, 80.0), b.z - rng.uniform(10.0, 40.0));
             let target = (target.0.clamp(-self.half + 20.0, self.half - 20.0), target.1.clamp(-self.half + 20.0, self.half - 20.0));
             branch = self
-                .route((b.x, b.z), step, walk_cost, |p| (p.x - target.0).hypot(p.z - target.1) < step * 1.5)
+                .route((b.x, b.z), step, walk_cost, |p| fm::hypot(p.x - target.0, p.z - target.1) < step * 1.5)
                 .map(|p2| Self::smooth_path(&p2, 0.5));
         }
         self.carve(&main, 0.6, 0.12, 0);
@@ -660,7 +661,7 @@ impl Terrain {
 /// Separable Gaussian blur of an n x n grid (edges clamped).
 fn blur2(g: &mut [f32], n: usize, sigma: f32) {
     let rad = (3.0 * sigma).ceil() as isize;
-    let mut k: Vec<f32> = (-rad..=rad).map(|i| (-(i * i) as f32 / (2.0 * sigma * sigma)).exp()).collect();
+    let mut k: Vec<f32> = (-rad..=rad).map(|i| fm::exp(-(i * i) as f32 / (2.0 * sigma * sigma))).collect();
     let s: f32 = k.iter().sum();
     k.iter_mut().for_each(|v| *v /= s);
     let mut tmp = vec![0.0f32; n * n];

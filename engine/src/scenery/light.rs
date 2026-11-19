@@ -5,6 +5,7 @@
 //! sun (5 m sharp, then 5-36 m through a blurrier copy for long cast shadows
 //! between plants), its skylight the same toward five sky directions. The
 //! shader does the rest of the shading per frame.
+use crate::fm;
 
 use super::asset::unit;
 use crate::math::Vec3;
@@ -83,7 +84,7 @@ impl Occlusion {
                 acc += grid[idx];
             }
         }
-        (-k * acc * step).exp()
+        fm::exp(-k * acc * step)
     }
 
     pub fn sun(&self, p: Vec3, sun: Vec3) -> f32 {
@@ -105,9 +106,72 @@ impl Occlusion {
 }
 
 /// Separable Gaussian blur of a 3D grid (zero outside).
+///
+/// Each output cell sums its taps in the same order as the straightforward
+/// triple loop (`blur3_reference`), so the result is bit-for-bit the same;
+/// the loops just run along whole rows so they stay in cache and vectorise.
 pub fn blur3(g: &mut [f32], dims: [usize; 3], sigma: f32) {
     let rad = (3.0 * sigma).ceil() as isize;
-    let mut k: Vec<f32> = (-rad..=rad).map(|i| (-(i * i) as f32 / (2.0 * sigma * sigma)).exp()).collect();
+    let mut k: Vec<f32> = (-rad..=rad).map(|i| fm::exp(-(i * i) as f32 / (2.0 * sigma * sigma))).collect();
+    let sum: f32 = k.iter().sum();
+    k.iter_mut().for_each(|v| *v /= sum);
+    let [nx, ny, nz] = dims;
+    let mut src = vec![0.0f32; g.len()];
+    for axis in 0..3 {
+        src.copy_from_slice(g);
+        let n = dims[axis];
+        // The grid as [outer][n][inner] along this axis.
+        let (outer, inner) = match axis {
+            0 => (1, ny * nz),
+            1 => (nx, nz),
+            _ => (nx * ny, 1),
+        };
+        if inner == 1 {
+            // Along contiguous rows: one pass per tap over the whole row, taps
+            // still added to each cell in increasing order.
+            for o in 0..outer {
+                let row = &src[o * n..(o + 1) * n];
+                let dst = &mut g[o * n..(o + 1) * n];
+                dst.iter_mut().for_each(|v| *v = 0.0);
+                for (t, &w) in k.iter().enumerate() {
+                    let off = t as isize - rad;
+                    let p0 = (-off).max(0) as usize;
+                    let p1 = (n as isize - off).min(n as isize).max(0) as usize;
+                    if p0 >= p1 {
+                        continue;
+                    }
+                    let s0 = (p0 as isize + off) as usize;
+                    for (d, s) in dst[p0..p1].iter_mut().zip(&row[s0..s0 + (p1 - p0)]) {
+                        *d += w * s;
+                    }
+                }
+            }
+            continue;
+        }
+        for o in 0..outer {
+            let base = o * n * inner;
+            for pos in 0..n {
+                let lo = (pos as isize - rad).max(0) as usize;
+                let hi = (pos as isize + rad).min(n as isize - 1) as usize;
+                let dst = &mut g[base + pos * inner..base + (pos + 1) * inner];
+                dst.iter_mut().for_each(|v| *v = 0.0);
+                for q in lo..=hi {
+                    let w = k[(q as isize - pos as isize + rad) as usize];
+                    let row = &src[base + q * inner..base + (q + 1) * inner];
+                    for (d, s) in dst.iter_mut().zip(row) {
+                        *d += w * s;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The original triple loop, kept to check `blur3` against.
+#[cfg(test)]
+fn blur3_reference(g: &mut [f32], dims: [usize; 3], sigma: f32) {
+    let rad = (3.0 * sigma).ceil() as isize;
+    let mut k: Vec<f32> = (-rad..=rad).map(|i| fm::exp(-(i * i) as f32 / (2.0 * sigma * sigma))).collect();
     let sum: f32 = k.iter().sum();
     k.iter_mut().for_each(|v| *v /= sum);
     let [nx, ny, nz] = dims;
@@ -141,12 +205,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn blur3_matches_the_reference_bit_for_bit() {
+        for (dims, sigma) in [([7usize, 5, 9], 0.7f32), ([13, 4, 6], 2.0), ([3, 11, 2], 2.0), ([1, 1, 1], 0.7), ([20, 17, 15], 0.7)] {
+            let n = dims[0] * dims[1] * dims[2];
+            let mut a: Vec<f32> = (0..n).map(|i| fm::sin(i as f32 * 1.37).abs() * if i % 3 == 0 { 0.0 } else { 2.5 }).collect();
+            let mut b = a.clone();
+            blur3(&mut a, dims, sigma);
+            blur3_reference(&mut b, dims, sigma);
+            assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()), "dims {dims:?} sigma {sigma}");
+        }
+    }
+
+    #[test]
     fn a_leaf_ball_shades_its_inside_and_the_ground_below() {
         // A dense ball of foliage 3 m up.
         let mut occ = Vec::new();
         for i in 0..4000 {
             let t = i as f32 * 0.618;
-            let p = Vec3::new(t.sin() * (i % 7) as f32 * 0.12, 3.0 + t.cos() * (i % 5) as f32 * 0.15, (t * 1.7).sin() * (i % 6) as f32 * 0.12);
+            let p = Vec3::new(fm::sin(t) * (i % 7) as f32 * 0.12, 3.0 + fm::cos(t) * (i % 5) as f32 * 0.15, fm::sin(t * 1.7) * (i % 6) as f32 * 0.12);
             occ.push((p, 0.02));
         }
         let o = Occlusion::new(&occ);

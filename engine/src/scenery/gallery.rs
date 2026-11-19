@@ -1,5 +1,6 @@
 //! Preview sheets: a row of assets on studio ground (port of
 //! `scenery/gallery.py`), skinned, with baked shadows.
+use crate::fm;
 
 use super::asset::{basis, unit, Asset, Placement, RngExt, UP};
 use super::bushes::{make_bush, BushKind};
@@ -126,12 +127,12 @@ pub fn build_gallery(cat: Category, seed: u32, glyph_aspect: f32) -> SceneOut {
     // Camera as in the original (a 16:9 frame).
     let fov = sh.fov.to_radians();
     let aspect_wh = 16.0 / 9.0;
-    let hfov = 2.0 * ((fov / 2.0).tan() * aspect_wh).atan();
-    let dist = (width / 2.0 / (hfov / 2.0).tan() * 1.08).max(height / 2.0 / (fov / 2.0).tan() * 1.25) * sh.dist_scale;
+    let hfov = 2.0 * fm::atan(fm::tan(fov / 2.0) * aspect_wh);
+    let dist = (width / 2.0 / fm::tan(hfov / 2.0) * 1.08).max(height / 2.0 / fm::tan(fov / 2.0) * 1.25) * sh.dist_scale;
     let target = Vec3::new(0.0, height * 0.45, -((sh.rows - 1) as f32) * 1.5);
     let eye = target + Vec3::new(0.0, dist * sh.look_down + height * 0.1, dist);
     // One glyph ~15 px tall at the target distance in a 900 px tall frame.
-    let focal = 450.0 / (fov / 2.0).tan();
+    let focal = 450.0 / fm::tan(fov / 2.0);
     let g = 15.0 * dist / focal;
 
     let glyphs = Glyphs::new();
@@ -184,7 +185,7 @@ fn studio_ground(sk: &mut Skinner, center: Vec3, radius: f32, eye: Vec3, focal: 
         for _ in 0..count {
             let r = (ra * ra + rng.next_f32() * (rb * rb - ra * ra)).sqrt();
             let a = rng.uniform(0.0, TAU);
-            let p = ground_eye + Vec3::new(r * a.cos(), 0.0, r * a.sin());
+            let p = ground_eye + Vec3::new(r * fm::cos(a), 0.0, r * fm::sin(a));
             let rc = (p - center).length();
             if rc > radius {
                 continue;
@@ -198,7 +199,7 @@ fn studio_ground(sk: &mut Skinner, center: Vec3, radius: f32, eye: Vec3, focal: 
             let n = unit(UP + rng.gauss3(0.06));
             let (b1, b2) = basis(n);
             let ang = rng.uniform(0.0, TAU);
-            let ud = b1 * ang.cos() + b2 * ang.sin();
+            let ud = b1 * fm::cos(ang) + b2 * fm::sin(ang);
             let vd = n.cross(ud);
             let alb = mat.def().albedo.map(|c| c * (1.0 + 0.12 * rng.normal()));
             let alpha = (mat.def().alpha.0 + 0.08 * rng.next_f32()) * fade;

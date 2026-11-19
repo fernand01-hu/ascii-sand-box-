@@ -6,21 +6,16 @@ description = "Turns 3D meshes into fields of oriented ASCII glyph cards."
 license = "MIT"
 publish = false
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
 [features]
+# Platform-independent math (pure Rust libm): same seed, same scene on every target.
+libm = ["dep:libm"]
 # Test scenes (the procedural pine). Dev/test builds only, never production.
 testbed = []
 
 [dependencies]
-wasm-bindgen = "0.2"
-console_error_panic_hook = "0.1"
+libm = { version = "0.2", optional = true }
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
-
-[package.metadata.wasm-pack.profile.release]
-wasm-opt = ["-O3"]

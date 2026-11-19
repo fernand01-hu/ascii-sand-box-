@@ -3,12 +3,15 @@
 //! Pipeline: STL bytes -> `stl::parse` -> `Mesh::from_triangles` (clean,
 //! normalize, smooth normals) -> `cards::generate` (one glyph card per sample).
 //!
-//! The pure-Rust API (`load_mesh`, `cards::generate`) is what the tests use;
-//! the `Engine` type below is the thin WebAssembly wrapper the browser calls.
+//! This file is the platform-neutral Rust API (`Engine`, `CardConfig`,
+//! `build_scene`, `build_gallery`, `InfiniteWorld`): plain types, `String`
+//! errors, no platform code. The app (native/app) runs it on every platform,
+//! the browser included (compiled to WebAssembly with the rest of the app).
 //!
 //! Test scenes live in `testbed` and only exist with the `testbed` feature.
 
 pub mod cards;
+pub mod fm;
 pub mod math;
 pub mod mesh;
 pub mod noise;
@@ -19,8 +22,6 @@ pub mod stl;
 #[cfg(feature = "testbed")]
 pub mod testbed;
 
-use wasm_bindgen::prelude::*;
-
 pub use cards::{CardParams, GlyphRule, STRIDE};
 pub use mesh::Mesh;
 
@@ -30,63 +31,43 @@ pub fn load_mesh(bytes: &[u8], z_up: bool) -> Result<Mesh, String> {
     Mesh::from_triangles(tris, z_up).map_err(|e| e.to_string())
 }
 
-#[wasm_bindgen(start)]
-pub fn start() {
-    console_error_panic_hook::set_once();
-}
-
 /// Floats per card in buffers returned by `Engine::generate`.
-#[wasm_bindgen(js_name = cardStride)]
 pub fn card_stride() -> u32 {
     STRIDE as u32
 }
 
 /// The charset exactly as the engine will index it (visible, unique, ordered).
-/// The renderer must build its glyph atlas from this string.
-#[wasm_bindgen(js_name = normalizeCharset)]
-pub fn normalize_charset(charset: &str) -> Result<String, JsError> {
-    cards::normalize_charset(charset).map_err(|e| JsError::new(&e.to_string()))
+pub fn normalize_charset(charset: &str) -> Result<String, String> {
+    cards::normalize_charset(charset).map_err(|e| e.to_string())
 }
 
 /// Default charset, ordered light to dense.
-#[wasm_bindgen(js_name = defaultCharset)]
 pub fn default_charset() -> String {
     cards::DEFAULT_CHARSET.to_string()
 }
 
 /// Numeric settings for one card generation pass. The charset is passed
 /// separately to `Engine::generate`.
-#[wasm_bindgen]
 #[derive(Clone, Debug)]
 pub struct CardConfig {
     pub seed: u32,
-    #[wasm_bindgen(js_name = glyphSize)]
     pub glyph_size: f32,
-    #[wasm_bindgen(js_name = sizeFactor)]
     pub size_factor: f32,
     /// 0 random, 1 cells, 2 noise (see `GlyphRule`).
-    #[wasm_bindgen(js_name = glyphRule)]
     pub glyph_rule: u32,
-    #[wasm_bindgen(js_name = patternScale)]
     pub pattern_scale: f32,
-    #[wasm_bindgen(js_name = glyphAspect)]
     pub glyph_aspect: f32,
     pub r: f32,
     pub g: f32,
     pub b: f32,
-    #[wasm_bindgen(js_name = colorJitter)]
     pub color_jitter: f32,
     pub twist: f32,
     pub tilt: f32,
-    #[wasm_bindgen(js_name = alphaMin)]
     pub alpha_min: f32,
-    #[wasm_bindgen(js_name = alphaMax)]
     pub alpha_max: f32,
 }
 
-#[wasm_bindgen]
 impl CardConfig {
-    #[wasm_bindgen(constructor)]
     pub fn new() -> CardConfig {
         let p = CardParams::default();
         CardConfig {
@@ -136,146 +117,86 @@ impl CardConfig {
 
 /// Holds the current mesh so cards can be regenerated with new settings
 /// without re-parsing the file.
-#[wasm_bindgen]
 #[derive(Default)]
 pub struct Engine {
     mesh: Option<Mesh>,
 }
 
-#[wasm_bindgen]
 impl Engine {
-    #[wasm_bindgen(constructor)]
     pub fn new() -> Engine {
         Engine { mesh: None }
     }
 
     /// Parse an STL and make it the current mesh. On error the previous mesh is kept.
-    #[wasm_bindgen(js_name = loadStl)]
-    pub fn load_stl(&mut self, bytes: &[u8], z_up: bool) -> Result<(), JsError> {
-        self.mesh = Some(load_mesh(bytes, z_up).map_err(|e| JsError::new(&e))?);
+    pub fn load_stl(&mut self, bytes: &[u8], z_up: bool) -> Result<(), String> {
+        self.mesh = Some(load_mesh(bytes, z_up)?);
         Ok(())
     }
 
-    #[wasm_bindgen(js_name = hasMesh)]
     pub fn has_mesh(&self) -> bool {
         self.mesh.is_some()
     }
 
-    #[wasm_bindgen(js_name = triangleCount)]
     pub fn triangle_count(&self) -> u32 {
         self.mesh.as_ref().map_or(0, |m| m.tris.len() as u32)
     }
 
-    #[wasm_bindgen(js_name = droppedTriangles)]
     pub fn dropped_triangles(&self) -> u32 {
         self.mesh.as_ref().map_or(0, |m| m.dropped as u32)
     }
 
     /// Flat xyz positions of the normalized mesh (9 floats per triangle).
-    #[wasm_bindgen(js_name = meshPositions)]
     pub fn mesh_positions(&self) -> Vec<f32> {
         self.mesh.as_ref().map_or_else(Vec::new, Mesh::flat_positions)
     }
 
-    /// Flat xyz normals matching `meshPositions`.
-    #[wasm_bindgen(js_name = meshNormals)]
+    /// Flat xyz normals matching `mesh_positions`.
     pub fn mesh_normals(&self) -> Vec<f32> {
         self.mesh.as_ref().map_or_else(Vec::new, Mesh::flat_normals)
     }
 
-    /// Card records, `cardStride()` floats each. Glyph indices refer to
-    /// `normalizeCharset(charset)`.
-    pub fn generate(&self, config: &CardConfig, charset: &str) -> Result<Vec<f32>, JsError> {
-        let mesh = self.mesh.as_ref().ok_or_else(|| JsError::new("no mesh loaded"))?;
-        let params = config.to_params(charset).map_err(|e| JsError::new(&e.to_string()))?;
-        cards::generate(mesh, &params).map_err(|e| JsError::new(&e.to_string()))
+    /// Card records, `card_stride()` floats each. Glyph indices refer to
+    /// `normalize_charset(charset)`.
+    pub fn generate(&self, config: &CardConfig, charset: &str) -> Result<Vec<f32>, String> {
+        let mesh = self.mesh.as_ref().ok_or_else(|| "no mesh loaded".to_string())?;
+        let params = config.to_params(charset).map_err(|e| e.to_string())?;
+        cards::generate(mesh, &params).map_err(|e| e.to_string())
     }
 }
 
 // ---- scenery assets -------------------------------------------------------------
 
-/// A built scenery scene: cards, an opaque body and a suggested camera.
-#[wasm_bindgen]
-pub struct SceneryScene {
-    cards: Vec<f32>,
-    body: Vec<f32>,
-    body_normals: Vec<f32>,
-    camera: Vec<f32>,
-    glyph: f32,
-    env: Vec<f32>,
-    walk: Option<Walk>,
-}
-
 /// What the player physics needs from a landscape.
-struct Walk {
-    heights: Vec<f32>,
-    n: u32,
-    size: f32,
-    water: f32,
-    water_mask: Vec<u8>,
-    colliders: Vec<f32>,
+pub struct Walk {
+    /// Terrain heights (row-major n x n).
+    pub heights: Vec<f32>,
+    pub n: u32,
+    /// Metres per side.
+    pub size: f32,
+    /// Water level (NaN without a lake).
+    pub water: f32,
+    pub water_mask: Vec<u8>,
+    /// x, z, radius, top y per entry.
+    pub colliders: Vec<f32>,
 }
 
-#[wasm_bindgen]
-impl SceneryScene {
-    /// Card records (`cardStride()` floats each). Moves the buffer out.
-    #[wasm_bindgen(js_name = takeCards)]
-    pub fn take_cards(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.cards)
-    }
-
+/// A built scenery scene: cards, an opaque body and a suggested camera.
+pub struct SceneryScene {
+    /// Card records (`card_stride()` floats each).
+    pub cards: Vec<f32>,
     /// Opaque body triangles (9 floats each) that hide what is behind them.
-    #[wasm_bindgen(js_name = takeBody)]
-    pub fn take_body(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.body)
-    }
-
-    #[wasm_bindgen(js_name = takeBodyNormals)]
-    pub fn take_body_normals(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.body_normals)
-    }
-
+    pub body: Vec<f32>,
+    pub body_normals: Vec<f32>,
     /// target xyz, eye xyz, vertical fov in degrees.
-    pub fn camera(&self) -> Vec<f32> {
-        self.camera.clone()
-    }
-
+    pub camera: [f32; 7],
     /// Glyph height in metres.
-    pub fn glyph(&self) -> f32 {
-        self.glyph
-    }
-
-    /// Terrain heights for walking (row-major n x n), empty for galleries.
-    #[wasm_bindgen(js_name = takeHeights)]
-    pub fn take_heights(&mut self) -> Vec<f32> {
-        self.walk.as_mut().map_or_else(Vec::new, |w| std::mem::take(&mut w.heights))
-    }
-
-    /// n, size (metres), water level (NaN without a lake).
-    #[wasm_bindgen(js_name = walkInfo)]
-    pub fn walk_info(&self) -> Vec<f32> {
-        self.walk.as_ref().map_or_else(Vec::new, |w| vec![w.n as f32, w.size, w.water])
-    }
-
-    #[wasm_bindgen(js_name = takeWaterMask)]
-    pub fn take_water_mask(&mut self) -> Vec<u8> {
-        self.walk.as_mut().map_or_else(Vec::new, |w| std::mem::take(&mut w.water_mask))
-    }
-
-    /// Colliders: x, z, radius, top y per entry.
-    #[wasm_bindgen(js_name = takeColliders)]
-    pub fn take_colliders(&mut self) -> Vec<f32> {
-        self.walk.as_mut().map_or_else(Vec::new, |w| std::mem::take(&mut w.colliders))
-    }
-
-    /// daytime (0/1), wind direction x, z, leaf box min x, min z, size,
-    /// rain box x, y, z.
-    pub fn env(&self) -> Vec<f32> {
-        self.env.clone()
-    }
+    pub glyph: f32,
+    /// daytime (0/1), wind direction x, z, leaf box min x, min z, size, rain box x, y, z.
+    pub env: [f32; 9],
+    pub walk: Option<Walk>,
 }
 
-fn body_buffers(body: &[[math::Vec3; 3]]) -> (Vec<f32>, Vec<f32>) {
+pub fn body_buffers(body: &[[math::Vec3; 3]]) -> (Vec<f32>, Vec<f32>) {
     let mut pos = Vec::with_capacity(body.len() * 9);
     let mut nrm = Vec::with_capacity(body.len() * 9);
     for t in body {
@@ -289,12 +210,18 @@ fn body_buffers(body: &[[math::Vec3; 3]]) -> (Vec<f32>, Vec<f32>) {
 }
 
 /// A whole landscape: "meadow", "forest", "lake", "valley" or "alpine".
-#[wasm_bindgen(js_name = buildScene)]
-pub fn build_scene(preset: &str, seed: u32, glyph_aspect: f32) -> Result<SceneryScene, JsError> {
+/// Build share `part` of `parts` of the infinite world's assets (trees,
+/// bushes, plants, rocks at every level of detail) into the process-wide
+/// cache, so chunk builds find them ready.
+pub fn warm_world_assets(seed: u32, part: usize, parts: usize) -> usize {
+    scenery::scatter::warm_world_assets(seed, part, parts)
+}
+
+pub fn build_scene(preset: &str, seed: u32, glyph_aspect: f32) -> Result<SceneryScene, String> {
     let p = scenery::scene::ScenePreset::parse(preset)
-        .ok_or_else(|| JsError::new(&format!("unknown scene {preset:?} (meadow, forest, lake, valley, alpine)")))?;
+        .ok_or_else(|| format!("unknown scene {preset:?} (meadow, forest, lake, valley, alpine)"))?;
     if !(glyph_aspect > 0.0 && glyph_aspect.is_finite()) {
-        return Err(JsError::new("glyph_aspect must be a positive number"));
+        return Err("glyph_aspect must be a positive number".to_string());
     }
     let s = scenery::scene::build_scene(p, seed, glyph_aspect);
     let (body, body_normals) = body_buffers(&s.body);
@@ -303,9 +230,9 @@ pub fn build_scene(preset: &str, seed: u32, glyph_aspect: f32) -> Result<Scenery
         cards: s.cards,
         body,
         body_normals,
-        camera: vec![s.target.x, s.target.y, s.target.z, s.eye.x, s.eye.y, s.eye.z, s.fov],
+        camera: [s.target.x, s.target.y, s.target.z, s.eye.x, s.eye.y, s.eye.z, s.fov],
         glyph: 0.0,
-        env: vec![f32::from(s.day), s.wind[0], s.wind[1], s.leaf_box[0], s.leaf_box[1], s.leaf_box[2], rb[0], rb[1], rb[2]],
+        env: [f32::from(s.day), s.wind[0], s.wind[1], s.leaf_box[0], s.leaf_box[1], s.leaf_box[2], rb[0], rb[1], rb[2]],
         walk: Some(Walk {
             heights: s.heights,
             n: s.grid_n as u32,
@@ -318,12 +245,11 @@ pub fn build_scene(preset: &str, seed: u32, glyph_aspect: f32) -> Result<Scenery
 }
 
 /// A gallery sheet of procedural assets: "rocks", "plants", "bushes" or "trees".
-#[wasm_bindgen(js_name = buildGallery)]
-pub fn build_gallery(category: &str, seed: u32, glyph_aspect: f32) -> Result<SceneryScene, JsError> {
+pub fn build_gallery(category: &str, seed: u32, glyph_aspect: f32) -> Result<SceneryScene, String> {
     let cat = scenery::gallery::Category::parse(category)
-        .ok_or_else(|| JsError::new(&format!("unknown gallery {category:?} (rocks, plants, bushes, trees)")))?;
+        .ok_or_else(|| format!("unknown gallery {category:?} (rocks, plants, bushes, trees)"))?;
     if !(glyph_aspect > 0.0 && glyph_aspect.is_finite()) {
-        return Err(JsError::new("glyph_aspect must be a positive number"));
+        return Err("glyph_aspect must be a positive number".to_string());
     }
     let s = scenery::gallery::build_gallery(cat, seed, glyph_aspect);
     let (body, body_normals) = body_buffers(&s.body);
@@ -333,62 +259,54 @@ pub fn build_gallery(category: &str, seed: u32, glyph_aspect: f32) -> Result<Sce
         cards: s.cards,
         body,
         body_normals,
-        camera: vec![s.target.x, s.target.y, s.target.z, s.eye.x, s.eye.y, s.eye.z, s.fov],
+        camera: [s.target.x, s.target.y, s.target.z, s.eye.x, s.eye.y, s.eye.z, s.fov],
         glyph: s.glyph,
-        env: vec![0.0, w[0], w[1], 0.0, 0.0, 0.0, rb[0], rb[1], rb[2]],
+        env: [0.0, w[0], w[1], 0.0, 0.0, 0.0, rb[0], rb[1], rb[2]],
         walk: None,
     })
 }
 
 /// Every character scenery uses, in atlas order.
-#[wasm_bindgen(js_name = sceneryCharset)]
 pub fn scenery_charset() -> String {
     scenery::style::charset()
 }
 
-/// Shader material table: `materialFloats()` floats per material, indexed by
+/// Shader material table: `material_floats()` floats per material, indexed by
 /// material id (see `scenery::skin::material_table`).
-#[wasm_bindgen(js_name = sceneryMaterials)]
 pub fn scenery_materials() -> Vec<f32> {
     scenery::skin::material_table()
 }
 
-#[wasm_bindgen(js_name = materialFloats)]
 pub fn material_floats() -> u32 {
     scenery::skin::MATERIAL_FLOATS as u32
 }
 
 /// Sun direction a scene was baked with (`day` selects the preset).
-#[wasm_bindgen(js_name = sceneSunDir)]
-pub fn scene_sun_dir(day: bool) -> Vec<f32> {
+pub fn scene_sun_dir(day: bool) -> [f32; 3] {
     let s = scenery::scene::sun_for(day);
-    vec![s.x, s.y, s.z]
+    [s.x, s.y, s.z]
 }
 
 /// Sun direction scenery shadows are baked with.
-#[wasm_bindgen(js_name = scenerySunDir)]
-pub fn scenery_sun_dir() -> Vec<f32> {
+pub fn scenery_sun_dir() -> [f32; 3] {
     let s = scenery::light::sun_dir();
-    vec![s.x, s.y, s.z]
+    [s.x, s.y, s.z]
 }
 
 // ---- the infinite world ----------------------------------------------------------
 
 /// Chunk size (m), physics grid (samples - 1 per side), water level.
-#[wasm_bindgen(js_name = worldConsts)]
-pub fn world_consts() -> Vec<f32> {
-    vec![scenery::world::CHUNK, scenery::world::GRID as f32, scenery::world::WATER]
+pub fn world_consts() -> [f32; 3] {
+    [scenery::world::CHUNK, scenery::world::GRID as f32, scenery::world::WATER]
 }
 
-/// An endless landscape, built chunk by chunk around the viewer.
-#[wasm_bindgen]
+/// An endless landscape, built chunk by chunk around the viewer. Each thread
+/// that builds chunks owns one (they are deterministic and independent).
 pub struct InfiniteWorld {
-    inner: scenery::world::World,
+    pub inner: scenery::world::World,
 }
 
-#[wasm_bindgen]
 impl InfiniteWorld {
-    #[wasm_bindgen(constructor)]
     pub fn new(seed: u32, day: bool) -> InfiniteWorld {
         InfiniteWorld { inner: scenery::world::World::new(seed, day) }
     }
@@ -403,79 +321,48 @@ impl InfiniteWorld {
     }
 
     /// Sky dome, rain and blown leaves (all follow the camera).
-    #[wasm_bindgen(js_name = skyCards)]
     pub fn sky_cards(&self, glyph_aspect: f32) -> Vec<f32> {
         self.inner.sky_cards(glyph_aspect)
     }
 
-    /// Chunk (cx, cz) with glyphs sized for an eye at (ex, ey, ez).
-    #[wasm_bindgen(js_name = buildChunk)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn build_chunk(&mut self, cx: i32, cz: i32, ex: f32, ey: f32, ez: f32, glyph_aspect: f32) -> WorldChunk {
-        let c = self.inner.build_chunk(cx, cz, math::Vec3::new(ex, ey, ez), glyph_aspect);
+    /// Chunk (cx, cz) with glyphs sized for an eye at `eye`.
+    pub fn build_chunk(&mut self, cx: i32, cz: i32, eye: [f32; 3], glyph_aspect: f32) -> WorldChunk {
+        let c = self.inner.build_chunk(cx, cz, math::Vec3::new(eye[0], eye[1], eye[2]), glyph_aspect);
         let (body, body_normals) = body_buffers(&c.body);
         WorldChunk { cards: c.cards, body, body_normals, heights: c.heights, colliders: c.colliders.iter().flatten().copied().collect() }
     }
 }
 
-#[wasm_bindgen]
 pub struct WorldChunk {
-    cards: Vec<f32>,
-    body: Vec<f32>,
-    body_normals: Vec<f32>,
-    heights: Vec<f32>,
-    colliders: Vec<f32>,
-}
-
-#[wasm_bindgen]
-impl WorldChunk {
-    #[wasm_bindgen(js_name = takeCards)]
-    pub fn take_cards(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.cards)
-    }
-    #[wasm_bindgen(js_name = takeBody)]
-    pub fn take_body(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.body)
-    }
-    #[wasm_bindgen(js_name = takeBodyNormals)]
-    pub fn take_body_normals(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.body_normals)
-    }
+    pub cards: Vec<f32>,
+    pub body: Vec<f32>,
+    pub body_normals: Vec<f32>,
     /// (GRID + 1)^2 heights, 1 m apart, from the chunk's corner.
-    #[wasm_bindgen(js_name = takeHeights)]
-    pub fn take_heights(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.heights)
-    }
+    pub heights: Vec<f32>,
     /// x, z, radius, top y per collider.
-    #[wasm_bindgen(js_name = takeColliders)]
-    pub fn take_colliders(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.colliders)
-    }
+    pub colliders: Vec<f32>,
 }
 
 // ---- testbed scenes (dev/test builds only) ------------------------------------
 
 /// Every character the procedural pine uses, in atlas order.
 #[cfg(feature = "testbed")]
-#[wasm_bindgen(js_name = pineCharset)]
 pub fn pine_charset() -> String {
     testbed::pine::charset()
 }
 
-/// The procedural pine from `pine_ascii.py` as card records (`cardStride()` floats each).
+/// The procedural pine from `pine_ascii.py` as card records (`card_stride()` floats each).
 #[cfg(feature = "testbed")]
-#[wasm_bindgen(js_name = generatePine)]
-pub fn generate_pine(seed: u32, glyph_aspect: f32) -> Result<Vec<f32>, JsError> {
+pub fn generate_pine(seed: u32, glyph_aspect: f32) -> Result<Vec<f32>, String> {
     if !(glyph_aspect > 0.0 && glyph_aspect.is_finite()) {
-        return Err(JsError::new("glyph_aspect must be a positive number"));
+        return Err("glyph_aspect must be a positive number".to_string());
     }
     Ok(testbed::pine::generate(seed, glyph_aspect))
 }
 
 /// Sun direction the pine's shadows were baked with; the renderer must match it.
 #[cfg(feature = "testbed")]
-#[wasm_bindgen(js_name = pineSunDir)]
-pub fn pine_sun_dir() -> Vec<f32> {
+pub fn pine_sun_dir() -> [f32; 3] {
     let s = testbed::pine::sun_dir();
-    vec![s.x, s.y, s.z]
+    [s.x, s.y, s.z]
 }

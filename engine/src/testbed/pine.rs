@@ -12,6 +12,7 @@
 //! * the screen-space sky and far forest planes are left out.
 //!
 //! World units match the script: the tree is `TREE_H` = 10 tall, ground at y = 0.
+use crate::fm;
 
 use crate::cards::{layout, pack_glyph, write3, STRIDE};
 use crate::math::Vec3;
@@ -118,7 +119,7 @@ fn any_perp(v: Vec3) -> Vec3 {
 }
 
 fn dir(e: f32, a: f32) -> Vec3 {
-    Vec3::new(e.cos() * a.sin(), e.sin(), e.cos() * a.cos())
+    Vec3::new(fm::cos(e) * fm::sin(a), fm::sin(e), fm::cos(e) * fm::cos(a))
 }
 
 // ---- the tree -----------------------------------------------------------------
@@ -159,19 +160,19 @@ impl Tree {
     pub fn trunk_center(&self, y: f32) -> (f32, f32) {
         let t = y / TREE_H;
         let ph = self.ph;
-        let x = t * (0.28 * (1.8 * t + ph[0]).sin() + 0.07 * (5.5 * t + ph[1]).sin());
-        let z = t * (0.20 * (1.4 * t + ph[2]).sin());
+        let x = t * (0.28 * fm::sin(1.8 * t + ph[0]) + 0.07 * fm::sin(5.5 * t + ph[1]));
+        let z = t * (0.20 * fm::sin(1.4 * t + ph[2]));
         (x, z)
     }
 
     pub fn trunk_radius(&self, y: f32) -> f32 {
         let y = y.max(0.0);
         let t = (y / TREE_H).min(1.0);
-        0.02 + 0.21 * (1.0 - t).powf(1.15) + 0.11 * (-y / 0.35).exp()
+        0.02 + 0.21 * fm::powf(1.0 - t, 1.15) + 0.11 * fm::exp(-y / 0.35)
     }
 
     fn envelope(t: f32) -> f32 {
-        0.3 + 2.75 * (1.0 - t).powf(0.85) * (0.8 + 0.2 * (t / 0.2).min(1.0))
+        0.3 + 2.75 * fm::powf(1.0 - t, 0.85) * (0.8 + 0.2 * (t / 0.2).min(1.0))
     }
 
     fn uniform(&mut self, lo: f32, hi: f32) -> f32 {
@@ -206,7 +207,7 @@ impl Tree {
                 let yb = yw + self.uniform(-0.05, 0.05);
                 let (cx, cz) = self.trunk_center(yb);
                 let rad = self.trunk_radius(yb);
-                let base = Vec3::new(cx + 0.7 * rad * az.sin(), yb, cz + 0.7 * rad * az.cos());
+                let base = Vec3::new(cx + 0.7 * rad * fm::sin(az), yb, cz + 0.7 * rad * fm::cos(az));
                 let len = Self::envelope(t) * self.uniform(0.6, 1.18);
                 self.primary(base, az, len, t);
             }
@@ -229,7 +230,7 @@ impl Tree {
             let len = self.uniform(0.1, 0.4);
             let (cx, cz) = self.trunk_center(yb);
             let rad = self.trunk_radius(yb);
-            let mut pts = vec![Vec3::new(cx, yb, cz) + Vec3::new(az.sin(), 0.0, az.cos()) * (0.8 * rad)];
+            let mut pts = vec![Vec3::new(cx, yb, cz) + Vec3::new(fm::sin(az), 0.0, fm::cos(az)) * (0.8 * rad)];
             for k in 1..4 {
                 let e = el - 0.5 * k as f32 / 3.0;
                 let last = pts[pts.len() - 1];
@@ -307,15 +308,15 @@ impl Tree {
                     continue;
                 }
                 let roll = self.normal(0.55);
-                let sv = sv0 * roll.cos() + t.cross(sv0) * roll.sin();
+                let sv = sv0 * fm::cos(roll) + t.cross(sv0) * fm::sin(roll);
                 let al = self.uniform(0.55, 1.05);
                 let lift = self.uniform(-0.1, 0.35);
-                let dc = unit(t * al.cos() + sv * (sg * al.sin()) + UP * lift);
+                let dc = unit(t * fm::cos(al) + sv * (sg * fm::sin(al)) + UP * lift);
                 let (lc, dead) = if level == 1 {
-                    let lc = len * 0.38 * (1.0 - s).powf(0.6) * (0.5 + 0.8 * s) * self.uniform(0.6, 1.15);
+                    let lc = len * 0.38 * fm::powf(1.0 - s, 0.6) * (0.5 + 0.8 * s) * self.uniform(0.6, 1.15);
                     (lc, s < 0.42 && self.chance(0.55))
                 } else {
-                    (len * 0.55 * (1.0 - s).powf(0.7) * self.uniform(0.6, 1.1), false)
+                    (len * 0.55 * fm::powf(1.0 - s, 0.7) * self.uniform(0.6, 1.1), false)
                 };
                 if lc > 0.08 {
                     self.shoot(p, dc, lc, level + 1, dead);
@@ -339,7 +340,7 @@ impl Tree {
         let cnt = (DENS * fol + self.rng.next_f32()) as usize;
         let tint = [self.normal(1.0), self.normal(1.0)];
         for _ in 0..cnt {
-            let x = self.rng.next_f32().powf(1.5);
+            let x = fm::powf(self.rng.next_f32(), 1.5);
             let u = total - fol * x;
             let i = locate(&cum, u, segs.len());
             let base = pts[i] + segs[i] * ((u - cum[i]) / sl[i]);
@@ -349,7 +350,7 @@ impl Tree {
             let b2 = t.cross(b1);
             let psi = self.uniform(0.0, TAU);
             let al = self.uniform(0.55, 1.05) * (0.45 + 0.55 * (x / 0.15).min(1.0));
-            let mut dv = t * al.cos() + (b1 * psi.cos() + b2 * psi.sin()) * al.sin();
+            let mut dv = t * fm::cos(al) + (b1 * fm::cos(psi) + b2 * fm::sin(psi)) * fm::sin(al);
             dv.y += 0.22;
             let dv = unit(dv);
             let ln = self.uniform(0.09, 0.15) * (1.0 - 0.2 * x);
@@ -449,7 +450,7 @@ impl Light {
     /// Separable Gaussian blur along each axis.
     fn blur(&mut self, sigma: f32) {
         let rad = (3.0 * sigma).ceil() as isize;
-        let mut k: Vec<f32> = (-rad..=rad).map(|i| (-(i * i) as f32 / (2.0 * sigma * sigma)).exp()).collect();
+        let mut k: Vec<f32> = (-rad..=rad).map(|i| fm::exp(-(i * i) as f32 / (2.0 * sigma * sigma))).collect();
         let sum: f32 = k.iter().sum();
         k.iter_mut().for_each(|v| *v /= sum);
         let [nx, ny, nz] = self.dims;
@@ -484,7 +485,7 @@ impl Light {
                 acc += self.g[i];
             }
         }
-        (-sigma * acc * step).exp()
+        fm::exp(-sigma * acc * step)
     }
 
     fn sun(&self, p: Vec3) -> f32 {
@@ -567,7 +568,7 @@ fn worley(a: f32, b: f32, cw: f32, ch: f32, seed: u64) -> (f32, f32) {
         for db in -1..=1 {
             let (ca, cb) = (ia + da, ib + db);
             let (jx, jy) = cell_jitter(ca, cb, seed);
-            let d = ((a - (ca as f32 + jx) * cw) / cw).hypot((b - (cb as f32 + jy) * ch) / ch);
+            let d = fm::hypot((a - (ca as f32 + jx) * cw) / cw, (b - (cb as f32 + jy) * ch) / ch);
             if d < f1 {
                 f2 = f1;
                 f1 = d;
@@ -700,12 +701,12 @@ fn trunk_cards(tree: &Tree, light: &Light, all: &str, rng: &mut Pcg32, out: &mut
         let offset = rng.next_f32();
         for j in 0..n {
             let th = (j as f32 + offset) / n as f32 * TAU + rng.normal() * (0.15 / n as f32 * 6.0);
-            let nrm = Vec3::new(th.sin(), 0.0, th.cos());
+            let nrm = Vec3::new(fm::sin(th), 0.0, fm::cos(th));
             let p = Vec3::new(cx, y, cz) + nrm * r + UP * (rng.range(-0.4, 0.4) * spacing);
-            let tang = Vec3::new(th.cos(), 0.0, -th.sin());
+            let tang = Vec3::new(fm::cos(th), 0.0, -fm::sin(th));
             let phi = rng.normal() * 0.18;
-            let u = unit(tang * phi.cos() + axis * phi.sin() + nrm * (rng.normal() * 0.25));
-            let v = unit(-tang * phi.sin() + axis * phi.cos() + nrm * (rng.normal() * 0.25));
+            let u = unit(tang * fm::cos(phi) + axis * fm::sin(phi) + nrm * (rng.normal() * 0.25));
+            let v = unit(-tang * fm::sin(phi) + axis * fm::cos(phi) + nrm * (rng.normal() * 0.25));
             let hh = rng.range(0.11, 0.13);
             let c = p + nrm * rng.range(0.0, 0.012);
 
@@ -757,7 +758,7 @@ fn ground_cards(light: &Light, all: &str, rng: &mut Pcg32, out: &mut Out, aspect
     let disc = |rng: &mut Pcg32| {
         let r = RADIUS * rng.next_f32().sqrt();
         let a = rng.range(0.0, TAU);
-        (r, Vec3::new(r * a.cos(), 0.0, r * a.sin()))
+        (r, Vec3::new(r * fm::cos(a), 0.0, r * fm::sin(a)))
     };
     // Shadowed ground keeps a quarter of the sunlight (sky still lights it).
     let ground_sun = |p: Vec3| 0.25 + 0.75 * light.sun_far(p);
@@ -767,8 +768,8 @@ fn ground_cards(light: &Light, all: &str, rng: &mut Pcg32, out: &mut Out, aspect
         let (r, g) = disc(rng);
         let size = rng.range(0.12, 0.2);
         let yaw = rng.range(0.0, TAU);
-        let u = Vec3::new(yaw.cos(), 0.0, yaw.sin());
-        let v = Vec3::new(yaw.sin(), 0.0, -yaw.cos()); // u x v points up
+        let u = Vec3::new(fm::cos(yaw), 0.0, fm::sin(yaw));
+        let v = Vec3::new(fm::sin(yaw), 0.0, -fm::cos(yaw)); // u x v points up
         let c = g + Vec3::new(0.0, 0.002, 0.0);
         let s = rng.range(0.7, 1.3);
         let glyph = soil.pick(rng);
@@ -791,7 +792,7 @@ fn ground_cards(light: &Light, all: &str, rng: &mut Pcg32, out: &mut Out, aspect
         let h = if k < blades { rng.range(0.09, 0.15) } else { rng.range(0.1, 0.15) };
         let tilt = rng.normal() * 0.3;
         let tdir = rng.range(0.0, TAU);
-        let vd = Vec3::new(tilt.sin() * tdir.cos(), tilt.cos(), tilt.sin() * tdir.sin());
+        let vd = Vec3::new(fm::sin(tilt) * fm::cos(tdir), fm::cos(tilt), fm::sin(tilt) * fm::sin(tdir));
         let c = g + vd * (h * 0.5);
         let tone = rng.next_f32();
         let alb = if rng.next_f32() < 0.15 {

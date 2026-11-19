@@ -1,6 +1,7 @@
 //! Whole scenes from a preset and a seed (port of `scenery/scenes.py`):
 //! terrain preset + biome + time of day + camera height, then scatter, skin,
 //! ground / water / sky, weather particles and baked light.
+use crate::fm;
 
 use super::asset::{unit, Placement};
 use super::landscape::{self, Sky, View, DAY, DUSK};
@@ -118,7 +119,7 @@ pub fn build_scene(preset: ScenePreset, seed: u32, glyph_aspect: f32) -> SceneOu
     let mut target = eye + dir * 35.0;
     target.y = target.y.max(t.height(target.x, target.z) + 1.0);
     let fov: f32 = 50.0;
-    let view = View { eye, focus: target, focal: 500.0 / (fov.to_radians() / 2.0).tan(), near: 2.0 };
+    let view = View { eye, focus: target, focal: 500.0 / fm::tan(fov.to_radians() / 2.0), near: 2.0 };
     let sun = sun_for(day);
     let glint = if day { [1.0, 0.98, 0.92] } else { [1.0, 0.86, 0.62] };
     let sky = Sky::new(seed, if day { &DAY } else { &DUSK });
