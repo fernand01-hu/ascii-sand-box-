@@ -89,7 +89,10 @@ impl WorldStreamer {
 
     /// Call every frame with the viewer's position and the clock (seconds).
     pub fn update<E: JobExecutor>(&mut self, exec: &mut E, next_id: &mut JobId, events: &mut Vec<RenderEvent>, mut note: impl FnMut(JobId, i32, i32), eye: DVec3, now: f64, force: bool) {
-        if !force && now - self.last_check < 0.150 {
+        // Rescan at most every 150 ms, except when a worker slot is free: a
+        // finished chunk is replaced at once, so the workers never sit idle
+        // waiting for the next scan (the scan itself is a few microseconds).
+        if !force && now - self.last_check < 0.150 && self.inflight.len() >= self.max_inflight {
             return;
         }
         self.last_check = now;

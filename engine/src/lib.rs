@@ -212,6 +212,13 @@ pub fn body_buffers(body: &[[math::Vec3; 3]]) -> (Vec<f32>, Vec<f32>) {
 }
 
 /// A whole landscape: "meadow", "forest", "lake", "valley" or "alpine".
+/// Build share `part` of `parts` of the infinite world's assets (trees,
+/// bushes, plants, rocks at every level of detail) into the process-wide
+/// cache, so chunk builds find them ready.
+pub fn warm_world_assets(seed: u32, part: usize, parts: usize) -> usize {
+    scenery::scatter::warm_world_assets(seed, part, parts)
+}
+
 pub fn build_scene(preset: &str, seed: u32, glyph_aspect: f32) -> Result<SceneryScene, String> {
     let p = scenery::scene::ScenePreset::parse(preset)
         .ok_or_else(|| format!("unknown scene {preset:?} (meadow, forest, lake, valley, alpine)"))?;

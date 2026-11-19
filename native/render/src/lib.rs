@@ -22,6 +22,10 @@ const MSAA: u32 = 4;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const UNDER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const MAX_MATERIALS: usize = 64;
+/// Bytes per card in the evaluated buffer (`CardOut` in cards.wgsl).
+const CARD_OUT_BYTES: u64 = 64;
+/// One `Range` per dispatch, at the uniform dynamic-offset alignment.
+const RANGE_STRIDE: usize = 256;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -57,6 +61,10 @@ struct PostUniform {
 
 struct CardSet {
     buf: wgpu::Buffer,
+    /// Per-card evaluation (`CardOut`, 64 bytes), rewritten each frame for the visible ranges.
+    out: wgpu::Buffer,
+    eval_bg: wgpu::BindGroup,
+    draw_bg: wgpu::BindGroup,
     chunks: Vec<ChunkRec>,
 }
 
@@ -97,6 +105,12 @@ pub struct Renderer {
     coverage_pipe: wgpu::RenderPipeline,
     under_body_pipe: wgpu::RenderPipeline,
     under_pipe: wgpu::RenderPipeline,
+    eval_pipe: wgpu::ComputePipeline,
+    eval_layout: wgpu::BindGroupLayout,
+    draw_layout: wgpu::BindGroupLayout,
+    range_buf: wgpu::Buffer,
+    range_cap: usize,
+    quad_index: wgpu::Buffer,
     blur_pipe: wgpu::RenderPipeline,
     composite_pipe: wgpu::RenderPipeline,
     frame_layout: wgpu::BindGroupLayout,
@@ -145,20 +159,32 @@ impl Renderer {
             e2.binding = 2;
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some(label), entries: &[e0, e1, e2] })
         };
-        let frame_layout = mk_layout("frame", both);
+        let frame_layout = mk_layout("frame", both | wgpu::ShaderStages::COMPUTE);
+        let storage = |read_only: bool| wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None };
+        let cs = wgpu::ShaderStages::COMPUTE;
+        let eval_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("card eval"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: cs, ty: storage(true), count: None },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: cs, ty: storage(false), count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: cs,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: wgpu::BufferSize::new(16) },
+                    count: None,
+                },
+            ],
+        });
+        let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("card draw"),
+            entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX, ty: storage(true), count: None }],
+        });
         let post_layout = mk_layout("post", wgpu::ShaderStages::FRAGMENT);
         let frame_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("frame"), bind_group_layouts: &[&frame_layout], push_constant_ranges: &[] });
+        let card_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("cards"), bind_group_layouts: &[&frame_layout, &draw_layout], push_constant_ranges: &[] });
+        let eval_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("card eval"), bind_group_layouts: &[&frame_layout, &eval_layout], push_constant_ranges: &[] });
         let post_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("post"), bind_group_layouts: &[&post_layout], push_constant_ranges: &[] });
 
-        let inst_attrs = [
-            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
-            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 12, shader_location: 1 },
-            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 24, shader_location: 2 },
-            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 36, shader_location: 3 },
-            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 52, shader_location: 4 },
-            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 56, shader_location: 5 },
-        ];
-        let inst_layout = wgpu::VertexBufferLayout { array_stride: (CARD_STRIDE * 4) as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &inst_attrs };
         let body_attrs = [wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 }];
         let body_layout = wgpu::VertexBufferLayout { array_stride: 12, step_mode: wgpu::VertexStepMode::Vertex, attributes: &body_attrs };
 
@@ -194,8 +220,8 @@ impl Renderer {
         let card_pipe_for = |label: &str, f: wgpu::TextureFormat, fs: &str, b: Option<wgpu::BlendState>, write: bool, a2c: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
-                layout: Some(&frame_pl),
-                vertex: wgpu::VertexState { module: &module, entry_point: Some("vs_main"), compilation_options: opts.clone(), buffers: &[inst_layout.clone()] },
+                layout: Some(&card_pl),
+                vertex: wgpu::VertexState { module: &module, entry_point: Some("vs_card"), compilation_options: opts.clone(), buffers: &[] },
                 fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some(fs), compilation_options: opts.clone(), targets: &[target(f, b, wgpu::ColorWrites::ALL)] }),
                 primitive: prim(Some(wgpu::Face::Back)),
                 depth_stencil: Some(depth_state(write, wgpu::CompareFunction::LessEqual)),
@@ -222,6 +248,14 @@ impl Renderer {
                 cache: None,
             })
         };
+        let eval_pipe = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("card eval"),
+            layout: Some(&eval_pl),
+            module: &module,
+            entry_point: Some("cs_cards"),
+            compilation_options: opts.clone(),
+            cache: None,
+        });
         let blur_pipe = fullscreen("blur", "fs_blur", UNDER_FORMAT, 1, false);
         let composite_pipe = fullscreen("composite", "fs_composite", format, MSAA, true);
 
@@ -246,7 +280,16 @@ impl Renderer {
         let ubuf = |label: &str, size: usize| device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: size as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let fsz = std::mem::size_of::<FrameUniform>();
         let psz = std::mem::size_of::<PostUniform>();
+        let range_cap = 1024;
+        let range_buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("card ranges"), size: (range_cap * RANGE_STRIDE) as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let quad_index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("quad index"), contents: bytemuck::cast_slice(&[0u16, 1, 2, 0, 2, 3]), usage: wgpu::BufferUsages::INDEX });
         let mut r = Renderer {
+            eval_pipe,
+            eval_layout,
+            draw_layout,
+            range_buf,
+            range_cap,
+            quad_index,
             frame_buf: ubuf("frame", fsz),
             under_buf: ubuf("frame under", fsz),
             blur_h_buf: ubuf("blur h", psz),
@@ -341,8 +384,16 @@ impl Renderer {
                         self.sets.remove(&key);
                         continue;
                     }
-                    let buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("cards"), contents: bytemuck::cast_slice(&cards), usage: wgpu::BufferUsages::VERTEX });
-                    self.sets.insert(key, CardSet { buf, chunks });
+                    let buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("cards"), contents: bytemuck::cast_slice(&cards), usage: wgpu::BufferUsages::STORAGE });
+                    let n = (cards.len() / CARD_STRIDE) as u64;
+                    let out = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("cards eval"), size: n.max(1) * CARD_OUT_BYTES, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
+                    let eval_bg = self.make_eval_bg(&buf, &out);
+                    let draw_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("card draw"),
+                        layout: &self.draw_layout,
+                        entries: &[wgpu::BindGroupEntry { binding: 0, resource: out.as_entire_binding() }],
+                    });
+                    self.sets.insert(key, CardSet { buf, out, eval_bg, draw_bg, chunks });
                 }
                 RenderEvent::RemoveCards { key } => {
                     self.sets.remove(&key);
@@ -362,6 +413,50 @@ impl Renderer {
                 }
                 RenderEvent::ClearBodies => self.bodies.clear(),
             }
+        }
+    }
+
+    fn make_eval_bg(&self, input: &wgpu::Buffer, out: &wgpu::Buffer) -> wgpu::BindGroup {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("card eval"),
+            layout: &self.eval_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &self.range_buf, offset: 0, size: wgpu::BufferSize::new(16) }) },
+            ],
+        })
+    }
+
+    /// Evaluate every visible card once (wind, billboards, lighting, fog...):
+    /// both card passes then only expand the four corners.
+    fn eval_cards(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        if self.visible.len() > self.range_cap {
+            self.range_cap = self.visible.len().next_power_of_two();
+            self.range_buf = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("card ranges"), size: (self.range_cap * RANGE_STRIDE) as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            let keys: Vec<u64> = self.sets.keys().copied().collect();
+            for k in keys {
+                let s = &self.sets[&k];
+                let bg = self.make_eval_bg(&s.buf, &s.out);
+                self.sets.get_mut(&k).expect("set").eval_bg = bg;
+            }
+        }
+        if self.visible.is_empty() {
+            return;
+        }
+        let mut ranges = vec![0u8; self.visible.len() * RANGE_STRIDE];
+        for (i, &(_, start, count)) in self.visible.iter().enumerate() {
+            ranges[i * RANGE_STRIDE..i * RANGE_STRIDE + 8].copy_from_slice(bytemuck::cast_slice(&[start, count]));
+        }
+        self.queue.write_buffer(&self.range_buf, 0, &ranges);
+        let frame_bg = self.frame_bg.as_ref().expect("bg");
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("card eval"), timestamp_writes: None });
+        pass.set_pipeline(&self.eval_pipe);
+        pass.set_bind_group(0, frame_bg, &[]);
+        for (i, &(key, _, count)) in self.visible.iter().enumerate() {
+            let Some(s) = self.sets.get(&key) else { continue };
+            pass.set_bind_group(1, &s.eval_bg, &[(i * RANGE_STRIDE) as u32]);
+            pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
         }
     }
 
@@ -512,6 +607,7 @@ impl Renderer {
             self.frame_bg = Some(make_bg(&self.frame_buf));
             self.under_bg = Some(make_bg(&self.under_buf));
         }
+        self.eval_cards(encoder);
         let frame_bg = self.frame_bg.as_ref().expect("bg");
         let under_bg = self.under_bg.as_ref().expect("bg");
         let t = self.targets.as_ref().expect("targets");
@@ -539,7 +635,7 @@ impl Renderer {
                 draw_calls += 1;
             }
             pass.set_pipeline(&self.under_pipe);
-            draw_cards(&mut pass, &self.sets, &self.visible, &mut draw_calls);
+            draw_cards(&mut pass, &self.sets, &self.visible, &self.quad_index, &mut draw_calls);
             drop(pass);
             for (pipe, bg, dst) in [(&self.blur_pipe, &t.blur_h_bg, &t.blur_a), (&self.blur_pipe, &t.blur_v_bg, &t.blur_b)] {
                 let mut p = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -582,21 +678,22 @@ impl Renderer {
             draw_calls += 1;
         }
         pass.set_pipeline(if f.coverage { &self.coverage_pipe } else { &self.blend_pipe });
-        draw_cards(&mut pass, &self.sets, &self.visible, &mut draw_calls);
+        draw_cards(&mut pass, &self.sets, &self.visible, &self.quad_index, &mut draw_calls);
         drop(pass);
         RenderStats { instances, draw_calls, sets: self.sets.len() }
     }
 }
 
-fn draw_cards(pass: &mut wgpu::RenderPass<'_>, sets: &BTreeMap<u64, CardSet>, visible: &[(u64, u32, u32)], calls: &mut u32) {
+fn draw_cards(pass: &mut wgpu::RenderPass<'_>, sets: &BTreeMap<u64, CardSet>, visible: &[(u64, u32, u32)], quad: &wgpu::Buffer, calls: &mut u32) {
     let mut bound = None;
+    pass.set_index_buffer(quad.slice(..), wgpu::IndexFormat::Uint16);
     for &(key, start, count) in visible {
         if bound != Some(key) {
             let Some(s) = sets.get(&key) else { continue };
-            pass.set_vertex_buffer(0, s.buf.slice(..));
+            pass.set_bind_group(1, &s.draw_bg, &[]);
             bound = Some(key);
         }
-        pass.draw(0..6, start..start + count);
+        pass.draw_indexed(0..6, 0, start..start + count);
         *calls += 1;
     }
 }

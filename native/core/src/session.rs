@@ -279,6 +279,14 @@ impl<E: JobExecutor> Session<E> {
     pub fn show_world(&mut self, seed: u32, day: bool) {
         let aspect = glyph_aspect(GLYPH_HEIGHT);
         self.start("world".to_string(), JobKind::WorldInit { seed, day, aspect });
+        // Every chunk needs trees, bushes and rocks: build them all once, in
+        // parallel, rather than one by one as chunks first ask for them.
+        let parts = self.exec.workers();
+        for part in 0..parts {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.exec.submit(Job { id, kind: JobKind::WarmAssets { seed, part, parts } });
+        }
     }
 
     pub fn show_scene(&mut self, preset: crate::input::Preset, seed: u32) {
@@ -456,7 +464,7 @@ impl<E: JobExecutor> Session<E> {
             }
             Output::Scene(s) => self.apply_scene(*s, name),
             Output::World(w) => self.apply_world(w),
-            Output::Chunk(_) => {}
+            Output::Chunk(_) | Output::Warmed => {}
         }
     }
 

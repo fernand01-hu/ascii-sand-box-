@@ -20,6 +20,8 @@ pub enum JobKind {
     Scene { preset: Preset, seed: u32, aspect: f32 },
     WorldInit { seed: u32, day: bool, aspect: f32 },
     Chunk { seed: u32, day: bool, cx: i32, cz: i32, eye: [f32; 3], aspect: f32 },
+    /// Build share `part` of `parts` of the world's assets ahead of streaming.
+    WarmAssets { seed: u32, part: usize, parts: usize },
 }
 
 #[derive(Clone, Debug)]
@@ -103,6 +105,7 @@ pub enum Output {
     Scene(Box<SceneOut>),
     World(WorldOut),
     Chunk(Box<ChunkOut>),
+    Warmed,
 }
 
 /// Where jobs run. `submit` must not block; `poll` appends finished jobs.
@@ -201,6 +204,10 @@ impl Worker {
                     water,
                     spawn,
                 }))
+            }
+            JobKind::WarmAssets { seed, part, parts } => {
+                eng::warm_world_assets(*seed, *part, *parts);
+                Ok(Output::Warmed)
             }
             JobKind::Chunk { seed, day, cx, cz, eye, aspect } => {
                 let c = self.world(*seed, *day).build_chunk(*cx, *cz, *eye, *aspect);

@@ -60,11 +60,6 @@ fn rotate_about(v: vec3<f32>, axis: vec3<f32>, a: f32) -> vec3<f32> {
   return v * c + cross(axis, v) * sin(a) + axis * dot(axis, v) * (1.0 - c);
 }
 
-const QUAD = array<vec2<f32>, 6>(
-  vec2<f32>(-0.5, -0.5), vec2<f32>(0.5, -0.5), vec2<f32>(0.5, 0.5),
-  vec2<f32>(-0.5, -0.5), vec2<f32>(0.5, 0.5), vec2<f32>(-0.5, 0.5),
-);
-
 fn hidden() -> VOut {
   var o: VOut;
   o.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
@@ -74,14 +69,27 @@ fn hidden() -> VOut {
   return o;
 }
 
-@vertex
-fn vs_main(@builtin(vertex_index) vi: u32, inst: Inst) -> VOut {
-  var quad_arr = QUAD;
-  let quad = quad_arr[vi];
-  let uvq = quad + vec2<f32>(0.5);
+// Per-card result of the heavy evaluation, written once per frame by
+// `cs_cards` and read by both card passes (underpaint and glyphs).
+struct CardOut {
+  p: vec4<f32>,   // final centre (with sway), |iv| for the depth bias
+  u: vec4<f32>,   // final U, (glyph + 1) * flip
+  v: vec4<f32>,   // final V, flags: 1 hidden, 2 hidden in the underpaint
+  col: vec4<f32>, // lit colour, alpha
+}
+
+fn hidden_card() -> CardOut {
+  var o: CardOut;
+  o.p = vec4<f32>(0.0);
+  o.u = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  o.v = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  o.col = vec4<f32>(0.0);
+  return o;
+}
+
+fn eval_card(inst: Inst) -> CardOut {
   let camera_position = F.cam.xyz;
   let time = F.wind.w;
-  let under = F.weather.z;
 
   let high = floor((inst.glyph + 0.5) / MATERIAL_SHIFT);
   let glyph = inst.glyph - high * MATERIAL_SHIFT;
@@ -110,9 +118,6 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: Inst) -> VOut {
   var V = inst.iv;
   var alpha_mul = 1.0;
 
-  if (under > 0.5 && (rain || leaf)) {
-    return hidden();
-  }
   if (card_mode > 3.5 && card_mode < 4.5) {
     // Sky dome and stars: built round the origin, kept centred on the camera.
     center = inst.center + camera_position;
@@ -201,13 +206,12 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: Inst) -> VOut {
 
   let base_a = inst.color.a;
 
-  let world = center + sway + U * quad.x + V * quad.y;
   var N = normalize(cross(U, V));
   let facing = dot(N, to_cam);
   var nlight = N;
   if (lean) { nlight = n0; }
   if (solid && facing < 0.0) {
-    return hidden();
+    return hidden_card();
   }
 
   var flip = 1.0;
@@ -216,12 +220,14 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: Inst) -> VOut {
   if (!lean) { nlight = N; }
   let dist = length(camera_position - center);
 
-  var out: VOut;
+  var out: CardOut;
+  var color = vec3<f32>(0.0);
+  var alpha = 0.0;
   if (emissive || rain) {
-    out.color = inst.color.rgb;
+    color = inst.color.rgb;
     var fa = smoothstep(0.02, 0.25, abs(facing));
     if (rain) { fa = 1.0; }
-    out.alpha = base_a * alpha_mul * fa;
+    alpha = base_a * alpha_mul * fa;
   } else {
     var ts = inst.light.x;
     var tk = inst.light.y;
@@ -241,25 +247,85 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: Inst) -> VOut {
     col = mix(col, F.haze_color.xyz, hz);
     var edge = smoothstep(0.02, 0.25, abs(facing));
     if (C.x > 0.3) { edge = max(edge, 0.7); }
-    out.color = col;
-    out.alpha = min(1.0, (base_a + B.z * ts * diff) * F.fog.z) * edge * alpha_mul;
+    color = col;
+    alpha = min(1.0, (base_a + B.z * ts * diff) * F.fog.z) * edge * alpha_mul;
   }
   if (F.fog.y > 0.0 && C.z > 0.5) {
     let hz = (1.0 - exp(-dist / (F.fog.x * (1.0 - 0.55 * F.weather.x)))) * F.fog.y;
-    out.color = mix(out.color, F.haze_color.xyz, hz);
+    color = mix(color, F.haze_color.xyz, hz);
   }
 
+  out.p = vec4<f32>(center + sway, length(inst.iv));
+  out.u = vec4<f32>(U, (glyph + 1.0) * flip);
+  var flags = 0.0;
+  if (rain || leaf) { flags = 2.0; }
+  out.v = vec4<f32>(V, flags);
+  out.col = vec4<f32>(color, alpha);
+  return out;
+}
+
+
+// ---- per-card evaluation (compute) ----
+struct Range { start: u32, count: u32, pad0: u32, pad1: u32 }
+@group(1) @binding(0) var<storage, read> CARDS_IN: array<f32>;
+@group(1) @binding(1) var<storage, read_write> CARDS_OUT: array<CardOut>;
+@group(1) @binding(2) var<uniform> RANGE: Range;
+
+@compute @workgroup_size(64)
+fn cs_cards(@builtin(global_invocation_id) gid: vec3<u32>) {
+  if (gid.x >= RANGE.count) { return; }
+  let i = RANGE.start + gid.x;
+  let b = i * 16u;
+  var inst: Inst;
+  inst.center = vec3<f32>(CARDS_IN[b], CARDS_IN[b + 1u], CARDS_IN[b + 2u]);
+  inst.iu = vec3<f32>(CARDS_IN[b + 3u], CARDS_IN[b + 4u], CARDS_IN[b + 5u]);
+  inst.iv = vec3<f32>(CARDS_IN[b + 6u], CARDS_IN[b + 7u], CARDS_IN[b + 8u]);
+  inst.color = vec4<f32>(CARDS_IN[b + 9u], CARDS_IN[b + 10u], CARDS_IN[b + 11u], CARDS_IN[b + 12u]);
+  inst.glyph = CARDS_IN[b + 13u];
+  inst.light = vec2<f32>(CARDS_IN[b + 14u], CARDS_IN[b + 15u]);
+  CARDS_OUT[i] = eval_card(inst);
+}
+
+// ---- card vertices: 4 corners of an evaluated card ----
+@group(1) @binding(0) var<storage, read> CARDS: array<CardOut>;
+
+const CORNER = array<vec2<f32>, 4>(
+  vec2<f32>(-0.5, -0.5), vec2<f32>(0.5, -0.5), vec2<f32>(0.5, 0.5), vec2<f32>(-0.5, 0.5),
+);
+
+@vertex
+fn vs_card(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
+  let c = CARDS[ii];
+  let under = F.weather.z > 0.5;
+  let flags = c.v.w;
+  if (flags > 0.5 && (flags < 1.5 || under)) { return hidden(); }
+  // Fragments below these alphas are always discarded (fs_main, fs_solid).
+  if (under) {
+    if (c.col.a * F.weather.w < 0.05) { return hidden(); }
+  } else if (c.col.a < 0.02) {
+    return hidden();
+  }
+  var corner_arr = CORNER;
+  let quad = corner_arr[vi];
+  let uvq = quad + vec2<f32>(0.5);
+  let world = c.p.xyz + c.u.xyz * quad.x + c.v.xyz * quad.y;
+
+  let gf = c.u.w;
+  let glyph = abs(gf) - 1.0;
   let cols = F.atlas.x;
   let row = floor((glyph + 0.5) / cols);
   let col_i = glyph - row * cols;
   var cu = uvq.x;
-  if (flip < 0.0) { cu = 1.0 - uvq.x; }
+  if (gf < 0.0) { cu = 1.0 - uvq.x; }
   let cuv = vec2<f32>(cu, 1.0 - uvq.y);
   let inset = F.atlas.zw;
-  out.uv = (vec2<f32>(col_i, row) + mix(inset, vec2<f32>(1.0) - inset, cuv)) / F.atlas.xy;
 
+  var out: VOut;
+  out.uv = (vec2<f32>(col_i, row) + mix(inset, vec2<f32>(1.0) - inset, cuv)) / F.atlas.xy;
+  out.color = c.col.rgb;
+  out.alpha = c.col.a;
   var vp = (F.view * vec4<f32>(world, 1.0)).xyz;
-  vp = vp + normalize(-vp) * (F.fog.w * length(inst.iv));
+  vp = vp + normalize(-vp) * (F.fog.w * c.p.w);
   out.pos = F.proj * vec4<f32>(vp, 1.0);
   return out;
 }

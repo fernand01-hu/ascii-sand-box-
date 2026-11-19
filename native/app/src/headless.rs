@@ -241,8 +241,11 @@ fn percentile(v: &mut [f64], p: f64) -> f64 {
 /// the GPU figure on a software driver means nothing.
 pub fn bench_cmd(args: &[String]) -> Result<(), String> {
     use ascii_engine as eng;
-    let workers = args.first().and_then(|a| a.parse().ok()).unwrap_or_else(default_workers);
+    let workers = args.iter().find_map(|a| a.parse().ok()).unwrap_or_else(default_workers);
     let aspect = ascii_core::glyphs::glyph_aspect(ascii_core::glyphs::GLYPH_HEIGHT);
+    // `--stream`: only the streaming part, from a cold process (no asset built yet).
+    let stream_only = args.iter().any(|a| a == "--stream");
+    if !stream_only {
     println!("== engine, one thread ==");
     let t = Instant::now();
     let mut world = eng::InfiniteWorld::new(1, false);
@@ -269,6 +272,7 @@ pub fn bench_cmd(args: &[String]) -> Result<(), String> {
         println!("scene {}: {} cards in {:.0} ms", p.name(), s.cards.len() / 16, t.elapsed().as_secs_f64() * 1e3);
     }
 
+    }
     println!("== world streaming, {workers} worker thread(s) ==");
     let mut run = Run::new((1000, 800), workers);
     let src = SourceKind::World { seed: 1, day: false };
@@ -277,6 +281,9 @@ pub fn bench_cmd(args: &[String]) -> Result<(), String> {
     run.wait_ready(&src, Duration::from_secs(900))?;
     let s = run.session.stats();
     println!("view disc ({} chunks) streamed in {:.1} s; chunk build mean {:.0} ms, max {:.0} ms on the workers", s.chunks_loaded, t.elapsed().as_secs_f64(), s.chunk_ms_mean, s.chunk_ms_max);
+    if stream_only {
+        return Ok(());
+    }
 
     println!("== frame cost (world, {} cards) ==", s.cards);
     let gpu = open_gpu()?;

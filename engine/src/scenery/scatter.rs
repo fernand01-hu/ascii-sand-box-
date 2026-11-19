@@ -21,6 +21,7 @@ use super::trees::{make_tree, TreeKind};
 use crate::math::Vec3;
 use crate::rng::Pcg32;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::f32::consts::TAU;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -122,7 +123,19 @@ pub(crate) fn layers(b: Biome) -> Vec<Layer> {
 pub struct Library {
     seed: u32,
     index: HashMap<(Kind, u32, u8), usize>,
-    pub assets: Vec<Asset>,
+    pub assets: Vec<Arc<Asset>>,
+}
+
+type AssetKey = (u32, Kind, u32, u8);
+type AssetCell = Arc<OnceLock<Arc<Asset>>>;
+
+/// Assets are a pure function of (library seed, kind, variant, lod), so every
+/// `Library` of the process shares them: each one is built once, by whichever
+/// thread needs it first, while the others wait for it instead of building
+/// their own copy.
+fn shared_assets() -> &'static Mutex<HashMap<AssetKey, AssetCell>> {
+    static CACHE: OnceLock<Mutex<HashMap<AssetKey, AssetCell>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 impl Library {
@@ -134,7 +147,19 @@ impl Library {
         if let Some(&i) = self.index.get(&(kind, variant, lod)) {
             return i;
         }
-        let base = if lod == 0 {
+        let cell = {
+            let mut m = shared_assets().lock().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(m.entry((self.seed, kind, variant, lod)).or_default())
+        };
+        let asset = Arc::clone(cell.get_or_init(|| Arc::new(self.build(kind, variant, lod))));
+        self.assets.push(asset);
+        let i = self.assets.len() - 1;
+        self.index.insert((kind, variant, lod), i);
+        i
+    }
+
+    fn build(&mut self, kind: Kind, variant: u32, lod: u8) -> Asset {
+        if lod == 0 {
             let k = match kind {
                 Kind::Tree(t) => t as u32,
                 Kind::Bush(b) => 10 + b as u32,
@@ -151,11 +176,7 @@ impl Library {
         } else {
             let i0 = self.get(kind, variant, 0);
             self.assets[i0].lod(lod, self.seed as u64)
-        };
-        self.assets.push(base);
-        let i = self.assets.len() - 1;
-        self.index.insert((kind, variant, lod), i);
-        i
+        }
     }
 }
 
@@ -373,4 +394,40 @@ mod tests {
         let kinds: usize = layers(Biome::Meadow).iter().map(|l| l.kinds.len() * if l.which == LayerKind::Trees { 3 } else { 4 }).sum();
         assert!(s.library.assets.len() <= kinds * 3, "variants are cached: {} > {}", s.library.assets.len(), kinds * 3);
     }
+}
+
+/// Every (kind, variant) the world can place, in a fixed order.
+fn world_asset_keys() -> Vec<(Kind, u32)> {
+    let mut keys: Vec<(Kind, u32)> = Vec::new();
+    for b in [Biome::Meadow, Biome::Forest, Biome::Lakeside, Biome::Alpine] {
+        for layer in layers(b) {
+            let variants = if layer.which == LayerKind::Trees { 3 } else { 4 };
+            for &(kind, _) in &layer.kinds {
+                for v in 0..variants {
+                    if !keys.contains(&(kind, v)) {
+                        keys.push((kind, v));
+                    }
+                }
+            }
+        }
+    }
+    keys
+}
+
+/// Build share `part` of `parts` of the world's assets (all levels of detail)
+/// into the process-wide cache, so streaming never waits for one. Returns
+/// how many (kind, variant) pairs this share covered.
+pub fn warm_world_assets(seed: u32, part: usize, parts: usize) -> usize {
+    let mut lib = Library::new(seed);
+    let mut n = 0;
+    for (i, (kind, v)) in world_asset_keys().into_iter().enumerate() {
+        if i % parts.max(1) != part {
+            continue;
+        }
+        for lod in 0..3 {
+            lib.get(kind, v, lod);
+        }
+        n += 1;
+    }
+    n
 }
