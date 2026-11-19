@@ -310,11 +310,24 @@ pub fn scenery_sun_dir() -> Vec<f32> {
 
 // ---- the canvas ------------------------------------------------------------------
 
-/// Chunk size (m), physics grid (samples - 1 per side), ground height.
+/// Chunk size (m), physics grid (samples - 1 per side), ground height,
+/// tile size (m), tiles per chunk side, floats per placed object.
 #[wasm_bindgen(js_name = worldConsts)]
 pub fn world_consts() -> Vec<f32> {
     use scenery::canvas;
-    vec![canvas::CHUNK, canvas::GRID as f32, canvas::GROUND]
+    vec![canvas::CHUNK, canvas::GRID as f32, canvas::GROUND, canvas::TILE, canvas::TILES as f32, canvas::OBJECT_FLOATS as f32]
+}
+
+/// Placeable object kinds, comma-separated; a kind's code is its index.
+#[wasm_bindgen(js_name = objectKinds)]
+pub fn object_kinds() -> String {
+    scenery::library::Kind::all().iter().map(|k| k.name()).collect::<Vec<_>>().join(",")
+}
+
+/// Ground paints, comma-separated; a paint's code (the tile byte) is its index.
+#[wasm_bindgen(js_name = groundKinds)]
+pub fn ground_kinds() -> String {
+    scenery::canvas::Ground::ALL.iter().map(|g| g.name()).collect::<Vec<_>>().join(",")
 }
 
 /// The blank canvas: an endless flat map of '#' rows, built chunk by chunk
@@ -346,13 +359,23 @@ impl CanvasWorld {
         self.inner.sky_cards(glyph_aspect)
     }
 
-    /// Chunk (cx, cz) with glyphs sized for an eye at (ex, ey, ez).
+    /// Chunk (cx, cz) with glyphs sized for an eye at (ex, ey, ez). `tiles`:
+    /// empty (all canvas) or tiles x tiles ground codes, row-major from the
+    /// chunk corner; `objects`: the placed objects whose base is in this
+    /// chunk, `OBJECT_FLOATS` each (see `worldConsts`).
     #[wasm_bindgen(js_name = buildChunk)]
     #[allow(clippy::too_many_arguments)]
-    pub fn build_chunk(&self, cx: i32, cz: i32, ex: f32, ey: f32, ez: f32, glyph_aspect: f32) -> WorldChunk {
-        let c = self.inner.build_chunk(cx, cz, math::Vec3::new(ex, ey, ez), glyph_aspect);
+    pub fn build_chunk(&mut self, cx: i32, cz: i32, ex: f32, ey: f32, ez: f32, glyph_aspect: f32, tiles: &[u8], objects: &[f32]) -> Result<WorldChunk, JsError> {
+        use scenery::canvas::{ChunkData, OBJECT_FLOATS, TILES};
+        if !tiles.is_empty() && tiles.len() != TILES * TILES {
+            return Err(JsError::new(&format!("tiles must be empty or {} bytes, got {}", TILES * TILES, tiles.len())));
+        }
+        if !objects.len().is_multiple_of(OBJECT_FLOATS) {
+            return Err(JsError::new(&format!("objects must be {OBJECT_FLOATS} floats each, got {}", objects.len())));
+        }
+        let c = self.inner.build_chunk(cx, cz, math::Vec3::new(ex, ey, ez), glyph_aspect, ChunkData { tiles, objects });
         let (body, body_normals) = body_buffers(&c.body);
-        WorldChunk { cards: c.cards, body, body_normals, heights: c.heights, colliders: c.colliders.iter().flatten().copied().collect() }
+        Ok(WorldChunk { cards: c.cards, body, body_normals, heights: c.heights, colliders: c.colliders.iter().flatten().copied().collect(), placed: c.placed as u32 })
     }
 }
 
@@ -363,10 +386,15 @@ pub struct WorldChunk {
     body_normals: Vec<f32>,
     heights: Vec<f32>,
     colliders: Vec<f32>,
+    placed: u32,
 }
 
 #[wasm_bindgen]
 impl WorldChunk {
+    /// Objects drawn (records with an unknown kind are skipped).
+    pub fn placed(&self) -> u32 {
+        self.placed
+    }
     #[wasm_bindgen(js_name = takeCards)]
     pub fn take_cards(&mut self) -> Vec<f32> {
         std::mem::take(&mut self.cards)

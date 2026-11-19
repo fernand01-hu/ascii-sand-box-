@@ -131,6 +131,48 @@ try {
     await page.evaluate(() => window.__ascii.freezeTime(null));
   });
 
+  await step('canvas edits: paint and place objects, only the touched chunks rebuild', async () => {
+    await page.evaluate(() => window.__ascii.freezeTime(3));
+    const before = await page.evaluate(() => window.__ascii.worldStats());
+    // The camera stands at (0, 7, 0) looking toward -z.
+    const touched = await page.evaluate(() => {
+      const a = window.__ascii;
+      const keys = new Set([
+        ...a.paintRect(-14, -44, 14, -14, 'grass'),
+        ...a.paintRect(-10, -40, -2, -30, 'water'),
+        ...a.paintCircle(6, -20, 3, 'sand'),
+        ...a.paintRect(-14, -16, 14, -14, 'rock'),
+      ]);
+      window.__edits = [
+        a.addObject({ kind: 'tree:oak', x: 0.4, z: -30, seed: 3 }), // trunk in chunk (0, -1), crown over (-1, -1)
+        a.addObject({ kind: 'tree:pine', x: 9, z: -38, seed: 5 }),
+        a.addObject({ kind: 'rock:boulder', x: -5, z: -20, seed: 2, scale: 1.5 }),
+        a.addObject({ kind: 'bush:juniper', x: 4, z: -18, seed: 1 }),
+      ];
+      return keys.size;
+    });
+    await page.waitForFunction((b, n) => { const s = window.__ascii.worldStats(); return s.editBuilds >= b + n && s.dirty === 0 && s.pending === 0; },
+      { timeout: 300_000, polling: 500 }, before.editBuilds, touched);
+    const after = await page.evaluate(() => window.__ascii.worldStats());
+    console.log(`       ${touched} chunks touched, ${after.editBuilds - before.editBuilds} edit rebuilds, ${after.viewBuilds - before.viewBuilds} other rebuilds, ${after.edited} chunks hold edits`);
+    assert.equal(after.objects, 4);
+    assert.equal(after.viewBuilds, before.viewBuilds, 'no other loaded chunk was rebuilt');
+    assert.equal(after.editBuilds - before.editBuilds, touched, 'one rebuild per touched chunk');
+    await page.screenshot({ path: join(outDir, '13b-canvas-edits.png') });
+    await matchesGolden('13b-canvas-edits');
+    // Undo it all: the map is empty again and stores nothing.
+    const left = await page.evaluate(() => {
+      const a = window.__ascii;
+      for (const o of window.__edits) a.removeObject(o.id);
+      a.paintRect(-14, -44, 14, -14, 'canvas');
+      return a.worldStats();
+    });
+    assert.equal(left.edited, 0, 'erased chunks are not stored');
+    assert.equal(left.objects, 0);
+    await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+    await page.evaluate(() => window.__ascii.freezeTime(null));
+  });
+
   const models = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];
   for (const [i, model] of models.entries()) {
     await step(`model ${model}: renders, readable, matches reference`, async () => {

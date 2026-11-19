@@ -66,6 +66,12 @@ export interface WorldInfo {
   ground: number;
   /** Where the camera starts, on the ground. */
   spawn: [number, number, number];
+  /** Ground tile side (m) and tiles per chunk side. */
+  tile: number;
+  tiles: number;
+  /** Ground paints (index = tile byte) and object kinds (index = kind code). */
+  groundKinds: string[];
+  objectKinds: string[];
 }
 
 export interface WorldChunkData {
@@ -73,6 +79,10 @@ export interface WorldChunkData {
   cz: number;
   /** Eye the glyph sizes were chosen for. */
   eye: [number, number, number];
+  /** Revision of the chunk's map data this was built from. */
+  rev: number;
+  /** Objects drawn. */
+  placed: number;
   /** (grid + 1)^2 heights, 1 m apart, from the chunk corner. */
   heights: Float32Array;
   /** x, z, radius, top y per collider. */
@@ -106,7 +116,11 @@ export type WorkerRequest =
   | { kind: 'worldInit'; id: number; seed: number; day: boolean; glyphAspect: number }
   /** Chunk workers: create the canvas world (seed) or free it (null). No reply. */
   | { kind: 'worldSetup'; id: number; seed: number | null; day: boolean }
-  | { kind: 'worldChunk'; id: number; cx: number; cz: number; eye: [number, number, number]; glyphAspect: number };
+  | {
+    kind: 'worldChunk'; id: number; cx: number; cz: number; eye: [number, number, number]; glyphAspect: number;
+    /** The chunk's map data (see app/map.ts): ground tiles or null, objects, revision. */
+    tiles: Uint8Array | null; objects: Float32Array; rev: number;
+  };
 
 export type WorkerResponse =
   | ({ kind: 'result'; id: number } & EngineResult)

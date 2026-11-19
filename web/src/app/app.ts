@@ -8,6 +8,7 @@ import { createGlyphAtlas, glyphAspect, type GlyphAtlas } from '../render/atlas'
 import { CALM, DEFAULT_LIGHTING, SURFACE_MATERIAL, type Environment, type Lighting, type MaterialDef } from '../render/cards';
 import { BACKGROUND } from '../render/viewer';
 import { Player } from './player';
+import { MapData } from './map';
 import { WorldStreamer } from './world';
 
 /** Lighting of the scenery `dusk` preset (light.py): stronger sky, no hemisphere falloff. */
@@ -110,6 +111,14 @@ export class App {
   player: Player | null = null;
   /** The canvas world while it is shown. */
   world: WorldStreamer | null = null;
+  /**
+   * Everything painted and placed on the canvas. Created with the first
+   * canvas and kept for the whole session, so edits survive a trip to a
+   * gallery or a model and back.
+   */
+  map: MapData | null = null;
+  /** How many chunks round the camera are shown (see `setViewRadius`). */
+  viewRadius = 9;
   private env: Environment = { ...CALM };
   private atlas: GlyphAtlas;
   // Only the most recent request may update the scene.
@@ -296,7 +305,7 @@ export class App {
       this.resetEnvironment(true, day ? DAY_BACKGROUND : DUSK_BACKGROUND);
       const haze: [number, number, number] = day ? [176 / 255, 194 / 255, 214 / 255] : [74 / 255, 72 / 255, 104 / 255];
       // Haze thick enough that the edge of the loaded area melts away.
-      Object.assign(this.env, { windDir: res.env.windDir, leafBox: res.env.leafBox, rainBox: res.env.rainBox, fogDist: 140, fog: 1, hazeColor: haze });
+      Object.assign(this.env, { windDir: res.env.windDir, leafBox: res.env.leafBox, rainBox: res.env.rainBox, fogDist: this.hazeDistance(), fog: 1, hazeColor: haze });
       const v = this.viewer;
       v.cards.setAtlas(this.atlasFor(res.charset));
       v.cards.setMaterials(materialsFromTable(res.materials, res.materialFloats));
@@ -305,13 +314,35 @@ export class App {
       const [sx, sy, sz] = res.world.spawn;
       v.setFreeScene(new Vector3(sx, sy + 1, sz - 30), new Vector3(sx, sy + 7, sz), { fov: 50, far: 3000 });
       v.controls.maxDistance = 400;
-      this.world = new WorldStreamer(this.engine, v, res.world, (e) => console.warn(`[ascii] canvas chunk failed: ${e instanceof Error ? e.message : String(e)}`));
+      const w = res.world;
+      this.map ??= new MapData({ chunkSize: w.chunkSize, tile: w.tile, tiles: w.tiles, groundKinds: w.groundKinds, objectKinds: w.objectKinds });
+      this.world = new WorldStreamer(this.engine, v, res.world, this.map, (e) => console.warn(`[ascii] canvas chunk failed: ${e instanceof Error ? e.message : String(e)}`));
+      this.world.radius = this.viewRadius;
       this.world.update(v.camera.position, true);
       this.updateFrameHook();
       this.setEnvironment({ wind: 0.3, rain: 0, leaves: 0.5 });
       Object.assign(this.state, { triangles: 0, dropped: 0, glyphPx: 0 });
       console.info(`[ascii] canvas seed ${seed}: streaming chunks of ${res.world.chunkSize} m round (${sx.toFixed(0)}, ${sz.toFixed(0)})`);
     });
+  }
+
+  /**
+   * View distance in chunks (1-16). Beyond it the canvas fades into the
+   * haze; fewer chunks draw fewer characters (cheaper without a GPU).
+   */
+  setViewRadius(chunks: number): void {
+    this.viewRadius = Math.min(16, Math.max(1, Math.round(chunks)));
+    if (this.world) {
+      this.env.fogDist = this.hazeDistance();
+      this.setEnvironment({});
+      this.world.radius = this.viewRadius;
+      this.world.update(this.viewer.camera.position, true);
+    }
+  }
+
+  /** Haze thick enough that the edge of the shown chunks melts away (140 m at 9 chunks). */
+  private hazeDistance(): number {
+    return (140 / 9) * this.viewRadius;
   }
 
   async loadUrl(url: string, name = url.split('/').pop() ?? url): Promise<void> {
