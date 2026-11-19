@@ -122,6 +122,10 @@ impl Lighting {
     }
 }
 
+/// Key of the main card set / body (a scene's cards, a world's sky, rain and leaves).
+/// Streamed chunk keys never take this value (see `streamer::chunk_key`).
+pub const MAIN_SET: u64 = u64::MAX;
+
 /// Big, infrequent updates to the renderer's GPU state.
 pub enum RenderEvent {
     /// Rebuild the glyph atlas from this (engine-normalized) charset.

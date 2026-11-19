@@ -21,6 +21,7 @@ struct Loaded {
     eye: [f32; 3],
     heights: Vec<f32>,
     colliders: ColliderGrid,
+    cards: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -30,9 +31,11 @@ struct Want {
     prio: f64,
 }
 
+/// Set key of a streamed chunk: offset-binary packing of (cx, cz), so no real
+/// chunk ever maps to `MAIN_SET` (that would need cx = cz = i32::MAX).
 pub fn chunk_key(cx: i32, cz: i32) -> u64 {
-    // +1 keeps 0 free for the world's "main" card set (sky, rain, leaves).
-    ((u64::from(cx as u32) << 32) | u64::from(cz as u32)) + 1
+    let off = |v: i32| (i64::from(v) - i64::from(i32::MIN)) as u64;
+    (off(cx) << 32) | off(cz)
 }
 
 pub struct WorldStreamer {
@@ -73,6 +76,11 @@ impl WorldStreamer {
 
     pub fn loaded_count(&self) -> usize {
         self.loaded.len()
+    }
+
+    /// Cards held by the loaded chunks.
+    pub fn cards(&self) -> u64 {
+        self.loaded.values().map(|l| l.cards).sum()
     }
 
     pub fn pending(&self) -> usize {
@@ -151,6 +159,7 @@ impl WorldStreamer {
         let Some(c) = out else { return };
         let key = chunk_key(cx, cz);
         let c = *c;
+        let n_cards = (c.cards.cards.len() / crate::CARD_STRIDE) as u64;
         // Replace the old version only now, so nothing flickers out meanwhile.
         events.push(RenderEvent::SetCards { key, cards: c.cards.cards, chunks: c.cards.chunks });
         if !c.body.is_empty() {
@@ -158,7 +167,7 @@ impl WorldStreamer {
         } else {
             events.push(RenderEvent::RemoveBody { key });
         }
-        self.loaded.insert((cx, cz), Loaded { cx, cz, eye: c.eye, heights: c.heights, colliders: ColliderGrid::new(c.colliders) });
+        self.loaded.insert((cx, cz), Loaded { cx, cz, eye: c.eye, heights: c.heights, colliders: ColliderGrid::new(c.colliders), cards: n_cards });
         self.built += 1;
     }
 
@@ -213,3 +222,23 @@ impl Ground for WorldStreamer {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render_data::MAIN_SET;
+
+    #[test]
+    fn chunk_keys_are_unique_and_never_the_main_set() {
+        let mut seen = std::collections::HashSet::new();
+        for cz in -40..=40 {
+            for cx in -40..=40 {
+                let k = chunk_key(cx, cz);
+                assert_ne!(k, MAIN_SET, "chunk ({cx}, {cz}) took the main key");
+                assert!(seen.insert(k), "chunk ({cx}, {cz}) collides");
+            }
+        }
+        assert_ne!(chunk_key(-1, -1), MAIN_SET);
+        assert_ne!(chunk_key(i32::MIN, i32::MIN), MAIN_SET);
+    }
+}

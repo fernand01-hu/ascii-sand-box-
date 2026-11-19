@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
+use winit::dpi::LogicalSize;
 use winit::event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
@@ -63,14 +63,19 @@ struct App {
 }
 
 fn pick_format(caps: &wgpu::SurfaceCapabilities) -> (wgpu::TextureFormat, wgpu::TextureFormat) {
-    // The shaders write final display values, so use a non-sRGB view.
-    let surface_format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
+    use wgpu::TextureFormat as F;
+    // The shaders write final display values, so use a plain 8-bit non-sRGB view.
+    let surface_format = [F::Bgra8Unorm, F::Rgba8Unorm]
+        .into_iter()
+        .find(|f| caps.formats.contains(f))
+        .or_else(|| caps.formats.iter().copied().find(|f| matches!(f, F::Bgra8UnormSrgb | F::Rgba8UnormSrgb)))
+        .unwrap_or(caps.formats[0]);
     (surface_format, surface_format.remove_srgb_suffix())
 }
 
 impl App {
     fn init(&mut self, el: &ActiveEventLoop) -> Result<(), String> {
-        let attrs = Window::default_attributes().with_title("ASCII Scene").with_inner_size(PhysicalSize::new(self.opts.size.0, self.opts.size.1));
+        let attrs = Window::default_attributes().with_title("ASCII Scene").with_inner_size(LogicalSize::new(self.opts.size.0, self.opts.size.1));
         let window = Arc::new(el.create_window(attrs).map_err(|e| e.to_string())?);
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
@@ -98,7 +103,8 @@ impl App {
             height: size.height.max(1),
             present_mode,
             desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
+            // Glyph cards write alpha < 1: the window must stay opaque.
+            alpha_mode: if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) { wgpu::CompositeAlphaMode::Opaque } else { caps.alpha_modes[0] },
             view_formats: if view_format == surface_format { vec![] } else { vec![view_format] },
         };
         surface.configure(&device, &config);
@@ -332,7 +338,8 @@ impl ApplicationHandler for App {
                     // Browser-style pixels: one wheel notch is 100.
                     let d = match delta {
                         MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * 100.0,
-                        MouseScrollDelta::PixelDelta(p) => -p.y,
+                        // Physical pixels -> CSS-like pixels (the browser's deltaY).
+                        MouseScrollDelta::PixelDelta(p) => -p.y / self.gfx.as_ref().map_or(1.0, |g| g.window.scale_factor()),
                     };
                     s.pointer(Pointer::Zoom(d));
                 }

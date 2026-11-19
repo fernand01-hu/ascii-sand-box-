@@ -190,6 +190,7 @@ impl<E: JobExecutor> Session<E> {
             s.chunks_built = w.built;
             s.chunks_loaded = w.loaded_count();
             s.chunks_pending = w.pending();
+            s.cards += w.cards();
         }
         s.chunk_ms_mean = if self.chunk_ms_n > 0 { self.chunk_ms_sum / self.chunk_ms_n as f64 } else { 0.0 };
         s
@@ -415,7 +416,7 @@ impl<E: JobExecutor> Session<E> {
     fn set_cards(&mut self, c: CardData) {
         self.stats.cards = c.cards.len() as u64 / crate::CARD_STRIDE as u64;
         self.events.push(RenderEvent::ClearCards);
-        self.events.push(RenderEvent::SetCards { key: 0, cards: c.cards, chunks: c.chunks });
+        self.events.push(RenderEvent::SetCards { key: MAIN_SET, cards: c.cards, chunks: c.chunks });
     }
 
     fn reset_environment(&mut self, animate: bool, background: [f32; 3]) {
@@ -449,7 +450,7 @@ impl<E: JobExecutor> Session<E> {
                 self.depth_bias = 0.75;
                 self.orbit.max_polar = std::f64::consts::PI;
                 self.frame(&m.positions);
-                self.events.push(RenderEvent::SetBody { key: 0, positions: m.positions });
+                self.events.push(RenderEvent::SetBody { key: MAIN_SET, positions: m.positions });
                 self.set_cards(m.cards);
                 eprintln!("[ascii] {name}: {} triangles ({} dropped), {} cards", m.triangles, m.dropped, self.stats.cards);
             }
@@ -481,7 +482,7 @@ impl<E: JobExecutor> Session<E> {
         let [tx, ty, tz, ex, ey, ez, fov] = s.camera.map(f64::from);
         self.free_scene(DVec3::new(tx, ty, tz), DVec3::new(ex, ey, ez), fov, if s.is_scene { Some(3000.0) } else { None }, has_body);
         if has_body {
-            self.events.push(RenderEvent::SetBody { key: 0, positions: s.body });
+            self.events.push(RenderEvent::SetBody { key: MAIN_SET, positions: s.body });
         }
         self.set_cards(s.cards);
         if let Some(w) = s.walk {

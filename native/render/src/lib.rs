@@ -589,12 +589,12 @@ impl Renderer {
 }
 
 fn draw_cards(pass: &mut wgpu::RenderPass<'_>, sets: &BTreeMap<u64, CardSet>, visible: &[(u64, u32, u32)], calls: &mut u32) {
-    let mut bound = u64::MAX;
+    let mut bound = None;
     for &(key, start, count) in visible {
-        if key != bound {
+        if bound != Some(key) {
             let Some(s) = sets.get(&key) else { continue };
             pass.set_vertex_buffer(0, s.buf.slice(..));
-            bound = key;
+            bound = Some(key);
         }
         pass.draw(0..6, start..start + count);
         *calls += 1;

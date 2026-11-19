@@ -101,3 +101,26 @@ fn gallery_and_stl_load() {
     });
     assert_eq!(g.height(0.0, 0.0), 0.0);
 }
+
+#[test]
+fn streamed_chunks_never_replace_the_main_set() {
+    // Regression: chunk (-1, -1) once wrapped onto the sky set's key.
+    let mut s = Session::new(InlineExecutor::new(), (800, 600));
+    s.show_world(1, false);
+    let mut events = Vec::new();
+    let (mut main_sets, mut removed_main) = (0, 0);
+    for f in 0..12 {
+        s.update(f as f64 * 0.2, &InputState::default());
+        s.drain_events(&mut events);
+        for e in &events {
+            match e {
+                RenderEvent::SetCards { key, .. } if *key == ascii_core::render_data::MAIN_SET => main_sets += 1,
+                RenderEvent::RemoveCards { key } if *key == ascii_core::render_data::MAIN_SET => removed_main += 1,
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(main_sets, 1, "the sky set must be set exactly once");
+    assert_eq!(removed_main, 0);
+    assert!(s.stats().cards > 100_000 + 10_000, "stats should count the chunks' cards too: {}", s.stats().cards);
+}
