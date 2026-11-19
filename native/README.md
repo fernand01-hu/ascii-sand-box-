@@ -119,13 +119,19 @@ node scripts/native-wasm-parity.mjs                     # regenerate the WASM-en
 Measured on Linux (4 cores, no GPU), `ascii-scene bench`:
 - world chunk (32 m): mean 94 ms single-threaded, p95 178 ms, max 1.1 s (the chunk nearest the eye);
   the view disc of 261 chunks streams in under 12 s on two threads; scene builds 2.7 to 2.8 s (meadow, lake, valley).
-- CPU cost of a world frame (culling, 684 draw calls, submit): 0.5 ms.
+- CPU cost of a world frame (culling, 686 draw calls, submit): 0.5 ms.
+- Cost of the deterministic math (`libm` feature) on x86 Linux: chunks +6% (92 vs 87 ms mean), scenes +10% (2.76 vs 2.51 s). Not measured on Apple Silicon.
 - Not measurable here: GPU time. On the Mac run `ascii-scene --world --perf` and read the fps line.
 
 Choices for a fanless M1 Air: vsync (60 Hz cap), no drawing at all when nothing moves (STL models, galleries,
 paused scenes), no polling when the window is hidden, chunk threads = cores - 2 (max 6), per-set instance buffers
 that are never rewritten, half-resolution underpaint. If it runs hot: `ASCII_WORKERS=3`, or a smaller window (the
 cost is mostly overdraw, which scales with the window area).
+
+## CI
+
+`.github/workflows/native-macos.yml` (manual trigger) builds and tests on `macos-14`. The one push-triggered attempt was
+refused by GitHub ("macos-14-arm64-us-default is not supported" for this repository), so nothing has run on a Mac yet.
 
 ## Known limits and differences
 

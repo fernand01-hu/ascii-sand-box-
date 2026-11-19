@@ -2,9 +2,9 @@
 # Proposed, not required: it uses no secrets and only reads the repository.
 name: native-macos
 on:
-  push:
-    branches: [grosminet/native-macos]
-    paths: ['native/**', 'engine/**', 'scripts/build-macos.sh', '.github/workflows/native-macos.yml']
+  # Manual only: a push-triggered run on this repo failed at once with
+  # "configuration 'macos-14-arm64-us-default' is not supported" (runner not
+  # available to the account). Enable the push trigger once macOS runners work.
   workflow_dispatch:
 permissions:
   contents: read
