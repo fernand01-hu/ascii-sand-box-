@@ -18,8 +18,8 @@ interface Loaded {
 export class WorldStreamer implements Ground {
   /** View distance in chunks. */
   radius = 9;
-  /** Chunk requests in flight at once. */
-  maxInflight = 2;
+  /** Chunk requests in flight at once: two per chunk worker, so none sits idle. */
+  maxInflight: number;
   private loaded = new Map<string, Loaded>();
   private inflight = new Set<string>();
   private lastCheck = 0;
@@ -32,7 +32,9 @@ export class WorldStreamer implements Ground {
     private viewer: Viewer,
     readonly info: WorldInfo,
     private onError: (e: unknown) => void,
-  ) {}
+  ) {
+    this.maxInflight = engine.chunkWorkers * 2;
+  }
 
   private key(cx: number, cz: number): string {
     return `w${cx},${cz}`;

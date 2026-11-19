@@ -1,5 +1,10 @@
-// Promise-based front end for the engine worker. Restarts the worker by
-// itself if the WASM instance ever crashes.
+// Promise-based front end for the engine workers. Restarts a worker by itself
+// if its WASM instance ever crashes.
+//
+// One main worker handles models, galleries, scenes and world setup. Streamed
+// world chunks are built in parallel by a pool of chunk workers, each holding
+// its own copy of the (deterministic) world, so chunk building uses several
+// CPU cores and never blocks a scene switch.
 
 import type { CardSettings, EngineResult, GalleryCategory, ScenePreset, TestbedRequest, WorkerRequest, WorkerResponse } from './protocol';
 
@@ -16,55 +21,20 @@ interface Pending {
   reject: (e: Error) => void;
 }
 
-export class EngineClient {
-  private worker!: Worker;
-  private nextId = 1;
-  private pending = new Map<number, Pending>();
-  private disposed = false;
+/** One worker and the requests it still owes an answer to. */
+class Slot {
+  worker!: Worker;
+  pending = new Map<number, Pending>();
 
-  constructor() {
+  constructor(
+    private onRestart: (slot: Slot) => void,
+    private isDisposed: () => boolean,
+  ) {
     this.spawn();
   }
 
-  /** Parse an STL (the buffer is transferred, not copied) and generate cards. */
-  load(bytes: ArrayBuffer, settings: CardSettings, zUp = true): Promise<EngineResult> {
-    return this.send({ kind: 'load', id: this.nextId++, bytes, zUp, settings }, [bytes]);
-  }
-
-  /** Regenerate cards for the current mesh with new settings. */
-  generate(settings: CardSettings): Promise<EngineResult> {
-    return this.send({ kind: 'generate', id: this.nextId++, settings });
-  }
-
-  /** Build a gallery sheet of procedural scenery assets. */
-  gallery(category: GalleryCategory, seed: number, glyphAspect: number): Promise<EngineResult> {
-    return this.send({ kind: 'gallery', id: this.nextId++, category, seed, glyphAspect });
-  }
-
-  /** Build a whole landscape from a preset. */
-  scene(preset: ScenePreset, seed: number, glyphAspect: number): Promise<EngineResult> {
-    return this.send({ kind: 'scene', id: this.nextId++, preset, seed, glyphAspect });
-  }
-
-  /** Start an infinite world: returns its sky and setup. */
-  worldInit(seed: number, day: boolean, glyphAspect: number): Promise<EngineResult> {
-    return this.send({ kind: 'worldInit', id: this.nextId++, seed, day, glyphAspect });
-  }
-
-  /** Build one world chunk with glyphs sized for `eye`. */
-  worldChunk(cx: number, cz: number, eye: [number, number, number], glyphAspect: number): Promise<EngineResult> {
-    return this.send({ kind: 'worldChunk', id: this.nextId++, cx, cz, eye, glyphAspect });
-  }
-
-  /** Build a test scene (dev/test builds only). */
-  testbed(req: TestbedRequest): Promise<EngineResult> {
-    return this.send({ kind: 'testbed', id: this.nextId++, ...req });
-  }
-
-  dispose(): void {
-    this.disposed = true;
-    this.worker.terminate();
-    this.failAll(new Error('engine disposed'));
+  get load(): number {
+    return this.pending.size;
   }
 
   private spawn(): void {
@@ -77,12 +47,16 @@ export class EngineClient {
     this.worker.onmessageerror = () => this.restart(new Error('engine worker sent an unreadable message'));
   }
 
-  private send(req: WorkerRequest, transfer: Transferable[] = []): Promise<EngineResult> {
-    if (this.disposed) return Promise.reject(new Error('engine disposed'));
+  send(req: WorkerRequest, transfer: Transferable[] = []): Promise<EngineResult> {
     return new Promise((resolve, reject) => {
       this.pending.set(req.id, { resolve, reject });
       this.worker.postMessage(req, transfer);
     });
+  }
+
+  /** Send without expecting an answer. */
+  post(req: WorkerRequest): void {
+    this.worker.postMessage(req);
   }
 
   private receive(msg: WorkerResponse): void {
@@ -104,11 +78,113 @@ export class EngineClient {
   private restart(reason: Error): void {
     this.worker.terminate();
     this.failAll(reason);
-    if (!this.disposed) this.spawn();
+    if (!this.isDisposed()) {
+      this.spawn();
+      this.onRestart(this);
+    }
   }
 
-  private failAll(reason: Error): void {
+  failAll(reason: Error): void {
     for (const p of this.pending.values()) p.reject(reason);
     this.pending.clear();
+  }
+
+  terminate(reason: Error): void {
+    this.worker.terminate();
+    this.failAll(reason);
+  }
+}
+
+/** Chunk workers to use: leave a core for the page and one for the main worker. */
+function poolSize(): number {
+  const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
+  return Math.min(Math.max(cores - 2, 1), 6);
+}
+
+export class EngineClient {
+  private nextId = 1;
+  private disposed = false;
+  private main: Slot;
+  /** Chunk workers, spawned on the first world. */
+  private pool: Slot[] = [];
+  /** The world the chunk workers should hold (re-sent after a restart). */
+  private world: { seed: number; day: boolean } | null = null;
+
+  constructor() {
+    this.main = new Slot(() => {}, () => this.disposed);
+  }
+
+  /** Number of workers building world chunks in parallel. */
+  get chunkWorkers(): number {
+    return poolSize();
+  }
+
+  /** Parse an STL (the buffer is transferred, not copied) and generate cards. */
+  load(bytes: ArrayBuffer, settings: CardSettings, zUp = true): Promise<EngineResult> {
+    this.setWorld(null);
+    return this.send({ kind: 'load', id: this.nextId++, bytes, zUp, settings }, [bytes]);
+  }
+
+  /** Regenerate cards for the current mesh with new settings. */
+  generate(settings: CardSettings): Promise<EngineResult> {
+    return this.send({ kind: 'generate', id: this.nextId++, settings });
+  }
+
+  /** Build a gallery sheet of procedural scenery assets. */
+  gallery(category: GalleryCategory, seed: number, glyphAspect: number): Promise<EngineResult> {
+    this.setWorld(null);
+    return this.send({ kind: 'gallery', id: this.nextId++, category, seed, glyphAspect });
+  }
+
+  /** Build a whole landscape from a preset. */
+  scene(preset: ScenePreset, seed: number, glyphAspect: number): Promise<EngineResult> {
+    this.setWorld(null);
+    return this.send({ kind: 'scene', id: this.nextId++, preset, seed, glyphAspect });
+  }
+
+  /** Start an infinite world: returns its sky and setup. */
+  worldInit(seed: number, day: boolean, glyphAspect: number): Promise<EngineResult> {
+    this.setWorld({ seed, day });
+    return this.send({ kind: 'worldInit', id: this.nextId++, seed, day, glyphAspect });
+  }
+
+  /** Build one world chunk with glyphs sized for `eye`, on the least busy chunk worker. */
+  worldChunk(cx: number, cz: number, eye: [number, number, number], glyphAspect: number): Promise<EngineResult> {
+    if (this.disposed) return Promise.reject(new Error('engine disposed'));
+    if (this.pool.length === 0) return Promise.reject(new Error('no world: call worldInit first'));
+    let slot = this.pool[0]!;
+    for (const s of this.pool) if (s.load < slot.load) slot = s;
+    return slot.send({ kind: 'worldChunk', id: this.nextId++, cx, cz, eye, glyphAspect });
+  }
+
+  /** Build a test scene (dev/test builds only). */
+  testbed(req: TestbedRequest): Promise<EngineResult> {
+    this.setWorld(null);
+    return this.send({ kind: 'testbed', id: this.nextId++, ...req });
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    const reason = new Error('engine disposed');
+    this.main.terminate(reason);
+    for (const s of this.pool) s.terminate(reason);
+  }
+
+  /** Give every chunk worker the new world (or free it); queued chunks for the old one are skipped. */
+  private setWorld(w: { seed: number; day: boolean } | null): void {
+    this.world = w;
+    if (w && this.pool.length === 0) {
+      for (let i = 0; i < poolSize(); i++) this.pool.push(new Slot((s) => this.setupSlot(s), () => this.disposed));
+    }
+    for (const s of this.pool) this.setupSlot(s);
+  }
+
+  private setupSlot(s: Slot): void {
+    s.post({ kind: 'worldSetup', id: this.nextId++, seed: this.world?.seed ?? null, day: this.world?.day ?? false });
+  }
+
+  private send(req: WorkerRequest, transfer: Transferable[] = []): Promise<EngineResult> {
+    if (this.disposed) return Promise.reject(new Error('engine disposed'));
+    return this.main.send(req, transfer);
   }
 }

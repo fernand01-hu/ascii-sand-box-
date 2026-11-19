@@ -71,7 +71,7 @@ async function pump(): Promise<void> {
 function isSuperseded(req: WorkerRequest, newer: WorkerRequest[]): boolean {
   if (newer.length === 0) return false;
   const replacesScene = (r: WorkerRequest) => r.kind !== 'generate' && r.kind !== 'worldChunk';
-  if (req.kind === 'load' || req.kind === 'worldInit') return newer.some(replacesScene);
+  if (req.kind === 'load' || req.kind === 'worldInit' || req.kind === 'worldSetup') return newer.some(replacesScene);
   // Streamed chunks: only a new scene or world makes them pointless.
   if (req.kind === 'worldChunk') return newer.some(replacesScene);
   return true;
@@ -82,6 +82,12 @@ let world: wasm.InfiniteWorld | null = null;
 async function handle(req: WorkerRequest): Promise<void> {
   try {
     const engine = await ready;
+    if (req.kind === 'worldSetup') {
+      // Chunk workers hold their own copy of the world (it is deterministic).
+      world?.free();
+      world = req.seed === null ? null : new wasm.InfiniteWorld(req.seed >>> 0, req.day);
+      return;
+    }
     if (req.kind === 'worldInit') {
       world?.free();
       world = new wasm.InfiniteWorld(req.seed >>> 0, req.day);

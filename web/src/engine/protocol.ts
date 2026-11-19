@@ -119,6 +119,8 @@ export type WorkerRequest =
   | { kind: 'gallery'; id: number; category: GalleryCategory; seed: number; glyphAspect: number }
   | { kind: 'scene'; id: number; preset: ScenePreset; seed: number; glyphAspect: number }
   | { kind: 'worldInit'; id: number; seed: number; day: boolean; glyphAspect: number }
+  /** Chunk workers: create the world (seed) or free it (null). No reply. */
+  | { kind: 'worldSetup'; id: number; seed: number | null; day: boolean }
   | { kind: 'worldChunk'; id: number; cx: number; cz: number; eye: [number, number, number]; glyphAspect: number };
 
 export type WorkerResponse =
