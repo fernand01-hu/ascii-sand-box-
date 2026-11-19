@@ -4,3 +4,4 @@ engine/target/
 web/src/pkg/
 test-results/
 __pycache__/
+native/target/

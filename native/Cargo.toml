@@ -1,0 +1,33 @@
+# Native port workspace. Kept apart from `engine/` (which wasm-pack builds with
+# its own profile) so the web build is untouched.
+[workspace]
+resolver = "2"
+members = ["core", "render", "app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+ascii_engine = { path = "../engine", default-features = false }
+ascii_core = { path = "core" }
+ascii_render = { path = "render" }
+glam = "0.30"
+wgpu = "27"
+winit = "0.30"
+bytemuck = { version = "1", features = ["derive"] }
+fontdue = "0.9"
+pollster = "0.4"
+png = "0.17"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = false
+
+[profile.dev]
+opt-level = 1

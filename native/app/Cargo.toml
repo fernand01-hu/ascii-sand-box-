@@ -1,0 +1,20 @@
+[package]
+name = "ascii_native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ascii-scene"
+path = "src/main.rs"
+
+[dependencies]
+ascii_core.workspace = true
+ascii_render.workspace = true
+ascii_engine.workspace = true
+winit.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+png.workspace = true
+glam.workspace = true
