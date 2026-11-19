@@ -41,23 +41,24 @@ next one.
 ## Phase 1: Foundations
 
 - [ ] **1. Remove the procedural map and start from a blank canvas.**
-  - Remove the generated terrain, lakes, streams, trails and biome scattering
-    (`engine/src/scenery/world.rs`, `terrain.rs`, `landscape.rs`, most of `scatter.rs`).
-  - Keep the asset generators: `trees.rs`, `bushes.rs`, `rocks.rs`, `plants.rs`,
-    `colonize.rs`, `skin.rs`, `style.rs`, `gallery.rs`.
-  - Keep the weather: wind, rain, leaves, and the sky dome.
-  - The new ground is the blank canvas: rows of `#` on a flat plane.
-  - Turn off the `P` play mode for now (Phase 4 brings it back).
-  - **(added)** Decide what happens to the 5 landscape presets and the
-    `M F L V A I` dev keys. Delete them, or keep one as a demo scene.
-  - **(added)** Update the e2e golden images and the scenery tests that
-    depend on the old world (`tests/golden/`, `engine/tests/`).
-  - **(added)** `scripts/bench-world.mjs` measures the old world. Rewrite it
-    to measure the canvas instead.
-  - **(added)** Rewrite the README so it describes the canvas instead of the
-    procedural world.
-  - **(added)** Decide whether `scenery.zip` belongs in the repo (it is
-    ~2.5 MB of images). Otherwise add it to `.gitignore`.
+  (Done on `step-01-blank-canvas` except the `scenery.zip` decision.)
+  - [x] Removed the generated terrain, lakes, streams, trails, biome
+    scattering and landscape presets (`world.rs`, `terrain.rs`, `scene.rs`,
+    the ground half of `landscape.rs`, the biome half of `scatter.rs`).
+  - [x] Kept the asset generators and the gallery. The asset variant cache
+    moved to `library.rs`; `skin_placed` and the glyph-size rule moved to
+    `skin.rs` (the object brush will need them).
+  - [x] Kept the weather: wind, rain, leaves and the sky dome (now `sky.rs`).
+  - [x] The new ground is the blank canvas (`canvas.rs`): rows of `#` on one
+    flat world grid, chunked. The app opens on it.
+  - [x] Turned off the `P` play mode (the player and physics code is kept).
+  - [x] Landscape presets and `M F L V A I` keys: deleted. `C` returns to
+    the canvas.
+  - [x] Updated the e2e golden images, smoke test and production check.
+  - [x] `scripts/bench-world.mjs` now measures the canvas.
+  - [x] Rewrote the README.
+  - [ ] Decide whether `scenery.zip` belongs in the repo (it is ~2.5 MB of
+    images). Otherwise add it to `.gitignore`.
 
 - [ ] **2. Chunk system for editable, unlimited maps.**
   - Chunks already exist: 32 m chunks in `world.rs` and 16 m render chunks in

@@ -1,4 +1,4 @@
-// Streams the infinite world around the viewer: requests chunks from the
+// Streams the canvas world around the viewer: requests chunks from the
 // engine worker nearest-first, drops chunks that fall out of range, and
 // rebuilds a chunk when the viewer has moved enough that its glyph sizes
 // (chosen for the eye at build time) are off: nearer -> finer, farther ->
@@ -141,8 +141,8 @@ export class WorldStreamer implements Ground {
     return (at(ix, iz) * (1 - tx) + at(ix + 1, iz) * tx) * (1 - tz) + (at(ix, iz + 1) * (1 - tx) + at(ix + 1, iz + 1) * tx) * tz;
   }
 
-  isWater(x: number, z: number): boolean {
-    return this.height(x, z) < this.info.water;
+  isWater(_x: number, _z: number): boolean {
+    return false; // a blank canvas has no water yet
   }
 
   inBounds(x: number, z: number): boolean {

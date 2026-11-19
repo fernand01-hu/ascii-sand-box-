@@ -1,5 +1,5 @@
-// Entry point. No UI yet: drag with the mouse to orbit, wheel to zoom,
-// right-drag to pan.
+// Entry point: opens on the blank canvas. No UI yet: drag with the mouse to
+// orbit, wheel to zoom, right-drag to pan.
 
 import { App } from './app/app';
 
@@ -13,4 +13,4 @@ const app = new App(container);
 if (DEVTOOLS) {
   void import('./app/devtools').then((m) => m.installDevtools(app));
 }
-void app.loadUrl(`${import.meta.env.BASE_URL}models/torus-knot.stl`, 'torus-knot.stl');
+void app.showCanvas();

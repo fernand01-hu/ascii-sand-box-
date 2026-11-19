@@ -77,7 +77,7 @@ function isSuperseded(req: WorkerRequest, newer: WorkerRequest[]): boolean {
   return true;
 }
 
-let world: wasm.InfiniteWorld | null = null;
+let world: wasm.CanvasWorld | null = null;
 
 async function handle(req: WorkerRequest): Promise<void> {
   try {
@@ -85,29 +85,16 @@ async function handle(req: WorkerRequest): Promise<void> {
     if (req.kind === 'worldSetup') {
       // Chunk workers hold their own copy of the world (it is deterministic).
       world?.free();
-      world = req.seed === null ? null : new wasm.InfiniteWorld(req.seed >>> 0, req.day);
+      world = req.seed === null ? null : new wasm.CanvasWorld(req.seed >>> 0, req.day);
       return;
     }
     if (req.kind === 'worldInit') {
       world?.free();
-      world = new wasm.InfiniteWorld(req.seed >>> 0, req.day);
+      world = new wasm.CanvasWorld(req.seed >>> 0, req.day);
       const t0 = performance.now();
       const cards = world.skyCards(req.glyphAspect);
-      const [chunkSize = 32, grid = 32, water = 0] = wasm.worldConsts();
-      // A dry, fairly flat place near the origin to start from.
-      let spawn: [number, number, number] = [0, world.height(0, 0), 0];
-      search: for (let r = 0; r < 400; r += 4) {
-        for (let k = 0; k < 24; k++) {
-          const a = (k / 24) * Math.PI * 2;
-          const x = r * Math.cos(a), z = r * Math.sin(a);
-          const h = world.height(x, z);
-          const slope = Math.abs(world.height(x + 2, z) - world.height(x - 2, z)) + Math.abs(world.height(x, z + 2) - world.height(x, z - 2));
-          if (h > water + 1 && h < 20 && slope < 1.2) {
-            spawn = [x, h, z];
-            break search;
-          }
-        }
-      }
+      const [chunkSize = 32, grid = 32, ground = 0] = wasm.worldConsts();
+      const spawn: [number, number, number] = [0, ground, 0];
       const stride = wasm.cardStride();
       const materials = wasm.sceneryMaterials();
       const [sx = 0, sy = 1, sz = 0] = wasm.sceneSunDir(req.day);
@@ -116,7 +103,7 @@ async function handle(req: WorkerRequest): Promise<void> {
           kind: 'result', id: req.id, mesh: null, cards, stride, count: cards.length / stride, charset: wasm.sceneryCharset(),
           timings: { loadMs: 0, generateMs: performance.now() - t0 }, sunDir: [sx, sy, sz], materials, materialFloats: wasm.materialFloats(),
           env: { day: req.day, windDir: [0.89, -0.45], leafBox: [0, 0, 90], rainBox: [36, 24, 36] },
-          world: { chunkSize, grid, water, spawn },
+          world: { chunkSize, grid, ground, spawn },
         },
         [cards.buffer, materials.buffer],
         true,
@@ -149,26 +136,16 @@ async function handle(req: WorkerRequest): Promise<void> {
       }
       return;
     }
-    if (req.kind === 'gallery' || req.kind === 'scene') {
+    if (req.kind === 'gallery') {
       const t0 = performance.now();
-      const scene = req.kind === 'gallery'
-        ? wasm.buildGallery(req.category, req.seed >>> 0, req.glyphAspect)
-        : wasm.buildScene(req.preset, req.seed >>> 0, req.glyphAspect);
+      const scene = wasm.buildGallery(req.category, req.seed >>> 0, req.glyphAspect);
       try {
         const cards = scene.takeCards();
         const positions = scene.takeBody();
         const normals = scene.takeBodyNormals();
-        const heights = scene.takeHeights();
-        const [gn = 0, gsize = 0, wlevel = NaN] = scene.walkInfo();
-        const waterMask = scene.takeWaterMask();
-        const colliders = scene.takeColliders();
-        const walk = heights.length
-          ? { heights, n: gn, size: gsize, water: Number.isNaN(wlevel) ? null : wlevel, waterMask, colliders }
-          : undefined;
         const [tx = 0, ty = 0, tz = 0, ex = 0, ey = 0, ez = 10, fov = 40] = scene.camera();
         const e = scene.env();
-        const day = (e[0] ?? 0) > 0.5;
-        const [sx = 0, sy = 1, sz = 0] = req.kind === 'gallery' ? wasm.scenerySunDir() : wasm.sceneSunDir(day);
+        const [sx = 0, sy = 1, sz = 0] = wasm.scenerySunDir();
         const generateMs = performance.now() - t0;
         const stride = wasm.cardStride();
         const materials = wasm.sceneryMaterials();
@@ -178,15 +155,14 @@ async function handle(req: WorkerRequest): Promise<void> {
             mesh: { positions, normals, triangles: positions.length / 9, dropped: 0 },
             timings: { loadMs: 0, generateMs }, sunDir: [sx, sy, sz], materials, materialFloats: wasm.materialFloats(),
             camera: { target: [tx, ty, tz], eye: [ex, ey, ez], fov },
-            walk,
             env: {
-              day,
+              day: (e[0] ?? 0) > 0.5,
               windDir: [e[1] ?? 1, e[2] ?? 0],
               leafBox: [e[3] ?? 0, e[4] ?? 0, e[5] ?? 1],
               rainBox: [e[6] ?? 36, e[7] ?? 24, e[8] ?? 36],
             },
           },
-          [cards.buffer, positions.buffer, normals.buffer, materials.buffer, heights.buffer, waterMask.buffer, colliders.buffer],
+          [cards.buffer, positions.buffer, normals.buffer, materials.buffer],
         );
       } finally {
         scene.free();

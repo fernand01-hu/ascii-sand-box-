@@ -203,17 +203,6 @@ pub struct SceneryScene {
     camera: Vec<f32>,
     glyph: f32,
     env: Vec<f32>,
-    walk: Option<Walk>,
-}
-
-/// What the player physics needs from a landscape.
-struct Walk {
-    heights: Vec<f32>,
-    n: u32,
-    size: f32,
-    water: f32,
-    water_mask: Vec<u8>,
-    colliders: Vec<f32>,
 }
 
 #[wasm_bindgen]
@@ -245,29 +234,6 @@ impl SceneryScene {
         self.glyph
     }
 
-    /// Terrain heights for walking (row-major n x n), empty for galleries.
-    #[wasm_bindgen(js_name = takeHeights)]
-    pub fn take_heights(&mut self) -> Vec<f32> {
-        self.walk.as_mut().map_or_else(Vec::new, |w| std::mem::take(&mut w.heights))
-    }
-
-    /// n, size (metres), water level (NaN without a lake).
-    #[wasm_bindgen(js_name = walkInfo)]
-    pub fn walk_info(&self) -> Vec<f32> {
-        self.walk.as_ref().map_or_else(Vec::new, |w| vec![w.n as f32, w.size, w.water])
-    }
-
-    #[wasm_bindgen(js_name = takeWaterMask)]
-    pub fn take_water_mask(&mut self) -> Vec<u8> {
-        self.walk.as_mut().map_or_else(Vec::new, |w| std::mem::take(&mut w.water_mask))
-    }
-
-    /// Colliders: x, z, radius, top y per entry.
-    #[wasm_bindgen(js_name = takeColliders)]
-    pub fn take_colliders(&mut self) -> Vec<f32> {
-        self.walk.as_mut().map_or_else(Vec::new, |w| std::mem::take(&mut w.colliders))
-    }
-
     /// daytime (0/1), wind direction x, z, leaf box min x, min z, size,
     /// rain box x, y, z.
     pub fn env(&self) -> Vec<f32> {
@@ -288,35 +254,6 @@ fn body_buffers(body: &[[math::Vec3; 3]]) -> (Vec<f32>, Vec<f32>) {
     (pos, nrm)
 }
 
-/// A whole landscape: "meadow", "forest", "lake", "valley" or "alpine".
-#[wasm_bindgen(js_name = buildScene)]
-pub fn build_scene(preset: &str, seed: u32, glyph_aspect: f32) -> Result<SceneryScene, JsError> {
-    let p = scenery::scene::ScenePreset::parse(preset)
-        .ok_or_else(|| JsError::new(&format!("unknown scene {preset:?} (meadow, forest, lake, valley, alpine)")))?;
-    if !(glyph_aspect > 0.0 && glyph_aspect.is_finite()) {
-        return Err(JsError::new("glyph_aspect must be a positive number"));
-    }
-    let s = scenery::scene::build_scene(p, seed, glyph_aspect);
-    let (body, body_normals) = body_buffers(&s.body);
-    let rb = scenery::landscape::RAIN_BOX;
-    Ok(SceneryScene {
-        cards: s.cards,
-        body,
-        body_normals,
-        camera: vec![s.target.x, s.target.y, s.target.z, s.eye.x, s.eye.y, s.eye.z, s.fov],
-        glyph: 0.0,
-        env: vec![f32::from(s.day), s.wind[0], s.wind[1], s.leaf_box[0], s.leaf_box[1], s.leaf_box[2], rb[0], rb[1], rb[2]],
-        walk: Some(Walk {
-            heights: s.heights,
-            n: s.grid_n as u32,
-            size: s.grid_size,
-            water: s.water.unwrap_or(f32::NAN),
-            water_mask: s.water_mask,
-            colliders: s.colliders.iter().flatten().copied().collect(),
-        }),
-    })
-}
-
 /// A gallery sheet of procedural assets: "rocks", "plants", "bushes" or "trees".
 #[wasm_bindgen(js_name = buildGallery)]
 pub fn build_gallery(category: &str, seed: u32, glyph_aspect: f32) -> Result<SceneryScene, JsError> {
@@ -327,8 +264,8 @@ pub fn build_gallery(category: &str, seed: u32, glyph_aspect: f32) -> Result<Sce
     }
     let s = scenery::gallery::build_gallery(cat, seed, glyph_aspect);
     let (body, body_normals) = body_buffers(&s.body);
-    let w = scenery::scene::wind_dir();
-    let rb = scenery::landscape::RAIN_BOX;
+    let w = scenery::sky::wind_dir();
+    let rb = scenery::sky::RAIN_BOX;
     Ok(SceneryScene {
         cards: s.cards,
         body,
@@ -336,7 +273,6 @@ pub fn build_gallery(category: &str, seed: u32, glyph_aspect: f32) -> Result<Sce
         camera: vec![s.target.x, s.target.y, s.target.z, s.eye.x, s.eye.y, s.eye.z, s.fov],
         glyph: s.glyph,
         env: vec![0.0, w[0], w[1], 0.0, 0.0, 0.0, rb[0], rb[1], rb[2]],
-        walk: None,
     })
 }
 
@@ -358,10 +294,10 @@ pub fn material_floats() -> u32 {
     scenery::skin::MATERIAL_FLOATS as u32
 }
 
-/// Sun direction a scene was baked with (`day` selects the preset).
+/// Sun direction for the canvas (`day` selects the preset).
 #[wasm_bindgen(js_name = sceneSunDir)]
 pub fn scene_sun_dir(day: bool) -> Vec<f32> {
-    let s = scenery::scene::sun_for(day);
+    let s = scenery::sky::sun_for(day);
     vec![s.x, s.y, s.z]
 }
 
@@ -372,25 +308,27 @@ pub fn scenery_sun_dir() -> Vec<f32> {
     vec![s.x, s.y, s.z]
 }
 
-// ---- the infinite world ----------------------------------------------------------
+// ---- the canvas ------------------------------------------------------------------
 
-/// Chunk size (m), physics grid (samples - 1 per side), water level.
+/// Chunk size (m), physics grid (samples - 1 per side), ground height.
 #[wasm_bindgen(js_name = worldConsts)]
 pub fn world_consts() -> Vec<f32> {
-    vec![scenery::world::CHUNK, scenery::world::GRID as f32, scenery::world::WATER]
+    use scenery::canvas;
+    vec![canvas::CHUNK, canvas::GRID as f32, canvas::GROUND]
 }
 
-/// An endless landscape, built chunk by chunk around the viewer.
+/// The blank canvas: an endless flat map of '#' rows, built chunk by chunk
+/// around the viewer, under the sky and weather.
 #[wasm_bindgen]
-pub struct InfiniteWorld {
-    inner: scenery::world::World,
+pub struct CanvasWorld {
+    inner: scenery::canvas::Canvas,
 }
 
 #[wasm_bindgen]
-impl InfiniteWorld {
+impl CanvasWorld {
     #[wasm_bindgen(constructor)]
-    pub fn new(seed: u32, day: bool) -> InfiniteWorld {
-        InfiniteWorld { inner: scenery::world::World::new(seed, day) }
+    pub fn new(seed: u32, day: bool) -> CanvasWorld {
+        CanvasWorld { inner: scenery::canvas::Canvas::new(seed, day) }
     }
 
     pub fn day(&self) -> bool {
@@ -398,8 +336,8 @@ impl InfiniteWorld {
     }
 
     /// Ground height at (x, z), m.
-    pub fn height(&self, x: f32, z: f32) -> f32 {
-        self.inner.gen.height(x, z)
+    pub fn height(&self, _x: f32, _z: f32) -> f32 {
+        scenery::canvas::GROUND
     }
 
     /// Sky dome, rain and blown leaves (all follow the camera).
@@ -411,7 +349,7 @@ impl InfiniteWorld {
     /// Chunk (cx, cz) with glyphs sized for an eye at (ex, ey, ez).
     #[wasm_bindgen(js_name = buildChunk)]
     #[allow(clippy::too_many_arguments)]
-    pub fn build_chunk(&mut self, cx: i32, cz: i32, ex: f32, ey: f32, ez: f32, glyph_aspect: f32) -> WorldChunk {
+    pub fn build_chunk(&self, cx: i32, cz: i32, ex: f32, ey: f32, ez: f32, glyph_aspect: f32) -> WorldChunk {
         let c = self.inner.build_chunk(cx, cz, math::Vec3::new(ex, ey, ez), glyph_aspect);
         let (body, body_normals) = body_buffers(&c.body);
         WorldChunk { cards: c.cards, body, body_normals, heights: c.heights, colliders: c.colliders.iter().flatten().copied().collect() }

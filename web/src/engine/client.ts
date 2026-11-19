@@ -1,12 +1,12 @@
 // Promise-based front end for the engine workers. Restarts a worker by itself
 // if its WASM instance ever crashes.
 //
-// One main worker handles models, galleries, scenes and world setup. Streamed
-// world chunks are built in parallel by a pool of chunk workers, each holding
-// its own copy of the (deterministic) world, so chunk building uses several
+// One main worker handles models, galleries and world setup. Streamed world
+// (canvas) chunks are built in parallel by a pool of chunk workers, each
+// holding its own copy of the (deterministic) world, so chunk building uses several
 // CPU cores and never blocks a scene switch.
 
-import type { CardSettings, EngineResult, GalleryCategory, ScenePreset, TestbedRequest, WorkerRequest, WorkerResponse } from './protocol';
+import type { CardSettings, EngineResult, GalleryCategory, TestbedRequest, WorkerRequest, WorkerResponse } from './protocol';
 
 /** Thrown for requests the worker skipped because a newer one replaced them. */
 export class SupersededError extends Error {
@@ -136,13 +136,7 @@ export class EngineClient {
     return this.send({ kind: 'gallery', id: this.nextId++, category, seed, glyphAspect });
   }
 
-  /** Build a whole landscape from a preset. */
-  scene(preset: ScenePreset, seed: number, glyphAspect: number): Promise<EngineResult> {
-    this.setWorld(null);
-    return this.send({ kind: 'scene', id: this.nextId++, preset, seed, glyphAspect });
-  }
-
-  /** Start an infinite world: returns its sky and setup. */
+  /** Start the canvas world: returns its sky and setup. */
   worldInit(seed: number, day: boolean, glyphAspect: number): Promise<EngineResult> {
     this.setWorld({ seed, day });
     return this.send({ kind: 'worldInit', id: this.nextId++, seed, day, glyphAspect });

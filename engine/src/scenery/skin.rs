@@ -20,6 +20,28 @@ use crate::math::Vec3;
 use crate::rng::Pcg32;
 use std::f32::consts::{PI, TAU};
 
+/// Where the glyph-size rule is evaluated from.
+#[derive(Clone, Copy, Debug)]
+pub struct View {
+    pub eye: Vec3,
+    pub focus: Vec3,
+    /// Focal length in px for a 1000 px tall frame.
+    pub focal: f32,
+    /// Closer than this, glyphs stop shrinking (keeps the ground at your
+    /// feet from exploding into thousands of tiny characters).
+    pub near: f32,
+}
+
+impl View {
+    /// Glyph height (m) for something at `p`: 15 px from the default camera,
+    /// but at least as fine as seen from a little way off the focus.
+    pub fn glyph_at(&self, p: Vec3) -> f32 {
+        let d_eye = (p - self.eye).length();
+        let d_focus = (p - self.focus).length() + 0.5 * (self.eye - self.focus).length();
+        15.0 * d_eye.min(d_focus).max(self.near) / self.focal
+    }
+}
+
 /// Per-card shader behaviour, packed above the material id.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CardMode {
@@ -597,6 +619,25 @@ impl<'a> Skinner<'a> {
         }
         self.foliage = foliage;
     }
+}
+
+/// Skin one placed asset with the glyph size its distance calls for, opaque
+/// bodies only when near, and a per-object character budget.
+pub fn skin_placed(sk: &mut Skinner, a: &Asset, pl: Placement, view: &View) {
+    let eye = view.eye;
+    sk.g = view.glyph_at(pl.pos);
+    sk.solids_on = (pl.pos - eye).length() < 120.0;
+    let start = sk.card_count();
+    sk.skin(a, pl);
+    // Budget: ~glyph cells covered by the silhouette, a few per cell (3 near,
+    // 1.8 far as in the original, generous so crowns stay full).
+    let (lo, hi) = a.bounds();
+    let w = (hi.x - lo.x).max(hi.z - lo.z) * pl.scale;
+    let h = (hi.y - lo.y.max(0.0)).max(0.1) * pl.scale;
+    let cells = (w * h * 0.75) / (sk.g * sk.g * sk.aspect);
+    let d = (pl.pos - eye).length();
+    let per_cell = 3.5 * (1.8 + 1.2 * smoothstep(90.0, 25.0, d));
+    sk.cap_since(start, (cells * per_cell).ceil() as usize + 8);
 }
 
 /// The material table for the shader: per material spec, shininess,

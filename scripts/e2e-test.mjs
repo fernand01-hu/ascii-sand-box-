@@ -115,10 +115,26 @@ try {
 
   await page.goto(url, { waitUntil: 'load' });
 
+  const chunksLoaded = (n) => page.waitForFunction((n) => { const s = window.__ascii.worldStats(); return s && s.loaded >= n && s.pending === 0; },
+    { timeout: 900_000, polling: 1000 }, n);
+
+  await step('opens on the blank canvas: rows of # under the sky, matches reference', async () => {
+    await waitSettled('canvas');
+    await page.evaluate(() => window.__ascii.freezeTime(3));
+    await chunksLoaded(12);
+    const s = await state();
+    assert.equal(s.status, 'ready', s.error ?? '');
+    assert.ok(s.weather.wind > 0, 'the canvas starts with a breeze');
+    assert.ok((await coverage()) > 0.3, 'ground and sky fill the frame');
+    await page.screenshot({ path: join(outDir, '13-canvas.png') });
+    await matchesGolden('13-canvas');
+    await page.evaluate(() => window.__ascii.freezeTime(null));
+  });
+
   const models = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];
   for (const [i, model] of models.entries()) {
     await step(`model ${model}: renders, readable, matches reference`, async () => {
-      if (i > 0) await page.keyboard.press(String(i + 1)); // the torus knot is the opening scene
+      await page.keyboard.press(String(i + 1));
       await waitSettled(model);
       const s = await state();
       assert.equal(s.status, 'ready', s.error ?? '');
@@ -157,26 +173,10 @@ try {
     });
   }
 
-  // Landscapes: animation clock frozen so frames are reproducible.
-  await page.evaluate(() => window.__ascii.freezeTime(3));
-  const scenes = [['m', 'meadow'], ['l', 'lake'], ['v', 'valley']];
-  for (const [i, [key, preset]] of scenes.entries()) {
-    await step(`landscape ${preset}: renders and matches reference`, async () => {
-      await page.keyboard.press(key);
-      await waitSettled(`scene-${preset}`);
-      const s = await state();
-      assert.equal(s.status, 'ready', s.error ?? '');
-      assert.ok(s.cards > 100_000 && s.weather.wind > 0);
-      assert.ok((await coverage()) > 0.3, 'a landscape fills the frame');
-      const name = `${13 + i}-scene-${preset}`;
-      await page.screenshot({ path: join(outDir, `${name}.png`) });
-      await matchesGolden(name);
-    });
-  }
-
-  await step('ground and water stay visible from every viewing angle', async () => {
-    await page.keyboard.press('l');
-    await waitSettled('scene-lake');
+  await step('the canvas stays visible from every viewing angle', async () => {
+    await page.keyboard.press('c');
+    await waitSettled('canvas');
+    await chunksLoaded(12);
     // Orbit round the focus; flat-lying glyphs must not vanish edge-on.
     const covAt = (deg) => page.evaluate((deg) => {
       const v = window.__ascii.app.viewer;
@@ -192,88 +192,47 @@ try {
     const results = [];
     for (const deg of [60, 120, 160, 220, 300]) results.push([deg, await covAt(deg)]);
     await covAt(160);
-    await page.screenshot({ path: join(outDir, '16b-lake-from-160deg.png') });
+    await page.screenshot({ path: join(outDir, '16b-canvas-from-160deg.png') });
     await covAt(0);
     console.log(`       coverage: front ${(front * 100).toFixed(0)}%, ` + results.map(([d, c]) => `${d}deg ${(c * 100).toFixed(0)}%`).join(', '));
     for (const [deg, c] of results) assert.ok(c > front * 0.6, `at ${deg} degrees only ${(c * 100).toFixed(0)}% drawn (front ${(front * 100).toFixed(0)}%)`);
   });
 
-  await step('player: walks on the ground, never through it, stays out of the lake, collides', async () => {
-    // The lake scene is loaded; its camera looks across the water.
-    assert.equal(await page.evaluate(() => window.__ascii.play()), true);
-    const r = await page.evaluate(() => {
-      const a = window.__ascii;
-      const out = {};
-      // 1. Walk (and run) toward the lake: must stop at the shore.
-      out.toLake = a.playSteps({ forward: 1, run: true }, 12);
-      // 2. Walk around in several directions over hills.
-      out.walks = [0, 1.6, 3.1, 4.7].map((yaw) => a.playSteps({ forward: 1, yaw }, 4));
-      // 3. Jump: up, then back down onto the ground.
-      const g0 = a.playSteps({}, 0.5);
-      const up = a.playSteps({ jump: true }, 0.25);
-      const p = a.app.player.physics;
-      out.jumpHeight = up.y - p.height(up.x, up.z);
-      out.landed = a.playSteps({}, 2);
-      out.landedClearance = out.landed.y - p.height(out.landed.x, out.landed.z);
-      // 4. Walk straight into the nearest collider (trunk / rock).
-      const s = a.app.player.state;
-      const c = p.ground.world.colliders;
-      let best = -1, bd = Infinity;
-      for (let i = 0; i < c.length; i += 4) {
-        const d = Math.hypot(c[i] - s.x, c[i + 1] - s.z);
-        if (d < bd && d > c[i + 2] + 1 && c[i + 3] > s.y + 2) { bd = d; best = i; }
-      }
-      if (best >= 0) {
-        // Teleport next to it on dry land, then walk into it.
-        s.x = c[best] + (c[best + 2] + 2.5); s.z = c[best + 1]; s.y = p.height(s.x, s.z); s.vx = s.vy = s.vz = 0;
-        const yaw = Math.atan2(-(c[best] - s.x), -(c[best + 1] - s.z));
-        a.playSteps({ forward: 1, yaw }, 3);
-        out.gap = Math.hypot(s.x - c[best], s.z - c[best + 1]) - c[best + 2];
-      }
-      out.minClearance = Math.min(out.toLake.minClearance, ...out.walks.map((w) => w.minClearance), out.landed.minClearance);
-      out.inWater = out.toLake.inWater || out.walks.some((w) => w.inWater);
-      return out;
-    });
-    console.log(`       to lake moved ${r.toLake.moved.toFixed(1)} m, walks ${r.walks.map((w) => w.moved.toFixed(1)).join('/')} m, ` +
-      `jump ${r.jumpHeight.toFixed(2)} m, min clearance ${r.minClearance.toFixed(4)} m, gap to collider ${r.gap?.toFixed(2)} m`);
-    assert.ok(r.minClearance >= -1e-3, 'the player went below the ground');
-    assert.equal(r.inWater, false, 'the player walked into the lake');
-    assert.ok(r.walks.some((w) => w.moved > 5), 'the player should be able to walk');
-    assert.ok(r.jumpHeight > 0.5, 'jumping lifts the player');
-    assert.ok(Math.abs(r.landedClearance) < 1e-3, 'the player lands back on the ground');
-    assert.ok(r.gap !== undefined && r.gap > 0.3, 'the player walked through a trunk or rock');
-    await page.screenshot({ path: join(outDir, '16c-first-person.png') });
-    await page.evaluate(() => window.__ascii.stopPlaying());
-  });
-
-  await step('infinite world: streams chunks, travels, walkable everywhere', async () => {
-    await page.keyboard.press('i');
-    await waitSettled('world');
-    const loadedAtLeast = (n) => page.waitForFunction((n) => { const s = window.__ascii.worldStats(); return s && s.loaded >= n; }, { timeout: 900_000, polling: 1000 }, n);
-    await loadedAtLeast(12);
-    assert.ok((await coverage()) > 0.3, 'the world fills the view');
-    await page.screenshot({ path: join(outDir, '16d-world.png') });
-    // Travel 400 m and check new chunks arrive there and can be walked on.
+  await step('canvas: streams new chunks as the camera travels', async () => {
     await page.evaluate(() => { const v = window.__ascii.app.viewer; v.camera.position.x += 400; v.controls.target.x += 400; v.controls.update(); });
     const before = (await page.evaluate(() => window.__ascii.worldStats())).built;
     await page.waitForFunction((b) => window.__ascii.worldStats().built >= b + 9, { timeout: 900_000, polling: 1000 }, before);
-    assert.equal(await page.evaluate(() => window.__ascii.play()), true);
-    const r = await page.evaluate(() => window.__ascii.playSteps({ forward: 1 }, 2));
-    assert.ok(r.minClearance >= -1e-3 && !r.inWater, 'walks on the streamed ground');
-    await page.evaluate(() => window.__ascii.stopPlaying());
-    await page.keyboard.press('l');
-    await waitSettled('scene-lake');
+    await chunksLoaded(12);
+    assert.ok((await coverage()) > 0.3, 'the canvas fills the view far from the start');
+    await page.screenshot({ path: join(outDir, '16d-canvas-travelled.png') });
+    await page.keyboard.press('c');
+    await waitSettled('canvas');
+    await chunksLoaded(12);
   });
 
-  await step('wind moves the scene over time; calm air does not', async () => {
+  await step('wind carries leaves across the canvas; calm air does not', async () => {
+    // Leaves fly round the camera's height: look from eye level, fixed (no damping drift).
+    await page.evaluate(() => {
+      const v = window.__ascii.app.viewer;
+      v.controls.enableDamping = false;
+      v.camera.position.set(0, 2, 0);
+      v.controls.target.set(0, 1.6, -20);
+      v.controls.update();
+    });
     const at = (t) => page.evaluate((t) => { window.__ascii.freezeTime(t); return window.__ascii.thumbnail(); }, t);
     const diff = (a, b) => a.reduce((s, v, i) => s + Math.abs(v - b[i]), 0) / a.length;
-    await page.evaluate(() => window.__ascii.setEnvironment({ wind: 0.85, leaves: 0, rain: 0 }));
-    const windy = diff(await at(1), await at(2.5));
+    const change = async () => {
+      let sum = 0;
+      for (const t of [1, 2, 3, 4]) sum += diff(await at(t), await at(t + 0.75));
+      return sum;
+    };
+    await page.evaluate(() => window.__ascii.setEnvironment({ wind: 0.85, leaves: 1, rain: 0 }));
+    const windy = await change();
     await page.evaluate(() => window.__ascii.setEnvironment({ wind: 0, leaves: 0, rain: 0 }));
-    const calm = diff(await at(1), await at(2.5));
-    console.log(`       frame change: windy ${windy.toFixed(2)}, calm ${calm.toFixed(2)} (only water moves)`);
-    assert.ok(windy > calm * 1.5 && windy > 0.3, 'wind should visibly move grass and leaves');
+    const calm = await change();
+    await page.evaluate(() => { window.__ascii.app.viewer.controls.enableDamping = true; });
+    console.log(`       frame change: windy ${windy.toFixed(2)}, calm ${calm.toFixed(2)}`);
+    assert.ok(windy > calm * 1.5 && windy > 0.2, 'wind should visibly carry the leaves');
   });
 
   await step('rain and blowing leaves show up and switch off again', async () => {
@@ -281,7 +240,7 @@ try {
     const base = await page.evaluate(() => window.__ascii.thumbnail());
     await page.evaluate(() => window.__ascii.setEnvironment({ rain: 1, wind: 0.6, leaves: 1 }));
     const wet = await page.evaluate(() => window.__ascii.thumbnail());
-    await page.screenshot({ path: join(outDir, '16-valley-rain.png') });
+    await page.screenshot({ path: join(outDir, '16-canvas-rain.png') });
     const d = wet.reduce((s, v, i) => s + Math.abs(v - base[i]), 0) / wet.length;
     assert.ok(d > 2, `rain should change the picture (diff ${d.toFixed(2)})`);
     await page.evaluate(() => window.__ascii.setEnvironment({ rain: 0, wind: 0, leaves: 0 }));
