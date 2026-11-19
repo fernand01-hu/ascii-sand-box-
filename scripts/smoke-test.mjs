@@ -181,49 +181,38 @@ for (const category of ['rocks', 'plants', 'bushes', 'trees']) {
     if (category === 'rocks') assert.ok(modes[3] > 0 && body.length > 0, 'rocks are solid');
   });
 }
-for (const preset of ['meadow', 'forest', 'lake', 'valley', 'alpine']) {
-  test(`landscape: ${preset}`, () => {
-    const t = performance.now();
-    const scene = wasm.buildScene(preset, 1, 0.64);
-    const cards = scene.takeCards();
-    const body = scene.takeBody();
-    const env = scene.env();
-    scene.free();
-    const n = cards.length / STRIDE;
-    console.log(`       ${n} cards, ${body.length / 9} body triangles, ${(performance.now() - t).toFixed(0)} ms`);
-    assert.ok(n > 100_000 && n < 2_500_000, `${n} cards`);
-    assert.equal(env.length, 9);
-    const modes = [0, 0, 0, 0, 0, 0, 0, 0, 0];
-    for (let i = 0; i < cards.length; i += STRIDE) {
-      for (let k = 0; k < STRIDE; k++) assert.ok(Number.isFinite(cards[i + k]), `card ${i / STRIDE} field ${k}`);
-      modes[Math.floor(cards[i + 13] / 1024 / 64)]++;
-    }
-    assert.ok(modes[4] > 20_000, 'sky');
-    assert.ok(modes[7] > 50_000, 'ground marks lean toward the camera');
-    assert.equal(modes[5], 7000, 'rain particles');
-    assert.equal(modes[6], 900, 'leaf particles');
-  });
-}
-test('infinite world: chunks join seamlessly, detail falls with distance', () => {
-  const [S, G] = wasm.worldConsts();
-  const w = new wasm.InfiniteWorld(1, false);
+test('canvas: flat rows of #, seamless chunks, detail falls with distance, sky and weather kept', () => {
+  const [S, G, ground] = wasm.worldConsts();
+  const w = new wasm.CanvasWorld(1, false);
   const sky = w.skyCards(0.64);
-  assert.ok(sky.length / STRIDE > 20_000, 'sky, rain, leaves');
-  const eye = [16, w.height(16, 16) + 1.7, 16];
+  const skyModes = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+  for (let i = 0; i < sky.length; i += STRIDE) skyModes[Math.floor(sky[i + 13] / 1024 / 64)]++;
+  assert.ok(skyModes[4] > 20_000, 'sky dome');
+  assert.equal(skyModes[5], 7000, 'rain particles');
+  assert.equal(skyModes[6], 900, 'leaf particles');
+  const eye = [16, ground + 1.7, 16];
   const t = performance.now();
   const build = (cx, cz) => { const c = w.buildChunk(cx, cz, ...eye, 0.64); const r = { cards: c.takeCards(), h: c.takeHeights(), col: c.takeColliders() }; c.free(); return r; };
   const a = build(0, 0), b = build(1, 0), far = build(8, 3);
   console.log(`       near ${a.cards.length / STRIDE} cards, neighbour ${b.cards.length / STRIDE}, far ${far.cards.length / STRIDE}, ${(performance.now() - t).toFixed(0)} ms`);
-  const n = G + 1;
-  for (let j = 0; j < n; j++) assert.ok(Math.abs(a.h[j * n + G] - b.h[j * n]) < 1e-3, 'shared chunk edge heights match');
+  assert.equal(a.h.length, (G + 1) * (G + 1));
+  assert.ok(a.h.every((h) => h === ground), 'the canvas is flat');
+  assert.equal(a.col.length, 0, 'nothing to bump into on a blank canvas');
   assert.ok(far.cards.length < a.cards.length / 3, 'far chunks use fewer, bigger glyphs');
-  for (const c of [a, b, far]) for (let i = 0; i < c.cards.length; i++) assert.ok(Number.isFinite(c.cards[i]));
+  const hash = [...wasm.sceneryCharset()].indexOf('#');
+  for (const c of [a, b, far]) {
+    for (let i = 0; i < c.cards.length; i += STRIDE) {
+      for (let k = 0; k < STRIDE; k++) assert.ok(Number.isFinite(c.cards[i + k]));
+      assert.equal(c.cards[i + 13] % 1024, hash, 'only #');
+      assert.equal(Math.floor(c.cards[i + 13] / 1024 / 64), 7, 'ground marks lean toward the camera');
+    }
+  }
   assert.equal(S, 32);
+  assert.equal(w.height(123, -45), ground);
   w.free();
 });
 
 test('scenery rejects bad input', () => {
-  assert.throws(() => wasm.buildScene('desert', 1, 0.64), /unknown scene/);
   assert.throws(() => wasm.buildGallery('volcanoes', 1, 0.64), /unknown gallery/);
   assert.throws(() => wasm.buildGallery('trees', 1, 0));
 });

@@ -3,14 +3,12 @@
 
 import { Color, Vector3 } from 'three';
 import { EngineClient, SupersededError } from '../engine/client';
-import type { CardSettings, EngineResult, GalleryCategory, ScenePreset } from '../engine/protocol';
+import type { CardSettings, EngineResult, GalleryCategory } from '../engine/protocol';
 import { createGlyphAtlas, glyphAspect, type GlyphAtlas } from '../render/atlas';
 import { CALM, DEFAULT_LIGHTING, SURFACE_MATERIAL, type Environment, type Lighting, type MaterialDef } from '../render/cards';
 import { BACKGROUND } from '../render/viewer';
 import { Player } from './player';
-import { GridGround, type Ground } from './physics';
 import { WorldStreamer } from './world';
-import type { WalkData } from '../engine/protocol';
 
 /** Lighting of the scenery `dusk` preset (light.py): stronger sky, no hemisphere falloff. */
 export const SCENERY_LIGHTING: Omit<Lighting, 'sunDir'> = {
@@ -36,15 +34,6 @@ export const SCENERY_DAY: Omit<Lighting, 'sunDir'> = {
 
 const DUSK_BACKGROUND = BACKGROUND;
 const DAY_BACKGROUND = new Color().setRGB(34 / 255, 44 / 255, 58 / 255, 'srgb');
-
-/** Weather each scene starts with (wind, rain, blown leaves: 0..1). */
-export const SCENE_WEATHER: Record<ScenePreset, { wind: number; rain: number; leaves: number }> = {
-  meadow: { wind: 0.35, rain: 0, leaves: 0.5 },
-  forest: { wind: 0.25, rain: 0, leaves: 0.7 },
-  lake: { wind: 0.2, rain: 0, leaves: 0.3 },
-  valley: { wind: 0.4, rain: 0, leaves: 0.4 },
-  alpine: { wind: 0.6, rain: 0, leaves: 0.2 },
-};
 
 /** Engine material table (`floats` per material) -> shader material defs. */
 export function materialsFromTable(t: Float32Array, floats = 12): MaterialDef[] {
@@ -119,9 +108,8 @@ export class App {
   };
   /** The player while in play mode. */
   player: Player | null = null;
-  /** The infinite world while one is shown. */
+  /** The canvas world while it is shown. */
   world: WorldStreamer | null = null;
-  private walk: WalkData | null = null;
   private env: Environment = { ...CALM };
   private atlas: GlyphAtlas;
   // Only the most recent request may update the scene.
@@ -183,14 +171,13 @@ export class App {
   }
 
   /**
-   * Walk through the current landscape in first person: WASD / arrows,
-   * Shift to run, Space to jump, mouse to look (click to capture it).
-   * Gravity keeps you on the ground; trunks, rocks, steep slopes and the
-   * lake stop you.
+   * Walk the canvas in first person: WASD / arrows, Shift to run, Space to
+   * jump, mouse to look (click to capture it). On hold until play mode
+   * (TODO.md, Phase 4): nothing calls it from the UI for now.
    */
   play(): boolean {
     if (this.player) return false;
-    const ground: Ground | null = this.world ?? (this.walk ? new GridGround(this.walk) : null);
+    const ground = this.world;
     if (!ground) return false;
     const v = this.viewer;
     const cam = v.camera;
@@ -289,43 +276,9 @@ export class App {
     });
   }
 
-  /**
-   * A whole landscape: terrain with a lake, a stream and trails, scattered
-   * trees / bushes / plants / rocks, sky, and animated weather.
-   */
-  showScene(preset: ScenePreset, seed = 1): Promise<void> {
-    const name = `scene-${preset}`;
-    return this.run(name, () => this.engine.scene(preset, seed, glyphAspect()), (res) => {
-      if (!res.camera || !res.materials || !res.sunDir || !res.mesh || !res.env) throw new Error('scene result is incomplete');
-      this.leaveScene();
-      this.walk = res.walk ?? null;
-      const day = res.env.day;
-      this.resetEnvironment(true, day ? DAY_BACKGROUND : DUSK_BACKGROUND);
-      const haze: [number, number, number] = day ? [176 / 255, 194 / 255, 214 / 255] : [74 / 255, 72 / 255, 104 / 255];
-      Object.assign(this.env, {
-        windDir: res.env.windDir, leafBox: res.env.leafBox, rainBox: res.env.rainBox,
-        fogDist: 420, fog: 1, hazeColor: haze,
-      });
-      const v = this.viewer;
-      v.cards.setAtlas(this.atlasFor(res.charset));
-      v.cards.setMaterials(materialsFromTable(res.materials, res.materialFloats));
-      v.cards.setLighting({ ...(day ? SCENERY_DAY : SCENERY_LIGHTING), sunDir: new Vector3(...res.sunDir) });
-      v.setCards(res.cards, res.stride, res.chunks);
-      v.setFreeScene(new Vector3(...res.camera.target), new Vector3(...res.camera.eye), {
-        fov: res.camera.fov,
-        far: 3000,
-        body: { positions: res.mesh.positions, normals: res.mesh.normals },
-      });
-      this.setEnvironment(SCENE_WEATHER[preset]);
-      Object.assign(this.state, { triangles: res.mesh.triangles, dropped: 0, glyphPx: 0 });
-      console.info(`[ascii] ${name} seed ${seed}: ${res.count} cards, ${res.mesh.triangles} body triangles, ${res.timings.generateMs.toFixed(0)} ms`);
-    });
-  }
-
-  /** Stop playing and forget the walkable world (a new scene replaces it). */
+  /** Stop playing and forget the canvas world (a new scene replaces it). */
   leaveScene(): void {
     this.stopPlaying();
-    this.walk = null;
     this.world?.dispose();
     this.world = null;
     this.viewer.clearBodies();
@@ -333,12 +286,11 @@ export class App {
   }
 
   /**
-   * An endless landscape streamed in chunks round the camera (or the player:
-   * press P to walk). Terrain, lakes, streams, trails, biomes and plants go
-   * on forever; detail follows you.
+   * The blank canvas: an endless flat map of '#' rows streamed in chunks
+   * round the camera, under the sky and the weather. Detail follows you.
    */
-  showWorld(seed = 1, day = false): Promise<void> {
-    return this.run('world', () => this.engine.worldInit(seed, day, glyphAspect()), (res) => {
+  showCanvas(seed = 1, day = false): Promise<void> {
+    return this.run('canvas', () => this.engine.worldInit(seed, day, glyphAspect()), (res) => {
       if (!res.world || !res.materials || !res.sunDir || !res.env) throw new Error('world result is incomplete');
       this.leaveScene();
       this.resetEnvironment(true, day ? DAY_BACKGROUND : DUSK_BACKGROUND);
@@ -353,12 +305,12 @@ export class App {
       const [sx, sy, sz] = res.world.spawn;
       v.setFreeScene(new Vector3(sx, sy + 1, sz - 30), new Vector3(sx, sy + 7, sz), { fov: 50, far: 3000 });
       v.controls.maxDistance = 400;
-      this.world = new WorldStreamer(this.engine, v, res.world, (e) => console.warn(`[ascii] world chunk failed: ${e instanceof Error ? e.message : String(e)}`));
+      this.world = new WorldStreamer(this.engine, v, res.world, (e) => console.warn(`[ascii] canvas chunk failed: ${e instanceof Error ? e.message : String(e)}`));
       this.world.update(v.camera.position, true);
       this.updateFrameHook();
       this.setEnvironment({ wind: 0.3, rain: 0, leaves: 0.5 });
       Object.assign(this.state, { triangles: 0, dropped: 0, glyphPx: 0 });
-      console.info(`[ascii] world seed ${seed}: streaming chunks of ${res.world.chunkSize} m round (${sx.toFixed(0)}, ${sz.toFixed(0)})`);
+      console.info(`[ascii] canvas seed ${seed}: streaming chunks of ${res.world.chunkSize} m round (${sx.toFixed(0)}, ${sz.toFixed(0)})`);
     });
   }
 

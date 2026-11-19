@@ -150,6 +150,8 @@ materials! {
     GroundRock = Material { alpha: (0.8, 0.95), ..m("#%&@:=", [0.27, 0.25, 0.24]) };
     Snow = Material { spec: 0.4, shin: 30.0, alpha: (0.8, 0.95), ..m("*+.:'`", [0.95, 0.96, 1.00]) };
     MeadowFlower = Material { alpha: (0.8, 1.0), flex: 0.5, ..m("*o.+", [0.95, 0.85, 0.40]) };
+    // the blank canvas: neat rows of '#' on an unpainted map
+    Canvas = Material { var: 0.0, alpha: (0.7, 0.7), ..m("#", [0.30, 0.31, 0.33]) };
     // trails worn into the ground
     Trail = Material { alpha: (0.75, 0.9), ..m(".,_-:'`~", [0.42, 0.32, 0.21]) };
     // shading for bark wrapped round trunks (characters come from BARKS)

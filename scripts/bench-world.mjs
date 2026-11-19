@@ -1,4 +1,4 @@
-// Times how long the infinite world takes to stream in fully (build:test first).
+// Times how long the canvas takes to stream in fully (build:test first).
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,7 +20,7 @@ try {
   const res = await page.evaluate(async () => {
     const a = window.__ascii;
     const t0 = performance.now();
-    await a.loadWorld(1);
+    await a.loadCanvas(1);
     const marks = {};
     // Measure chunk building only: software WebGL drawing would dominate otherwise.
     const app = a.app, v = app.viewer;

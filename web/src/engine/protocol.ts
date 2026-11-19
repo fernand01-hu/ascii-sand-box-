@@ -52,30 +52,19 @@ export interface EngineResult {
   materialFloats?: number;
   /** Procedural scenes: time of day, wind direction, particle boxes. */
   env?: SceneEnv;
-  /** Landscapes: terrain, water and colliders for the player physics. */
-  walk?: WalkData;
-  /** Infinite world: setup (after worldInit) or one streamed chunk. */
+  /** The canvas world: setup (after worldInit) or one streamed chunk. */
   world?: WorldInfo;
   chunk?: WorldChunkData;
   /** Render chunks (see engine/chunks.ts): CHUNK_FLOATS per chunk. */
   chunks?: Float32Array;
 }
 
-export interface WalkData {
-  heights: Float32Array;
-  n: number;
-  size: number;
-  water: number | null;
-  waterMask: Uint8Array;
-  /** x, z, radius, top y per collider. */
-  colliders: Float32Array;
-}
-
 export interface WorldInfo {
   chunkSize: number;
   grid: number;
-  water: number;
-  /** A dry place to start, and its ground height. */
+  /** Height of the flat canvas. */
+  ground: number;
+  /** Where the camera starts, on the ground. */
   spawn: [number, number, number];
 }
 
@@ -99,9 +88,6 @@ export interface SceneEnv {
   rainBox: [number, number, number];
 }
 
-export type ScenePreset = 'meadow' | 'forest' | 'lake' | 'valley' | 'alpine';
-export const SCENE_PRESETS: ScenePreset[] = ['meadow', 'forest', 'lake', 'valley', 'alpine'];
-
 export type GalleryCategory = 'rocks' | 'plants' | 'bushes' | 'trees';
 export const GALLERY_CATEGORIES: GalleryCategory[] = ['rocks', 'plants', 'bushes', 'trees'];
 
@@ -117,9 +103,8 @@ export type WorkerRequest =
   | { kind: 'generate'; id: number; settings: CardSettings }
   | ({ kind: 'testbed'; id: number } & TestbedRequest)
   | { kind: 'gallery'; id: number; category: GalleryCategory; seed: number; glyphAspect: number }
-  | { kind: 'scene'; id: number; preset: ScenePreset; seed: number; glyphAspect: number }
   | { kind: 'worldInit'; id: number; seed: number; day: boolean; glyphAspect: number }
-  /** Chunk workers: create the world (seed) or free it (null). No reply. */
+  /** Chunk workers: create the canvas world (seed) or free it (null). No reply. */
   | { kind: 'worldSetup'; id: number; seed: number | null; day: boolean }
   | { kind: 'worldChunk'; id: number; cx: number; cz: number; eye: [number, number, number]; glyphAspect: number };
 
