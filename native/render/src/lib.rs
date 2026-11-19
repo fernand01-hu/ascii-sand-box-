@@ -802,7 +802,7 @@ impl Renderer {
         });
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
         let padded_row = (size.0 * 4).div_ceil(256) * 256;
-        let buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("capture readback"), size: u64::from(padded_row * size.1), usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("capture readback"), size: u64::from(padded_row) * u64::from(size.1), usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("capture") });
         self.render(&mut enc, &view, size, f);
         enc.copy_texture_to_buffer(

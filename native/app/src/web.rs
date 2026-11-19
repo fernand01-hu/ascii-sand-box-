@@ -59,54 +59,75 @@ pub fn worker_run(job: &[u8]) -> Vec<u8> {
     let t0 = web_time::Instant::now();
     let (id, output) = match wire::decode_job(job) {
         Ok(j) => (j.id, WORKER.with(|w| w.borrow_mut().get_or_insert_with(Worker::new).run(&j.kind))),
-        Err(e) => (u64::MAX, Err(e)),
+        // Keep the id (the first 8 bytes) so the job still ends.
+        Err(e) => (job.get(..8).map_or(u64::MAX, |b| u64::from_le_bytes(b.try_into().expect("8 bytes"))), Err(e)),
     };
     wire::encode_done(&JobDone { id, elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0, output })
 }
 
-type Inbox = Rc<RefCell<Vec<(usize, Vec<u8>)>>>;
+/// What workers sent back: result bytes, or why the worker failed.
+type Inbox = Rc<RefCell<Vec<(usize, Result<Vec<u8>, String>)>>>;
 
-/// Jobs spread over Web Workers, one job per worker at a time.
+/// Jobs spread over Web Workers, one job per worker at a time. A worker that
+/// fails (start-up error, crash) is dropped, and its job ends in an error.
 pub struct WebPool {
     workers: Vec<web_sys::Worker>,
-    busy: Vec<bool>,
+    /// The job each worker is running.
+    running: Vec<Option<u64>>,
+    dead: Vec<bool>,
     queue: VecDeque<Job>,
     done: Inbox,
-    _handlers: Vec<Closure<dyn FnMut(web_sys::MessageEvent)>>,
+    _on_message: Vec<Closure<dyn FnMut(web_sys::MessageEvent)>>,
+    _on_error: Vec<Closure<dyn FnMut(web_sys::ErrorEvent)>>,
 }
 
 impl WebPool {
     pub fn new(workers: Vec<web_sys::Worker>) -> Self {
         let done: Inbox = Rc::new(RefCell::new(Vec::new()));
-        let handlers = workers
-            .iter()
-            .enumerate()
-            .map(|(i, w)| {
-                let done = done.clone();
-                let h = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
-                    done.borrow_mut().push((i, js_sys::Uint8Array::new(&e.data()).to_vec()));
-                });
-                w.set_onmessage(Some(h.as_ref().unchecked_ref()));
-                h
-            })
-            .collect();
-        let busy = vec![false; workers.len()];
-        WebPool { workers, busy, queue: VecDeque::new(), done, _handlers: handlers }
+        let mut on_message = Vec::new();
+        let mut on_error = Vec::new();
+        for (i, w) in workers.iter().enumerate() {
+            let d = done.clone();
+            let h = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
+                let data = e.data();
+                // worker.ts posts a string when the module failed.
+                let r = match data.as_string() {
+                    Some(msg) => Err(msg),
+                    None => Ok(js_sys::Uint8Array::new(&data).to_vec()),
+                };
+                d.borrow_mut().push((i, r));
+            });
+            w.set_onmessage(Some(h.as_ref().unchecked_ref()));
+            on_message.push(h);
+            let d = done.clone();
+            let h = Closure::<dyn FnMut(web_sys::ErrorEvent)>::new(move |e: web_sys::ErrorEvent| {
+                d.borrow_mut().push((i, Err(e.message())));
+            });
+            w.set_onerror(Some(h.as_ref().unchecked_ref()));
+            on_error.push(h);
+        }
+        let n = workers.len();
+        WebPool { workers, running: vec![None; n], dead: vec![false; n], queue: VecDeque::new(), done, _on_message: on_message, _on_error: on_error }
     }
 
     fn pump(&mut self) {
         for (i, w) in self.workers.iter().enumerate() {
-            if self.busy[i] {
+            if self.running[i].is_some() || self.dead[i] {
                 continue;
             }
             let Some(job) = self.queue.pop_front() else { return };
             let bytes = js_sys::Uint8Array::from(wire::encode_job(&job).as_slice());
             let transfer = js_sys::Array::of1(&bytes.buffer());
             if let Err(e) = w.post_message_with_transfer(&bytes, &transfer) {
-                crate::log!("[ascii] worker {i}: {e:?}");
+                crate::log!("[ascii] worker {i} refused a job: {e:?}");
+                self.dead[i] = true;
+                self.queue.push_front(job);
                 continue;
             }
-            self.busy[i] = true;
+            self.running[i] = Some(job.id);
+        }
+        if !self.queue.is_empty() && self.dead.iter().all(|d| *d) {
+            crate::log!("[ascii] no worker left to build with");
         }
     }
 }
@@ -119,11 +140,19 @@ impl JobExecutor for WebPool {
 
     fn poll(&mut self, out: &mut Vec<JobDone>) {
         let done = std::mem::take(&mut *self.done.borrow_mut());
-        for (i, bytes) in done {
-            self.busy[i] = false;
-            match wire::decode_done(&bytes) {
-                Ok(d) => out.push(d),
-                Err(e) => crate::log!("[ascii] worker {i}: {e}"),
+        for (i, r) in done {
+            let id = self.running[i].take();
+            let failed = |msg: String| id.map(|id| JobDone { id, elapsed_ms: 0.0, output: Err(msg) });
+            match r {
+                Ok(bytes) => match wire::decode_done(&bytes) {
+                    Ok(d) => out.push(d),
+                    Err(e) => out.extend(failed(format!("worker {i}: {e}"))),
+                },
+                Err(msg) => {
+                    crate::log!("[ascii] worker {i} failed: {msg}");
+                    self.dead[i] = true;
+                    out.extend(failed(format!("worker {i} failed: {msg}")));
+                }
             }
         }
         self.pump();

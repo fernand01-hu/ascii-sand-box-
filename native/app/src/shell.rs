@@ -354,6 +354,7 @@ impl App {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 g.surface.configure(&g.device, &g.config);
+                self.force_redraw = true;
                 return;
             }
             Err(wgpu::SurfaceError::Timeout) => return,

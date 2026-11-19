@@ -33,4 +33,4 @@ png.workspace = true
 wasm-bindgen = "0.2.100"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Worker", "MessageEvent", "Window", "Document", "HtmlCanvasElement", "Element", "console"] }
+web-sys = { version = "0.3", features = ["Worker", "MessageEvent", "ErrorEvent", "Window", "Document", "HtmlCanvasElement", "Element", "console"] }
