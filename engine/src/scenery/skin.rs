@@ -606,12 +606,15 @@ impl<'a> Skinner<'a> {
 pub const MATERIAL_FLOATS: usize = 12;
 
 /// Per material: spec, shininess, trans, wrap | billboard (0), twist,
-/// alphaLit, haze (0) | wind flex, water flow, fog (haze applies), 0.
+/// alphaLit, haze (0) | wind flex, water flow, fog (haze applies), chain.
 pub fn material_table() -> Vec<f32> {
     let mut out = Vec::with_capacity(MATERIALS.len() * MATERIAL_FLOATS);
     for (i, m) in MATERIALS.iter().enumerate() {
         let fog = if i == Mat::Sky as usize || i == Mat::Star as usize || i == Mat::Rain as usize { 0.0 } else { 1.0 };
-        out.extend_from_slice(&[m.spec, m.shin, m.trans, m.wrap, 0.0, 0.55, m.alpha.1 - m.alpha.0, 0.0, m.flex, m.flow, fog, 0.0]);
+        // Wood drawn as a chain of cards along a branch: a renderer that thins
+        // cards with distance must thin these along one dimension only.
+        let chain = f32::from(matches!(Mat::ALL[i], Mat::Bark | Mat::Twig | Mat::Branch | Mat::TwigBirch | Mat::TwigDead));
+        out.extend_from_slice(&[m.spec, m.shin, m.trans, m.wrap, 0.0, 0.55, m.alpha.1 - m.alpha.0, 0.0, m.flex, m.flow, fog, chain]);
     }
     out
 }

@@ -266,7 +266,18 @@ fn eval_card(inst: Inst) -> CardOut {
 
 
 // ---- per-card evaluation (compute) ----
-struct Range { start: u32, count: u32, pad0: u32, pad1: u32 }
+// `fade`: 1 shows the set; 0..1 dissolves it in; -1..0 dissolves it out
+// (progress = -fade), card by card in a random order.
+// `lod`: build eye and near distance of a set with continuous detail
+// (near = 0: none); `far`: cards fade out toward this distance (0: never).
+struct Range { start: u32, count: u32, fade: f32, far: f32, lod: vec4<f32> }
+
+fn card_hash(i: u32) -> f32 {
+  var h = i * 747796405u + 2891336453u;
+  h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+  h = (h >> 22u) ^ h;
+  return f32(h >> 8u) / 16777216.0;
+}
 @group(1) @binding(0) var<storage, read> CARDS_IN: array<f32>;
 @group(1) @binding(1) var<storage, read_write> CARDS_OUT: array<CardOut>;
 @group(1) @binding(2) var<uniform> RANGE: Range;
@@ -283,7 +294,47 @@ fn cs_cards(@builtin(global_invocation_id) gid: vec3<u32>) {
   inst.color = vec4<f32>(CARDS_IN[b + 9u], CARDS_IN[b + 10u], CARDS_IN[b + 11u], CARDS_IN[b + 12u]);
   inst.glyph = CARDS_IN[b + 13u];
   inst.light = vec2<f32>(CARDS_IN[b + 14u], CARDS_IN[b + 15u]);
-  CARDS_OUT[i] = eval_card(inst);
+  var keep = 1.0;
+  if (RANGE.lod.w > 0.0) {
+    // The card was sized for its distance from the build eye. Farther than
+    // that now by a factor q: q times bigger, and 1 in q^2 kept (1 in q along
+    // a branch), so glyphs keep their size on screen and their coverage.
+    let high = floor((inst.glyph + 0.5) / MATERIAL_SHIFT);
+    let mode = floor((high + 0.5) / MAX_MATERIALS);
+    if (mode < 4.5 || mode > 6.5) {
+      let cam = F.cam.xyz;
+      let q = max(distance(inst.center, cam), RANGE.lod.w) / max(distance(inst.center, RANGE.lod.xyz), RANGE.lod.w);
+      if (q > 1.0) {
+        let m = u32(min(high - mode * MAX_MATERIALS, MAX_MATERIALS - 1.0));
+        let chain = F.mat_c[m].w > 0.5 && mode > 0.5 && mode < 2.5;
+        var share = 1.0 / (q * q);
+        if (chain) { share = 1.0 / q; }
+        // A soft edge, so cards leave one by one rather than blink.
+        keep = clamp((share - card_hash(i ^ 0x9e3779b9u)) / (0.15 * share) + 1.0, 0.0, 1.0);
+        if (chain && mode < 1.5) {
+          inst.iv = inst.iv * q;
+        } else if (chain) {
+          inst.iu = inst.iu * q;
+        } else {
+          inst.iu = inst.iu * q;
+          inst.iv = inst.iv * q;
+        }
+      }
+      if (RANGE.far > 0.0) {
+        keep = keep * (1.0 - smoothstep(0.88 * RANGE.far, RANGE.far, distance(inst.center.xz, cam.xz)));
+      }
+    }
+  }
+  var o = eval_card(inst);
+  o.col.a = o.col.a * keep;
+  if (RANGE.fade < 1.0) {
+    // Each card ramps over a quarter of the dissolve, at its own moment.
+    let w = 0.25;
+    var k = clamp((abs(RANGE.fade) * (1.0 + w) - card_hash(i)) / w, 0.0, 1.0);
+    if (RANGE.fade < 0.0) { k = 1.0 - k; }
+    o.col.a = o.col.a * k;
+  }
+  CARDS_OUT[i] = o;
 }
 
 // ---- card vertices: 4 corners of an evaluated card ----

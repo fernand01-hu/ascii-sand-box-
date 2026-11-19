@@ -114,7 +114,9 @@ impl App {
         };
         surface.configure(&device, &config);
         eprintln!("[ascii] {} ({:?}), {:?}, {}", adapter.get_info().name, adapter.get_info().backend, config.present_mode, if self.perf.enabled { "perf log on" } else { "F3 toggles the perf log" });
-        let renderer = Renderer::new(device.clone(), queue.clone(), view_format);
+        let mut renderer = Renderer::new(device.clone(), queue.clone(), view_format);
+        // Streamed chunks dissolve into their rebuilt version instead of popping.
+        renderer.fade_secs = std::env::var("ASCII_FADE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.8);
         let mut session = Session::new(ThreadPool::new(default_workers()), (config.width, config.height));
         for c in self.opts.start.drain(..) {
             session.command(c);
@@ -204,6 +206,7 @@ impl App {
         }
         self.force_redraw = false;
         session.drain_events(&mut self.events);
+        g.renderer.set_clock(self.clock.elapsed().as_secs_f64());
         g.renderer.apply_events(&mut self.events);
         let params = session.frame_params();
         let frame = match g.surface.get_current_texture() {
@@ -223,6 +226,7 @@ impl App {
         let mut enc = g.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         self.last_draws = g.renderer.render(&mut enc, &view, (g.config.width, g.config.height), &params);
         g.queue.submit([enc.finish()]);
+        self.force_redraw |= g.renderer.fading();
         g.window.pre_present_notify();
         frame.present();
 

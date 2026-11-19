@@ -1,4 +1,4 @@
-# ASCII Scene, native (macOS / Apple Silicon first)
+# ASCII Scene, native (macOS and Linux)
 
 A native port of the web viewer: the same engine, the same world, the same
 keys, in a window, with the work spread over threads and drawn through wgpu
@@ -17,8 +17,19 @@ open "dist-macos/ASCII Scene.app"
 native/target/aarch64-apple-darwin/release/ascii-scene --world --perf
 ```
 
-Elsewhere (Linux, Windows) the same code builds with `cd native && cargo build --release`;
-only the Mac build is tuned (`-C target-cpu=apple-m1`, set in `native/.cargo/config.toml`).
+On Linux (needs Rust and a C linker; to run, a Vulkan driver and an X11 or
+Wayland session with libxkbcommon):
+
+```
+scripts/build-linux.sh                   # -> dist-linux/ascii-scene
+dist-linux/ascii-scene --world --day --perf
+```
+
+The window was checked on x86-64 Linux under X11 with the software Vulkan
+driver (lavapipe), not on Wayland and not on a real GPU.
+
+On Windows the same code builds with `cd native && cargo build --release`.
+Only the Mac build is tuned (`-C target-cpu=apple-m1`, set in `native/.cargo/config.toml`).
 
 ```
 ascii-scene [FILE.stl] [--world [--seed N] [--day]] [--scene NAME] [--gallery NAME] [--perf] [--size WxH]
@@ -27,6 +38,8 @@ ascii-scene [FILE.stl] [--world [--seed N] [--day]] [--scene NAME] [--gallery NA
 Environment: `ASCII_PERF=1` performance log, `ASCII_WORKERS=N` chunk threads,
 `ASCII_PRESENT=immediate|mailbox` (default is vsync; use `immediate` to measure
 the uncapped frame rate).
+`ASCII_FADE=SECONDS` length of the dissolve when a world chunk is replaced
+(default 0.8, 0 turns it off).
 
 ## Keys (same as the webapp)
 

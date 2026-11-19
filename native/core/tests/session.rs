@@ -25,7 +25,7 @@ fn run_world(frames: usize) -> (u64, usize, ascii_core::session::Stats) {
         s.drain_events(&mut events);
         for e in &events {
             match e {
-                RenderEvent::SetCards { key, cards, chunks } => {
+                RenderEvent::SetCards { key, cards, chunks, .. } => {
                     sets += 1;
                     h = (h ^ key).wrapping_mul(0x0000_0100_0000_01b3);
                     fold(&mut h, cards);

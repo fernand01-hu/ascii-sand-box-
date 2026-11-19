@@ -5,7 +5,7 @@
 
 use crate::jobs::{ChunkOut, Job, JobExecutor, JobId, JobKind};
 use crate::physics::{ColliderGrid, Ground};
-use crate::render_data::RenderEvent;
+use crate::render_data::{CardLod, RenderEvent};
 use glam::DVec3;
 use std::collections::HashMap;
 
@@ -15,10 +15,19 @@ pub struct WorldInfo {
     pub water: f64,
 }
 
+/// Glyph sizes stop shrinking under this distance (the engine's `View::near`).
+const LOD_NEAR: f64 = 5.0;
+/// Rebuild a chunk when its nearest part is this much nearer than when built.
+const REFINE_BELOW: f64 = 0.75;
+/// Rebuild, without hurry, when its centre is this much farther: fewer cards to carry.
+const COARSEN_ABOVE: f64 = 1.6;
+
 struct Loaded {
     cx: i32,
     cz: i32,
     eye: [f32; 3],
+    /// Mean ground height.
+    ground: f32,
     heights: Vec<f32>,
     colliders: ColliderGrid,
     cards: u64,
@@ -115,14 +124,22 @@ impl WorldStreamer {
                 match self.loaded.get(&(cx, cz)) {
                     None => self.want.push(Want { cx, cz, prio: d_now }),
                     Some(have) => {
-                        // Rebuild when the glyph sizes chosen at build time are off by much.
+                        // The renderer thins and grows cards that are farther than
+                        // when built, but cannot refine them: rebuild once the part
+                        // of the chunk nearest the viewer is clearly nearer than it
+                        // was built for (its glyphs are then too big on screen), or,
+                        // without hurry, when most of its cards are thinned away.
                         let [bx, by, bz] = have.eye.map(f64::from);
-                        let d_built = (bx - centre.0).hypot(bz - centre.1);
-                        let floor = s * 1.5;
-                        let ratio = d_now.max(floor) / d_built.max(floor);
-                        let moved = (eye.x - bx).hypot(eye.y - by).hypot(eye.z - bz);
-                        if ratio > 1.7 || ratio < 0.6 || moved > 0.6 * d_now.max(floor) {
+                        let py = f64::from(have.ground);
+                        let (px, pz) = (eye.x.clamp(f64::from(cx) * s, f64::from(cx + 1) * s), eye.z.clamp(f64::from(cz) * s, f64::from(cz + 1) * s));
+                        let ratio = |x: f64, z: f64| {
+                            let now = (eye.x - x).hypot(eye.y - py).hypot(eye.z - z).max(LOD_NEAR);
+                            now / (bx - x).hypot(by - py).hypot(bz - z).max(LOD_NEAR)
+                        };
+                        if ratio(px, pz) < REFINE_BELOW {
                             self.want.push(Want { cx, cz, prio: d_now + 1000.0 });
+                        } else if ratio(centre.0, centre.1) > COARSEN_ABOVE {
+                            self.want.push(Want { cx, cz, prio: d_now + 2000.0 });
                         }
                     }
                 }
@@ -164,13 +181,16 @@ impl WorldStreamer {
         let c = *c;
         let n_cards = (c.cards.cards.len() / crate::CARD_STRIDE) as u64;
         // Replace the old version only now, so nothing flickers out meanwhile.
-        events.push(RenderEvent::SetCards { key, cards: c.cards.cards, chunks: c.cards.chunks });
+        let far = (f64::from(self.radius) * self.info.chunk_size) as f32;
+        let lod = Some(CardLod { eye: c.eye, near: LOD_NEAR as f32, far });
+        events.push(RenderEvent::SetCards { key, cards: c.cards.cards, chunks: c.cards.chunks, lod });
         if !c.body.is_empty() {
             events.push(RenderEvent::SetBody { key, positions: c.body });
         } else {
             events.push(RenderEvent::RemoveBody { key });
         }
-        self.loaded.insert((cx, cz), Loaded { cx, cz, eye: c.eye, heights: c.heights, colliders: ColliderGrid::new(c.colliders), cards: n_cards });
+        let ground = c.heights.iter().sum::<f32>() / c.heights.len().max(1) as f32;
+        self.loaded.insert((cx, cz), Loaded { cx, cz, eye: c.eye, ground, heights: c.heights, colliders: ColliderGrid::new(c.colliders), cards: n_cards });
         self.built += 1;
     }
 

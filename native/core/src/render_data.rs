@@ -22,6 +22,8 @@ pub struct MaterialDef {
     pub flex: f32,
     pub flow: f32,
     pub fog: f32,
+    /// Chain of cards along a branch (thinned along one dimension with distance).
+    pub chain: f32,
 }
 
 /// Material 0: cards lying on a model's surface.
@@ -37,6 +39,7 @@ pub const SURFACE_MATERIAL: MaterialDef = MaterialDef {
     flex: 0.0,
     flow: 0.0,
     fog: 0.0,
+    chain: 0.0,
 };
 
 /// Engine material table (`floats` per material) -> material defs.
@@ -57,6 +60,7 @@ pub fn materials_from_table(t: &[f32], floats: usize) -> Vec<MaterialDef> {
                 flex: g(i, 8),
                 flow: g(i, 9),
                 fog: g(i, 10),
+                chain: g(i, 11),
             }
         })
         .collect()
@@ -126,13 +130,29 @@ impl Lighting {
 /// Streamed chunk keys never take this value (see `streamer::chunk_key`).
 pub const MAIN_SET: u64 = u64::MAX;
 
+/// Continuous detail for a card set whose glyphs were sized for `eye` (one
+/// glyph ~ a fixed number of pixels at each card's distance from it). Each
+/// frame the renderer grows the cards that are now farther and hides a random
+/// share of them, so glyphs keep their size on screen and the same coverage;
+/// nearer than built, cards stay as they are until the set is rebuilt.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CardLod {
+    pub eye: [f32; 3],
+    /// Distance under which glyph sizes stop shrinking (the engine's `near`).
+    pub near: f32,
+    /// Cards fade out toward this horizontal distance from the camera (0: never).
+    pub far: f32,
+}
+
 /// Big, infrequent updates to the renderer's GPU state.
 pub enum RenderEvent {
     /// Rebuild the glyph atlas from this (engine-normalized) charset.
     SetAtlas { charset: String },
     SetMaterials(Vec<MaterialDef>),
     /// Add or replace a set of cards (`CARD_STRIDE` floats each) with its culling chunks.
-    SetCards { key: u64, cards: Vec<f32>, chunks: Vec<ChunkRec> },
+    /// `lod`: the cards were sized for that eye; the renderer keeps their detail
+    /// right for the current one (see `CardLod`).
+    SetCards { key: u64, cards: Vec<f32>, chunks: Vec<ChunkRec>, lod: Option<CardLod> },
     RemoveCards { key: u64 },
     ClearCards,
     /// Opaque occluder triangles (9 floats each).

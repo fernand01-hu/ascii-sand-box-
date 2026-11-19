@@ -424,7 +424,7 @@ impl<E: JobExecutor> Session<E> {
     fn set_cards(&mut self, c: CardData) {
         self.stats.cards = c.cards.len() as u64 / crate::CARD_STRIDE as u64;
         self.events.push(RenderEvent::ClearCards);
-        self.events.push(RenderEvent::SetCards { key: MAIN_SET, cards: c.cards, chunks: c.chunks });
+        self.events.push(RenderEvent::SetCards { key: MAIN_SET, cards: c.cards, chunks: c.chunks, lod: None });
     }
 
     fn reset_environment(&mut self, animate: bool, background: [f32; 3]) {
