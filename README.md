@@ -27,9 +27,10 @@ engine/          Rust engine, compiled to WebAssembly
                    with a per-object character budget, baked shadows
                    (occlusion grid), gallery sheets, and an asset variant
                    cache (`library.rs`) for placing many copies
-  src/scenery/canvas.rs  the blank canvas: flat ground of '#' rows on one
-                   world grid, built in 32 m chunks with glyphs sized from
-                   the viewer (power-of-two steps, so rows line up)
+  src/scenery/canvas.rs  the canvas: flat ground of '#' rows on one world
+                   grid, built in 32 m chunks from each chunk's painted tiles
+                   and placed objects, glyphs sized from the viewer
+                   (power-of-two steps, so rows line up)
   src/scenery/sky.rs     sky dome, sun and wind directions, rain and leaf particles
   src/testbed/     test scenes only (the pine from pine_ascii.py), feature `testbed`
   tests/           scenery statistics checked against the Python reference
@@ -38,7 +39,8 @@ web/
   src/engine/      Web Workers running the WASM engine (one main worker plus a
                    pool that builds canvas chunks in parallel) + promise client
   src/render/      glyph atlas, instanced card shader, viewer (orbit, resize)
-  src/app/         app core, canvas chunk streaming, dev tools; player and
+  src/app/         app core, the edited map (map.ts: paint + objects per
+                   chunk), canvas chunk streaming, dev tools; player and
                    physics are kept for the later play mode (not wired to a key)
   src/main.ts      wiring
   public/models/   test STL files (regenerate: npm run models)
@@ -67,7 +69,9 @@ Dev shortcuts (dev/test builds only):
 - `B`: blowing leaves on/off
 - drop an `.stl` file to load it
 
-From code: `app.showCanvas(seed, day)`, `app.showGallery('trees', seed)`,
+From code: `app.showCanvas(seed, day)`, `app.map.paintCircle(x, z, r, 'grass')`,
+`app.map.addObject({ kind: 'tree:oak', x, z })`, `app.setViewRadius(6)`,
+`app.showGallery('trees', seed)`,
 `app.setEnvironment({ wind: 0.5, rain: 1, leaves: 0.8 })` (all 0..1). Wind
 sways grass, leaves, needles and reeds. Rain falls round the camera and dims
 the sun, and leaves blow across the scene. All of it is animated in the

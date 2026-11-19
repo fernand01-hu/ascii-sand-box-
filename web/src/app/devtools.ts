@@ -14,6 +14,7 @@
 import { GALLERY_CATEGORIES, type GalleryCategory } from '../engine/protocol';
 import { showPine } from '../testbed/pine';
 import type { App, AppState } from './app';
+import type { NewObject, PlacedObject } from './map';
 
 export const TEST_MODELS = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];
 
@@ -26,8 +27,18 @@ export interface DebugHandle extends AppState {
   /** Freeze the animation clock (seconds), or null to let it run. */
   freezeTime(t: number | null): void;
   loadCanvas(seed?: number, day?: boolean): Promise<void>;
-  /** Canvas stats: chunks loaded / in flight / built so far. */
-  worldStats(): { loaded: number; pending: number; built: number } | null;
+  /**
+   * Canvas stats: chunks loaded / in flight / built so far, rebuilds caused
+   * by edits, chunks still waiting for one, chunks holding edits, objects.
+   */
+  worldStats(): { loaded: number; pending: number; built: number; editBuilds: number; viewBuilds: number; dirty: number; edited: number; objects: number } | null;
+  /** Paint ground ("canvas", "grass", "sand", "water", "rock") until the brush exists. */
+  paintRect(x0: number, z0: number, x1: number, z1: number, kind: string): string[];
+  paintCircle(x: number, z: number, r: number, kind: string): string[];
+  /** Place an object ("tree:oak", "rock:boulder", ...) until the brush exists. */
+  addObject(o: NewObject): PlacedObject;
+  removeObject(id: number): boolean;
+  setViewRadius(chunks: number): void;
   stopPlaying(): void;
   /** The app itself, for poking at it from the console (dev builds only). */
   app: App;
@@ -57,7 +68,17 @@ export function installDevtools(app: App): void {
     setEnvironment: (w: Partial<{ wind: number; rain: number; leaves: number }>) => app.setEnvironment(w),
     freezeTime: (t: number | null) => app.viewer.freezeTime(t),
     loadCanvas: (seed?: number, day?: boolean) => app.showCanvas(seed, day),
-    worldStats: () => (app.world ? { loaded: app.world.loadedCount, pending: app.world.pending, built: app.world.built } : null),
+    worldStats: () => (app.world
+      ? {
+        loaded: app.world.loadedCount, pending: app.world.pending, built: app.world.built, editBuilds: app.world.editBuilds, viewBuilds: app.world.viewBuilds,
+        dirty: app.world.dirtyCount, edited: app.world.map.editedChunks, objects: app.world.map.objectCount,
+      }
+      : null),
+    paintRect: (x0: number, z0: number, x1: number, z1: number, kind: string) => (() => { if (!app.map) throw new Error('show the canvas first'); return app.map; })().paintRect(x0, z0, x1, z1, kind),
+    paintCircle: (x: number, z: number, r: number, kind: string) => (() => { if (!app.map) throw new Error('show the canvas first'); return app.map; })().paintCircle(x, z, r, kind),
+    addObject: (o: NewObject) => (() => { if (!app.map) throw new Error('show the canvas first'); return app.map; })().addObject(o),
+    removeObject: (id: number) => (() => { if (!app.map) throw new Error('show the canvas first'); return app.map; })().removeObject(id),
+    setViewRadius: (n: number) => app.setViewRadius(n),
     stopPlaying: () => app.stopPlaying(),
     coverage: () => app.viewer.coverage(),
     thumbnail: () => app.viewer.thumbnail(),

@@ -192,7 +192,13 @@ test('canvas: flat rows of #, seamless chunks, detail falls with distance, sky a
   assert.equal(skyModes[6], 900, 'leaf particles');
   const eye = [16, ground + 1.7, 16];
   const t = performance.now();
-  const build = (cx, cz) => { const c = w.buildChunk(cx, cz, ...eye, 0.64); const r = { cards: c.takeCards(), h: c.takeHeights(), col: c.takeColliders() }; c.free(); return r; };
+  const none = () => [new Uint8Array(0), new Float32Array(0)];
+  const build = (cx, cz, [tiles, objects] = none()) => {
+    const c = w.buildChunk(cx, cz, ...eye, 0.64, tiles, objects);
+    const r = { cards: c.takeCards(), h: c.takeHeights(), col: c.takeColliders(), placed: c.placed() };
+    c.free();
+    return r;
+  };
   const a = build(0, 0), b = build(1, 0), far = build(8, 3);
   console.log(`       near ${a.cards.length / STRIDE} cards, neighbour ${b.cards.length / STRIDE}, far ${far.cards.length / STRIDE}, ${(performance.now() - t).toFixed(0)} ms`);
   assert.equal(a.h.length, (G + 1) * (G + 1));
@@ -209,6 +215,24 @@ test('canvas: flat rows of #, seamless chunks, detail falls with distance, sky a
   }
   assert.equal(S, 32);
   assert.equal(w.height(123, -45), ground);
+
+  // Painted ground and placed objects.
+  const [, , , tile, tiles, objFloats] = wasm.worldConsts();
+  assert.equal(tile * tiles, S);
+  const grounds = wasm.groundKinds().split(','), kinds = wasm.objectKinds().split(',');
+  assert.deepEqual(grounds, ['canvas', 'grass', 'sand', 'water', 'rock']);
+  assert.ok(kinds.includes('tree:oak') && kinds.includes('rock:boulder') && kinds.length === 26);
+  const grass = new Uint8Array(tiles * tiles).fill(grounds.indexOf('grass'));
+  const oak = new Float32Array([kinds.indexOf('tree:oak'), 3, 16, 16, 0, 1]);
+  assert.equal(oak.length, objFloats);
+  const painted = build(0, 0, [grass, oak]);
+  assert.equal(painted.placed, 1);
+  assert.ok(painted.cards.length > a.cards.length * 1.2, 'the oak adds cards');
+  const grassMat = Math.floor(painted.cards[13] / 1024) % 64;
+  const canvasMat = Math.floor(a.cards[13] / 1024) % 64;
+  assert.notEqual(grassMat, canvasMat, 'painted ground uses its own material');
+  assert.throws(() => w.buildChunk(0, 0, ...eye, 0.64, new Uint8Array(5), new Float32Array(0)), /tiles must be/);
+  assert.throws(() => w.buildChunk(0, 0, ...eye, 0.64, new Uint8Array(0), new Float32Array(4)), /objects must be/);
   w.free();
 });
 

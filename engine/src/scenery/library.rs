@@ -21,6 +21,31 @@ impl Kind {
     pub fn is_conifer(self) -> bool {
         matches!(self, Kind::Tree(TreeKind::Pine | TreeKind::Spruce))
     }
+
+    /// Every kind, in code order: trees, bushes, plants, rocks. A kind's
+    /// code is its index here, which is how placed objects are stored, so
+    /// only ever append to the end of each generator's `ALL` list.
+    pub fn all() -> Vec<Kind> {
+        let mut v: Vec<Kind> = TreeKind::ALL.iter().map(|&k| Kind::Tree(k)).collect();
+        v.extend(BushKind::ALL.iter().map(|&k| Kind::Bush(k)));
+        v.extend(PlantKind::ALL.iter().map(|&k| Kind::Plant(k)));
+        v.extend(RockKind::ALL.iter().map(|&k| Kind::Rock(k)));
+        v
+    }
+
+    pub fn from_code(code: u32) -> Option<Kind> {
+        Kind::all().get(code as usize).copied()
+    }
+
+    /// "tree:oak", "bush:juniper", "plant:fern", "rock:boulder".
+    pub fn name(self) -> String {
+        match self {
+            Kind::Tree(k) => format!("tree:{}", k.name()),
+            Kind::Bush(k) => format!("bush:{}", k.name()),
+            Kind::Plant(k) => format!("plant:{}", k.name()),
+            Kind::Rock(k) => format!("rock:{}", k.name()),
+        }
+    }
 }
 
 /// A few cached variants per kind and level of detail.
@@ -67,6 +92,21 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kind_codes_round_trip_and_names_are_unique() {
+        let all = Kind::all();
+        assert_eq!(all.len(), 26);
+        for (i, &k) in all.iter().enumerate() {
+            assert_eq!(Kind::from_code(i as u32), Some(k));
+        }
+        assert_eq!(Kind::from_code(all.len() as u32), None);
+        let mut names: Vec<String> = all.iter().map(|k| k.name()).collect();
+        assert_eq!(names[0], "tree:pine");
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), all.len());
+    }
 
     #[test]
     fn variants_are_cached_and_lods_derive_from_the_full_asset() {

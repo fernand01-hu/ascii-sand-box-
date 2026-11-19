@@ -59,33 +59,36 @@ next one.
   - [x] Rewrote the README.
   - [x] `scenery.zip` stays out of the repo (in `.gitignore`).
 
-- [ ] **2. Chunk system for editable, unlimited maps.**
-  - Chunks already exist: 32 m chunks in `world.rs` and 16 m render chunks in
-    `web/src/engine/chunks.ts`. They currently hold *generated* content. The
-    new chunks must hold *edited* content.
-  - Each chunk stores:
-    - a ground tile layer (canvas `#` / grass / sand / water / rock …)
-    - a list of placed objects (kind + generator params + seed + position)
-  - Load chunks within `view_radius` of the camera and unload the rest.
-    Untouched chunks are just canvas: they are generated on the fly and never
-    saved.
-  - **Rules for things that cross chunk borders:**
+- [x] **2. Chunk system for editable, unlimited maps.** (Done on `step-02-chunks`.)
+  - [x] The edits live in `MapData` (`web/src/app/map.ts`), stored per
+    32 m chunk:
+    - a ground tile layer: 64 x 64 tiles of 0.5 m (canvas `#` / grass /
+      sand / water / rock), one byte each
+    - a list of placed objects (kind + seed + position + yaw + scale).
+      Generator params get added in step 11.
+  - [x] The engine builds a chunk from that data (`canvas.rs`): painted
+    tiles use their material's characters on the same neat grid. Objects
+    are skinned with baked shadows from the chunk's own objects.
+  - [x] Chunks within `view_radius` of the camera are loaded and the rest
+    dropped (`app.setViewRadius(n)`, 1–16; the haze follows it). Untouched
+    chunks are plain canvas: generated on the fly, never stored.
+  - [x] **Rules for things that cross chunk borders:**
     - **Ground tiles:** each tile belongs to exactly one chunk, based on its
-      coordinates. A brush stroke over a border writes its tiles into every
-      chunk it touches and marks all of them dirty.
+      coordinates. A paint over a border writes into every chunk it touches.
     - **Objects:** an object belongs to the chunk that holds its base point
-      (a tree's trunk, a rock's center). It is stored and saved only there,
-      even if its crown hangs over the next chunk.
-    - **Drawing:** a chunk's bounding box grows to cover its objects' full
-      size, so culling never cuts off a tree crown that crosses the border.
-      Render chunks already store min/max bounds.
-    - **Rebuilds:** an edit rebuilds the chunks it touched. Once shadows
-      cross borders (step 14), the neighbouring chunks are rebuilt too.
-  - Optimizations:
-    - **(added)** rebuild only "dirty" chunks after an edit
-    - keep the existing chunk worker pool
-    - frustum culling
-    - a memory cap on loaded chunks
+      and is drawn whole by it, even if its crown hangs over the next chunk.
+    - **Drawing:** render bounds come from the cards themselves, so culling
+      never cuts off a crown that crosses the border.
+    - **Rebuilds:** an edit rebuilds only the chunks it touched. Neighbours'
+      shadows across borders come with step 14.
+  - [x] Optimizations:
+    - only "dirty" chunks rebuild after an edit, before anything else
+    - edits made together (one stroke or script) start one build per chunk
+    - a build that finishes after a newer edit is shown, then rebuilt again
+    - the existing chunk worker pool and frustum culling are kept
+    - memory is bounded by the view radius. Erased chunks are not stored.
+  - Dev hooks until the brush exists: `__ascii.paintRect`, `paintCircle`,
+    `addObject`, `removeObject`, `setViewRadius`, `worldStats`.
 
 - [ ] **3. Debug terminal.**
   - An in-app console (toggle with `` ` ``) with commands such as `help`,

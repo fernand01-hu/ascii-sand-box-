@@ -6,6 +6,7 @@
 // holding its own copy of the (deterministic) world, so chunk building uses several
 // CPU cores and never blocks a scene switch.
 
+import type { ChunkPayload } from '../app/map';
 import type { CardSettings, EngineResult, GalleryCategory, TestbedRequest, WorkerRequest, WorkerResponse } from './protocol';
 
 /** Thrown for requests the worker skipped because a newer one replaced them. */
@@ -142,13 +143,15 @@ export class EngineClient {
     return this.send({ kind: 'worldInit', id: this.nextId++, seed, day, glyphAspect });
   }
 
-  /** Build one world chunk with glyphs sized for `eye`, on the least busy chunk worker. */
-  worldChunk(cx: number, cz: number, eye: [number, number, number], glyphAspect: number): Promise<EngineResult> {
+  /** Build one world chunk from its map data, glyphs sized for `eye`, on the least busy chunk worker. */
+  worldChunk(cx: number, cz: number, eye: [number, number, number], glyphAspect: number, data: ChunkPayload): Promise<EngineResult> {
     if (this.disposed) return Promise.reject(new Error('engine disposed'));
     if (this.pool.length === 0) return Promise.reject(new Error('no world: call worldInit first'));
     let slot = this.pool[0]!;
     for (const s of this.pool) if (s.load < slot.load) slot = s;
-    return slot.send({ kind: 'worldChunk', id: this.nextId++, cx, cz, eye, glyphAspect });
+    const transfer: Transferable[] = [data.objects.buffer];
+    if (data.tiles) transfer.push(data.tiles.buffer);
+    return slot.send({ kind: 'worldChunk', id: this.nextId++, cx, cz, eye, glyphAspect, ...data }, transfer);
   }
 
   /** Build a test scene (dev/test builds only). */

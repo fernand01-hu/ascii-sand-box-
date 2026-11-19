@@ -93,7 +93,7 @@ async function handle(req: WorkerRequest): Promise<void> {
       world = new wasm.CanvasWorld(req.seed >>> 0, req.day);
       const t0 = performance.now();
       const cards = world.skyCards(req.glyphAspect);
-      const [chunkSize = 32, grid = 32, ground = 0] = wasm.worldConsts();
+      const [chunkSize = 32, grid = 32, ground = 0, tile = 0.5, tiles = 64] = wasm.worldConsts();
       const spawn: [number, number, number] = [0, ground, 0];
       const stride = wasm.cardStride();
       const materials = wasm.sceneryMaterials();
@@ -103,7 +103,7 @@ async function handle(req: WorkerRequest): Promise<void> {
           kind: 'result', id: req.id, mesh: null, cards, stride, count: cards.length / stride, charset: wasm.sceneryCharset(),
           timings: { loadMs: 0, generateMs: performance.now() - t0 }, sunDir: [sx, sy, sz], materials, materialFloats: wasm.materialFloats(),
           env: { day: req.day, windDir: [0.89, -0.45], leafBox: [0, 0, 90], rainBox: [36, 24, 36] },
-          world: { chunkSize, grid, ground, spawn },
+          world: { chunkSize, grid, ground, spawn, tile, tiles, groundKinds: wasm.groundKinds().split(','), objectKinds: wasm.objectKinds().split(',') },
         },
         [cards.buffer, materials.buffer],
         true,
@@ -114,7 +114,7 @@ async function handle(req: WorkerRequest): Promise<void> {
       if (!world) throw new Error('no world: call worldInit first');
       const t0 = performance.now();
       const [ex, ey, ez] = req.eye;
-      const c = world.buildChunk(req.cx, req.cz, ex, ey, ez, req.glyphAspect);
+      const c = world.buildChunk(req.cx, req.cz, ex, ey, ez, req.glyphAspect, req.tiles ?? new Uint8Array(0), req.objects);
       try {
         const cards = c.takeCards();
         const positions = c.takeBody();
@@ -127,7 +127,7 @@ async function handle(req: WorkerRequest): Promise<void> {
             kind: 'result', id: req.id, cards, stride, count: cards.length / stride, charset: wasm.sceneryCharset(),
             mesh: { positions, normals, triangles: positions.length / 9, dropped: 0 },
             timings: { loadMs: 0, generateMs: performance.now() - t0 },
-            chunk: { cx: req.cx, cz: req.cz, eye: req.eye, heights, colliders },
+            chunk: { cx: req.cx, cz: req.cz, eye: req.eye, rev: req.rev, placed: c.placed(), heights, colliders },
           },
           [cards.buffer, positions.buffer, normals.buffer, heights.buffer, colliders.buffer],
         );

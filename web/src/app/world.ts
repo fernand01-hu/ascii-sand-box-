@@ -1,13 +1,20 @@
 // Streams the canvas world around the viewer: requests chunks from the
-// engine worker nearest-first, drops chunks that fall out of range, and
-// rebuilds a chunk when the viewer has moved enough that its glyph sizes
-// (chosen for the eye at build time) are off: nearer -> finer, farther ->
-// coarser. Screen density stays the same at every distance.
+// engine workers nearest-first, drops chunks that fall out of range, and
+// rebuilds a chunk when
+//   * its map data changed (paint, objects): only the chunks an edit
+//     touched, before anything else, so edits show up at once. A build
+//     that finishes after a newer edit is shown, then rebuilt again;
+//   * the viewer has moved enough that its glyph sizes (chosen for the eye
+//     at build time) are off: nearer -> finer, farther -> coarser. Screen
+//     density stays the same at every distance.
+// Memory stays bounded: only chunks within `radius` (+2 before dropping)
+// are kept; the edits themselves live in MapData, not here.
 
 import type { EngineClient } from '../engine/client';
 import type { WorldChunkData, WorldInfo } from '../engine/protocol';
 import { glyphAspect } from '../render/atlas';
 import type { Viewer } from '../render/viewer';
+import { chunkKey, type MapData } from './map';
 import { ColliderGrid, type Ground } from './physics';
 
 interface Loaded {
@@ -22,22 +29,47 @@ export class WorldStreamer implements Ground {
   maxInflight: number;
   private loaded = new Map<string, Loaded>();
   private inflight = new Set<string>();
+  /** Loaded chunks whose map data changed since they were built. */
+  private dirty = new Set<string>();
   private lastCheck = 0;
+  private lastEye = { x: 0, y: 0, z: 0 };
   private alive = true;
+  private unsubscribe: () => void;
   /** Chunks built so far (for tests and stats). */
   built = 0;
+  /** Of those, rebuilds because the map data changed. */
+  editBuilds = 0;
+  /** Of those, rebuilds of loaded chunks because the viewer moved (glyph sizes). */
+  viewBuilds = 0;
+  private flushQueued = false;
 
   constructor(
     private engine: EngineClient,
     private viewer: Viewer,
     readonly info: WorldInfo,
+    readonly map: MapData,
     private onError: (e: unknown) => void,
   ) {
     this.maxInflight = engine.chunkWorkers * 2;
+    this.unsubscribe = map.onChange((keys) => {
+      for (const k of keys) if (this.loaded.has(k) || this.inflight.has(k)) this.dirty.add(k);
+      // Edits made together (one brush stroke, a script) start one build per chunk.
+      if (this.flushQueued) return;
+      this.flushQueued = true;
+      queueMicrotask(() => {
+        this.flushQueued = false;
+        if (this.alive) this.update(this.lastEye, true);
+      });
+    });
   }
 
   private key(cx: number, cz: number): string {
-    return `w${cx},${cz}`;
+    return chunkKey(cx, cz);
+  }
+
+  /** Loaded chunks still waiting for a rebuild after an edit. */
+  get dirtyCount(): number {
+    return this.dirty.size;
   }
 
   get loadedCount(): number {
@@ -50,6 +82,7 @@ export class WorldStreamer implements Ground {
 
   /** Call every frame with the viewer's position. */
   update(eye: { x: number; y: number; z: number }, force = false): void {
+    this.lastEye = { x: eye.x, y: eye.y, z: eye.z };
     const now = performance.now();
     if (!force && now - this.lastCheck < 150) return;
     this.lastCheck = now;
@@ -67,6 +100,10 @@ export class WorldStreamer implements Ground {
         const have = this.loaded.get(k);
         if (!have) {
           want.push({ cx, cz, prio: dNow });
+          continue;
+        }
+        if (this.dirty.has(k)) {
+          want.push({ cx, cz, prio: dNow - 1e6 }); // edits first
           continue;
         }
         // Rebuild when the glyph sizes chosen at build time are off by much.
@@ -92,10 +129,16 @@ export class WorldStreamer implements Ground {
   private request(cx: number, cz: number, eye: [number, number, number]): void {
     const k = this.key(cx, cz);
     this.inflight.add(k);
-    this.engine.worldChunk(cx, cz, eye, glyphAspect()).then(
+    const wasDirty = this.dirty.delete(k);
+    const reload = !wasDirty && this.loaded.has(k);
+    this.engine.worldChunk(cx, cz, eye, glyphAspect(), this.map.payload(cx, cz)).then(
       (res) => {
         this.inflight.delete(k);
         if (!this.alive || !res.chunk) return;
+        // Edited again while this was building: show it, then build again.
+        if (res.chunk.rev !== this.map.revision(k)) this.dirty.add(k);
+        if (wasDirty) this.editBuilds++;
+        if (reload) this.viewBuilds++;
         // Replace the old version only now, so nothing flickers out meanwhile.
         this.viewer.cards.addSet(k, res.cards, res.stride, res.chunks);
         if (res.mesh) this.viewer.addBody(k, res.mesh.positions, res.mesh.normals);
@@ -105,6 +148,7 @@ export class WorldStreamer implements Ground {
       },
       (err) => {
         this.inflight.delete(k);
+        if (wasDirty) this.dirty.add(k);
         if (this.alive && !(err instanceof Error && err.name === 'SupersededError')) this.onError(err);
       },
     );
@@ -114,10 +158,12 @@ export class WorldStreamer implements Ground {
     this.viewer.cards.removeSet(k);
     this.viewer.removeBody(k);
     this.loaded.delete(k);
+    this.dirty.delete(k);
   }
 
   dispose(): void {
     this.alive = false;
+    this.unsubscribe();
     for (const k of [...this.loaded.keys()]) this.drop(k);
   }
 
