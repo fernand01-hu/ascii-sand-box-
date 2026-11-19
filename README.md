@@ -64,4 +64,6 @@ shader, so the weather costs almost nothing per frame.
 Visual references for the e2e test live in `tests/golden/`; after an intended
 visual change, check `test-results/` and run `UPDATE_GOLDEN=1 npm run test:e2e`.
 
+A native port (macOS / Apple Silicon first, wgpu + winit, sharing a platform-free Rust core) lives in `native/`: see `native/README.md`.
+
 See `docs/branches.md` for what was built on the side branches and what of it is on `master`.

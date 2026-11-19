@@ -56,6 +56,10 @@ struct App {
     perf: Perf,
     last_draws: ascii_render::RenderStats,
     failed: bool,
+    /// The last redraw had nothing new to draw.
+    idle: bool,
+    force_redraw: bool,
+    last_poll: Instant,
 }
 
 fn pick_format(caps: &wgpu::SurfaceCapabilities) -> (wgpu::TextureFormat, wgpu::TextureFormat) {
@@ -182,6 +186,12 @@ impl App {
             g.window.set_cursor_visible(true);
             self.grabbed = false;
         }
+        let changed = session.take_dirty();
+        self.idle = !changed && !self.force_redraw;
+        if self.idle {
+            return;
+        }
+        self.force_redraw = false;
         session.drain_events(&mut self.events);
         g.renderer.apply_events(&mut self.events);
         let params = session.frame_params();
@@ -251,13 +261,17 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => el.exit(),
-            WindowEvent::Occluded(o) => self.occluded = o,
+            WindowEvent::Occluded(o) => {
+                self.occluded = o;
+                self.force_redraw = true;
+            }
             WindowEvent::Resized(size) => {
                 if let (Some(g), Some(s)) = (self.gfx.as_mut(), self.session.as_mut()) {
                     g.config.width = size.width.max(1);
                     g.config.height = size.height.max(1);
                     g.surface.configure(&g.device, &g.config);
                     s.resize(g.config.width, g.config.height);
+                    self.force_redraw = true;
                 }
             }
             WindowEvent::Focused(false) => self.keys.clear(),
@@ -355,7 +369,18 @@ impl ApplicationHandler for App {
         if self.occluded {
             // Hidden: wake up rarely instead of spinning.
             el.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(250)));
+        } else if self.idle {
+            // Nothing moving: look for finished jobs and input at 60 Hz without drawing.
+            let next = self.last_poll + Duration::from_millis(16);
+            if Instant::now() >= next {
+                self.last_poll = Instant::now();
+                if let Some(g) = &self.gfx {
+                    g.window.request_redraw();
+                }
+            }
+            el.set_control_flow(ControlFlow::WaitUntil(self.last_poll + Duration::from_millis(16)));
         } else {
+            // Drawing: presenting with vsync paces the loop.
             el.set_control_flow(ControlFlow::Poll);
             if let Some(g) = &self.gfx {
                 g.window.request_redraw();
@@ -381,6 +406,9 @@ pub fn run(opts: Options) -> Result<(), String> {
         perf: Perf { enabled: perf_on, since: Instant::now(), frames: 0, worst: Duration::ZERO, last_frame: Instant::now() },
         last_draws: Default::default(),
         failed: false,
+        idle: false,
+        force_redraw: true,
+        last_poll: Instant::now(),
     };
     el.run_app(&mut app).map_err(|e| e.to_string())?;
     if app.failed { Err("could not start".into()) } else { Ok(()) }

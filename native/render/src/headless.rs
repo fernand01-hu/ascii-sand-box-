@@ -57,6 +57,20 @@ impl Headless {
         Headless { renderer, target, view, readback, size, padded_row }
     }
 
+    /// Render one frame without reading it back; returns the stats, the CPU
+    /// time spent building and submitting the frame, and the time until the
+    /// GPU finished it (software drivers: meaningless as a GPU figure).
+    pub fn render_timed(&mut self, f: &FrameParams) -> (crate::RenderStats, std::time::Duration, std::time::Duration) {
+        let device = self.renderer.device().clone();
+        let t0 = std::time::Instant::now();
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+        let stats = self.renderer.render(&mut enc, &self.view, self.size, f);
+        self.renderer.queue().submit([enc.finish()]);
+        let cpu = t0.elapsed();
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        (stats, cpu, t0.elapsed())
+    }
+
     /// Render one frame and return tightly packed RGBA8 rows (top row first).
     pub fn render_rgba(&mut self, f: &FrameParams) -> (Vec<u8>, crate::RenderStats) {
         let device = self.renderer.device().clone();

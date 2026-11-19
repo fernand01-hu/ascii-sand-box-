@@ -53,6 +53,7 @@ fn main() {
     let result = match argv.first().map(String::as_str) {
         Some("shot") => headless::shot_cmd(&argv[1..]),
         Some("golden") => headless::golden_cmd(&argv[1..]),
+        Some("bench") => headless::bench_cmd(&argv[1..]),
         _ => parse_window(&argv).and_then(window::run),
     };
     if let Err(e) = result {

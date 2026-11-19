@@ -138,6 +138,7 @@ pub struct Session<E: JobExecutor> {
     stats: Stats,
     chunk_ms_sum: f64,
     chunk_ms_n: u64,
+    dirty: bool,
 }
 
 impl<E: JobExecutor> Session<E> {
@@ -172,6 +173,7 @@ impl<E: JobExecutor> Session<E> {
             stats: Stats::default(),
             chunk_ms_sum: 0.0,
             chunk_ms_n: 0,
+            dirty: true,
         };
         s.events.push(RenderEvent::SetAtlas { charset: DEFAULT_CHARSET.to_string() });
         s.atlas_charset = DEFAULT_CHARSET.to_string();
@@ -213,7 +215,14 @@ impl<E: JobExecutor> Session<E> {
         &mut self.exec
     }
 
+    /// Does the picture need redrawing? True after any change; false for a
+    /// static scene nobody touches, so an idle window costs nothing.
+    pub fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty) || !self.events.is_empty()
+    }
+
     pub fn resize(&mut self, w: u32, h: u32) {
+        self.dirty = true;
         self.viewport = (w.max(1), h.max(1));
     }
 
@@ -234,6 +243,7 @@ impl<E: JobExecutor> Session<E> {
     // ---- commands -----------------------------------------------------------
 
     pub fn command(&mut self, cmd: Command) {
+        self.dirty = true;
         match cmd {
             Command::LoadStl { bytes, name } => self.load_stl(bytes, name),
             Command::Gallery(g) => {
@@ -299,6 +309,7 @@ impl<E: JobExecutor> Session<E> {
     }
 
     pub fn pointer(&mut self, p: Pointer) {
+        self.dirty = true;
         let h = f64::from(self.viewport.1);
         match p {
             Pointer::Rotate { dx, dy } if self.orbit.enabled => self.orbit.rotate(dx, dy, h),
@@ -323,11 +334,15 @@ impl<E: JobExecutor> Session<E> {
         if let Some(p) = &mut self.player {
             p.update(&self.ground, input, dt);
         }
-        if self.orbit.enabled {
-            self.orbit.update();
+        if self.orbit.enabled && self.orbit.update() {
+            self.dirty = true;
+        }
+        if self.player.is_some() {
+            self.dirty = true;
         }
         if self.animate && self.frozen.is_none() {
             self.time += dt;
+            self.dirty = true;
         }
         if let GroundKind::World(w) = &mut self.ground {
             let eye = self.player.as_ref().map_or(self.orbit.position, Player::eye);
@@ -341,9 +356,10 @@ impl<E: JobExecutor> Session<E> {
 
     fn poll_jobs(&mut self) {
         self.exec.poll(&mut self.done_buf);
-        let done = std::mem::take(&mut self.done_buf);
-        for d in done {
+        let mut done = std::mem::take(&mut self.done_buf);
+        for d in done.drain(..) {
             let Some(purpose) = self.pending.remove(&d.id) else { continue };
+            self.dirty = true;
             match purpose {
                 Purpose::Chunk { epoch, cx, cz } => {
                     if epoch != self.epoch {
@@ -384,7 +400,7 @@ impl<E: JobExecutor> Session<E> {
                 }
             }
         }
-        self.done_buf = Vec::new();
+        self.done_buf = done; // keep the capacity: no allocation per frame
     }
 
     // ---- applying results ---------------------------------------------------

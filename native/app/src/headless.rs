@@ -20,6 +20,7 @@ pub enum SourceKind {
 }
 
 pub struct Shot {
+    pub commands: Vec<Command>,
     pub size: (u32, u32),
     pub time: Option<f64>,
     pub walk_seconds: f64,
@@ -107,6 +108,9 @@ pub fn render_one(gpu: &Gpu, src: &SourceKind, shot: &Shot) -> Result<(Vec<u8>, 
     }
     start(&mut run.session, src)?;
     run.wait_ready(src, Duration::from_secs(600))?;
+    for c in &shot.commands {
+        run.session.command(c.clone());
+    }
     if shot.walk_seconds > 0.0 {
         run.session.command(Command::TogglePlay);
         let walk = InputState { forward: 1.0, ..Default::default() };
@@ -134,7 +138,7 @@ fn parse_size(s: &str) -> Result<(u32, u32), String> {
 /// `shot`: argv after the subcommand.
 pub fn shot_cmd(args: &[String]) -> Result<(), String> {
     let (mut src, mut out) = (None, std::path::PathBuf::from("shot.png"));
-    let mut shot = Shot { size: (1000, 800), time: None, walk_seconds: 0.0 };
+    let mut shot = Shot { commands: Vec::new(), size: (1000, 800), time: None, walk_seconds: 0.0 };
     let mut it = args.iter();
     let mut seed = 1u32;
     let mut day = false;
@@ -152,6 +156,12 @@ pub fn shot_cmd(args: &[String]) -> Result<(), String> {
             "--world" => world = true,
             "--seed" => seed = val()?.parse().map_err(|_| "bad seed")?,
             "--day" => day = true,
+            "--wind" => shot.commands.push(Command::CycleWind),
+            "--storm" => {
+                shot.commands.extend([Command::CycleWind, Command::CycleWind]);
+            }
+            "--rain" => shot.commands.push(Command::ToggleRain),
+            "--leaves" => shot.commands.push(Command::ToggleLeaves),
             "--walk" => shot.walk_seconds = val()?.parse().map_err(|_| "bad seconds")?,
             other => return Err(format!("unknown option {other}")),
         }
@@ -203,7 +213,7 @@ pub fn golden_cmd(args: &[String]) -> Result<(), String> {
         if only.is_some_and(|o| !name.contains(o.as_str())) {
             continue;
         }
-        let shot = Shot { size, time, walk_seconds: 0.0 };
+        let shot = Shot { commands: Vec::new(), size, time, walk_seconds: 0.0 };
         let (rgba, _run, _stats) = render_one(&gpu, &src, &shot)?;
         write_png(&out.join(format!("{name}.png")), &rgba, size)?;
         let top_first = thumbnail(&rgba, size, 48, 36);
@@ -218,5 +228,75 @@ pub fn golden_cmd(args: &[String]) -> Result<(), String> {
         println!("{name}: diff {d:.2} vs reference");
     }
     println!("worst diff {worst:.2}");
+    Ok(())
+}
+
+fn percentile(v: &mut [f64], p: f64) -> f64 {
+    v.sort_by(f64::total_cmp);
+    v[((v.len() - 1) as f64 * p).round() as usize]
+}
+
+/// `bench [workers]`: generation timings (single thread and the pool) and the
+/// CPU cost of a world frame. Run it on the Mac for the numbers that matter;
+/// the GPU figure on a software driver means nothing.
+pub fn bench_cmd(args: &[String]) -> Result<(), String> {
+    use ascii_engine as eng;
+    let workers = args.first().and_then(|a| a.parse().ok()).unwrap_or_else(default_workers);
+    let aspect = ascii_core::glyphs::glyph_aspect(ascii_core::glyphs::GLYPH_HEIGHT);
+    println!("== engine, one thread ==");
+    let t = Instant::now();
+    let mut world = eng::InfiniteWorld::new(1, false);
+    println!("world setup {:.1} ms; sky {:.0} ms", t.elapsed().as_secs_f64() * 1e3, {
+        let t = Instant::now();
+        let n = world.sky_cards(aspect).len() / 16;
+        println!("sky cards {n}");
+        t.elapsed().as_secs_f64() * 1e3
+    });
+    let eye = [16.0, 8.0, 16.0];
+    let (mut ms, mut cards) = (Vec::new(), Vec::new());
+    for cz in -4..4 {
+        for cx in -4..4 {
+            let t = Instant::now();
+            let c = world.build_chunk(cx, cz, eye, aspect);
+            ms.push(t.elapsed().as_secs_f64() * 1e3);
+            cards.push((c.cards.len() / 16) as f64);
+        }
+    }
+    println!("64 chunks (eye at the centre): mean {:.0} ms, p50 {:.0}, p95 {:.0}, max {:.0}; cards/chunk mean {:.0}", ms.iter().sum::<f64>() / 64.0, percentile(&mut ms.clone(), 0.5), percentile(&mut ms.clone(), 0.95), percentile(&mut ms, 1.0), cards.iter().sum::<f64>() / 64.0);
+    for p in [Preset::Meadow, Preset::Lake, Preset::Valley] {
+        let t = Instant::now();
+        let s = eng::build_scene(p.name(), 1, aspect)?;
+        println!("scene {}: {} cards in {:.0} ms", p.name(), s.cards.len() / 16, t.elapsed().as_secs_f64() * 1e3);
+    }
+
+    println!("== world streaming, {workers} worker thread(s) ==");
+    let mut run = Run::new((1000, 800), workers);
+    let src = SourceKind::World { seed: 1, day: false };
+    let t = Instant::now();
+    run.session.show_world(1, false);
+    run.wait_ready(&src, Duration::from_secs(900))?;
+    let s = run.session.stats();
+    println!("view disc ({} chunks) streamed in {:.1} s; chunk build mean {:.0} ms, max {:.0} ms on the workers", s.chunks_loaded, t.elapsed().as_secs_f64(), s.chunk_ms_mean, s.chunk_ms_max);
+
+    println!("== frame cost (world, {} cards) ==", s.cards);
+    let gpu = open_gpu()?;
+    println!("adapter: {} ({:?})", gpu.adapter_info.name, gpu.adapter_info.backend);
+    let mut head = Headless::new(&gpu, (1000, 800));
+    let mut events = Vec::new();
+    run.session.drain_events(&mut events);
+    let t = Instant::now();
+    head.renderer.apply_events(&mut events);
+    println!("uploading every chunk to the GPU: {:.0} ms", t.elapsed().as_secs_f64() * 1e3);
+    let params = run.session.frame_params();
+    head.render_timed(&params); // warm up (pipelines, targets)
+    let (mut cpu, mut total, mut stats) = (Vec::new(), Vec::new(), None);
+    for _ in 0..30 {
+        let (st, c, tt) = head.render_timed(&params);
+        cpu.push(c.as_secs_f64() * 1e3);
+        total.push(tt.as_secs_f64() * 1e3);
+        stats = Some(st);
+    }
+    let st = stats.expect("frames");
+    println!("{} instances drawn in {} draw calls; CPU build+submit mean {:.2} ms (p95 {:.2}); to GPU idle mean {:.0} ms", st.instances, st.draw_calls, cpu.iter().sum::<f64>() / 30.0, percentile(&mut cpu, 0.95), total.iter().sum::<f64>() / 30.0);
     Ok(())
 }
