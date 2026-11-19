@@ -22,7 +22,12 @@ pub fn open_gpu() -> Result<Gpu, String> {
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("ascii"),
         required_features: wgpu::Features::empty(),
-        required_limits: wgpu::Limits { max_buffer_size: limits.max_buffer_size.min(1 << 30), ..wgpu::Limits::default() },
+        required_limits: wgpu::Limits {
+            max_buffer_size: limits.max_buffer_size.min(1 << 30),
+            // Card sets are bound whole as storage buffers (per-card evaluation).
+            max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size.min(1 << 30),
+            ..wgpu::Limits::default()
+        },
         ..Default::default()
     }))
     .map_err(|e| e.to_string())?;

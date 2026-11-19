@@ -26,6 +26,8 @@ const MAX_MATERIALS: usize = 64;
 const CARD_OUT_BYTES: u64 = 64;
 /// One `Range` per dispatch, at the uniform dynamic-offset alignment.
 const RANGE_STRIDE: usize = 256;
+/// Most cards in one evaluation dispatch (workgroups of 64, at most 65535 of them).
+const MAX_RANGE: u32 = 64 * 65535;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -561,7 +563,8 @@ impl Renderer {
                 total += u64::from(c.count);
                 if self.visible.len() > start_len {
                     let last = self.visible.last_mut().expect("non-empty");
-                    if last.1 + last.2 == c.start {
+                    // Merged ranges stay within one compute dispatch (65535 groups of 64).
+                    if last.1 + last.2 == c.start && last.2 + c.count <= MAX_RANGE {
                         last.2 += c.count;
                         continue;
                     }
