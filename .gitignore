@@ -4,3 +4,6 @@ engine/target/
 web/src/pkg/
 test-results/
 __pycache__/
+
+# Python reference package archive (kept locally, not in the repo)
+scenery.zip

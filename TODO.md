@@ -40,8 +40,8 @@ next one.
 
 ## Phase 1: Foundations
 
-- [ ] **1. Remove the procedural map and start from a blank canvas.**
-  (Done on `step-01-blank-canvas` except the `scenery.zip` decision.)
+- [x] **1. Remove the procedural map and start from a blank canvas.**
+  (Done on `step-01-blank-canvas`.)
   - [x] Removed the generated terrain, lakes, streams, trails, biome
     scattering and landscape presets (`world.rs`, `terrain.rs`, `scene.rs`,
     the ground half of `landscape.rs`, the biome half of `scatter.rs`).
@@ -57,8 +57,7 @@ next one.
   - [x] Updated the e2e golden images, smoke test and production check.
   - [x] `scripts/bench-world.mjs` now measures the canvas.
   - [x] Rewrote the README.
-  - [ ] Decide whether `scenery.zip` belongs in the repo (it is ~2.5 MB of
-    images). Otherwise add it to `.gitignore`.
+  - [x] `scenery.zip` stays out of the repo (in `.gitignore`).
 
 - [ ] **2. Chunk system for editable, unlimited maps.**
   - Chunks already exist: 32 m chunks in `world.rs` and 16 m render chunks in
