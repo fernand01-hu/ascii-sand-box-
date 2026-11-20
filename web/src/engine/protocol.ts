@@ -74,6 +74,20 @@ export interface WorldInfo {
   objectKinds: string[];
   /** Material names by material id (glyph inspector). */
   materialNames: string[];
+  /** Generator parameters per object kind, in kind-code order. */
+  objectParams: ParamDesc[][];
+  /** Floats per placed object in chunk requests (6 + the parameter slots). */
+  objectFloats: number;
+}
+
+/** One generator parameter of an object kind (from the engine). */
+export interface ParamDesc {
+  name: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  default: number;
 }
 
 export interface WorldChunkData {
@@ -117,6 +131,8 @@ export type WorkerRequest =
   | { kind: 'generate'; id: number; settings: CardSettings }
   | ({ kind: 'testbed'; id: number } & TestbedRequest)
   | { kind: 'gallery'; id: number; category: GalleryCategory; seed: number; glyphAspect: number }
+  /** One object with parameter values, for the object brush's preview. */
+  | { kind: 'preview'; id: number; kindCode: number; seed: number; params: Float32Array; glyphAspect: number; framePx: number }
   | { kind: 'worldInit'; id: number; seed: number; day: boolean; glyphAspect: number }
   /** Chunk workers: create the canvas world (seed) or free it (null). No reply. */
   | { kind: 'worldSetup'; id: number; seed: number | null; day: boolean }

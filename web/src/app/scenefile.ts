@@ -18,6 +18,8 @@ export interface SceneObject {
   yaw: number;
   scale: number;
   seed: number;
+  /** Generator parameters that differ from the defaults, by name (so files survive new parameters). */
+  params?: Record<string, number>;
 }
 
 export interface SceneFile {
@@ -103,7 +105,10 @@ export function buildScene(name: string, c: SceneContent, saved = new Date()): S
     tiles: c.tiles,
     grounds: [...c.grounds],
     chunks: c.chunks.map((k) => ({ cx: k.cx, cz: k.cz, tiles: encodeTiles(k.tiles) })),
-    objects: c.objects.map((o) => ({ id: o.id, kind: o.kind, x: o.x, z: o.z, yaw: o.yaw, scale: o.scale, seed: o.seed })),
+    objects: c.objects.map((o) => ({
+      id: o.id, kind: o.kind, x: o.x, z: o.z, yaw: o.yaw, scale: o.scale, seed: o.seed,
+      ...(o.params && Object.keys(o.params).length ? { params: { ...o.params } } : {}),
+    })),
   };
 }
 
@@ -137,7 +142,12 @@ export function parseScene(raw: unknown): SceneContent & { name: string; saved: 
     if (!o || typeof o.kind !== 'string' || !isNum(o.x) || !isNum(o.z) || !isNum(o.yaw) || !isNum(o.scale) || !isInt(o.seed) || !isInt(o.id)) {
       throw new SceneError(`object ${i} is broken`);
     }
-    return { id: o.id, kind: o.kind, x: o.x, z: o.z, yaw: o.yaw, scale: o.scale, seed: o.seed };
+    let params: Record<string, number> | undefined;
+    if (o.params !== undefined) {
+      if (!o.params || typeof o.params !== 'object' || !Object.values(o.params).every(isNum)) throw new SceneError(`object ${i} has broken parameters`);
+      params = { ...o.params };
+    }
+    return { id: o.id, kind: o.kind, x: o.x, z: o.z, yaw: o.yaw, scale: o.scale, seed: o.seed, ...(params ? { params } : {}) };
   });
   const cam = f.camera;
   const vec = (v: unknown) => Array.isArray(v) && v.length === 3 && v.every(isNum);
@@ -169,4 +179,27 @@ export function remapGrounds(chunks: SceneContent['chunks'], from: readonly stri
     return Math.max(0, i);
   });
   return chunks.map((k) => ({ cx: k.cx, cz: k.cz, tiles: k.tiles.map((v) => map[v]!) }));
+}
+
+export interface ParamNames {
+  name: string;
+  default: number;
+}
+
+/** An object's parameter values (kind order) as a name -> value map, only those off their default. */
+export function paramsByName(values: readonly number[] | undefined, descs: readonly ParamNames[]): Record<string, number> | undefined {
+  if (!values?.length) return undefined;
+  const out: Record<string, number> = {};
+  descs.forEach((d, i) => {
+    const v = values[i];
+    if (v !== undefined && Number.isFinite(v) && Math.abs(v - d.default) > 1e-6) out[d.name] = v;
+  });
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** Back from names to values in this app's kind order (unknown names are ignored). */
+export function paramsFromNames(named: Record<string, number> | undefined, descs: readonly ParamNames[]): number[] | undefined {
+  if (!named || !Object.keys(named).length) return undefined;
+  const vals = descs.map((d) => (Number.isFinite(named[d.name]) ? named[d.name]! : d.default));
+  return vals.some((v, i) => Math.abs(v - descs[i]!.default) > 1e-6) ? vals : undefined;
 }

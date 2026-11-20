@@ -158,6 +158,22 @@
 
 .tui-choice .tui-arrow { color: var(--tui-accent); cursor: pointer; }
 
+.tui-params {
+  right: 8px;
+  bottom: 34px;
+  max-width: min(60ch, calc(100vw - 16px));
+}
+
+.tui-preview {
+  width: 100%;
+  height: 170px;
+  margin: 0.2em 0;
+  border: 1px solid var(--tui-border);
+  background: var(--tui-bg);
+}
+.tui-preview canvas { display: block; width: 100%; height: 100%; }
+.tui-preview-info { padding: 0 1ch; white-space: pre; }
+
 /* ---- status bar ------------------------------------------------------------ */
 
 .tui-status {

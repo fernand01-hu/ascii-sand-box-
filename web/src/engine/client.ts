@@ -152,6 +152,11 @@ export class EngineClient {
     return this.send({ kind: 'gallery', id: this.nextId++, category, seed, glyphAspect });
   }
 
+  /** One object with parameter values on a studio floor (the object brush's preview). */
+  objectPreview(kindCode: number, seed: number, params: number[], glyphAspect: number, framePx: number): Promise<EngineResult> {
+    return this.send({ kind: 'preview', id: this.nextId++, kindCode, seed, params: Float32Array.from(params), glyphAspect, framePx });
+  }
+
   /** Start the canvas world: returns its sky and setup. */
   worldInit(seed: number, day: boolean, glyphAspect: number): Promise<EngineResult> {
     this.setWorld({ seed, day });

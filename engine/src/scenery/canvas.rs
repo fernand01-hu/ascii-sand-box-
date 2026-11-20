@@ -45,8 +45,10 @@ pub const COARSE: f32 = 4.0;
 pub const TILE: f32 = 0.5;
 /// Ground tiles per chunk side.
 pub const TILES: usize = (CHUNK / TILE) as usize;
-/// Floats per placed object: kind code, seed, x, z, yaw (radians), scale.
-pub const OBJECT_FLOATS: usize = 6;
+/// Floats per placed object: kind code, seed, x, z, yaw (radians), scale,
+/// then `MAX_PARAMS` generator parameter values (see `params`; a missing or
+/// non-finite value means the default).
+pub const OBJECT_FLOATS: usize = 6 + super::params::MAX_PARAMS;
 /// Generated variants per kind; an object's seed picks one of them.
 pub const VARIANTS: u32 = 8;
 /// Ground glyphs allowed to overlap on one spot of the screen.
@@ -254,16 +256,18 @@ impl Canvas {
         // Objects first: generate (or fetch) their assets while `lib` may change.
         let mut objects: Vec<(usize, Kind, Placement)> = Vec::new();
         let mut bounds: Vec<[f32; 7]> = Vec::new();
+        self.lib.trim(); // between builds: drop the cache if it grew too big
         for (index, o) in data.objects.chunks_exact(OBJECT_FLOATS).enumerate() {
             let Some(&kind) = self.kinds.get(o[0] as usize) else { continue };
-            if o.iter().any(|v| !v.is_finite()) {
+            if o[..6].iter().any(|v| !v.is_finite()) {
                 continue;
             }
+            let params = &o[6..6 + super::params::param_descs(kind).len()];
             let seed = o[1] as u32;
             let (x, z) = (o[2], o[3]);
             let d = (x - eye.x).hypot(z - eye.z);
             let lod = if d < 32.0 { 0 } else if d < 90.0 { 1 } else { 2 };
-            let asset = self.lib.get(kind, seed % VARIANTS, lod);
+            let asset = self.lib.get_with(kind, params, seed % VARIANTS, lod);
             let sink = if let Kind::Tree(_) = kind { 0.12 } else { 0.03 };
             let tint = 0.85 + 0.3 * hash2(seed as i64, 7);
             let pl = Placement { pos: Vec3::new(x, GROUND - sink, z), yaw: o[4], scale: o[5].clamp(0.05, 20.0), tint };
@@ -371,6 +375,13 @@ mod tests {
         Kind::all().iter().position(|k| k.name() == name).unwrap() as f32
     }
 
+    /// One object record: kind, seed, x, z, yaw, scale, then default (blank) parameters.
+    fn rec(v: [f32; 6]) -> Vec<f32> {
+        let mut r = v.to_vec();
+        r.resize(OBJECT_FLOATS, f32::NAN);
+        r
+    }
+
     #[test]
     fn blank_chunks_are_neat_rows_of_hash_on_flat_ground() {
         let mut canvas = Canvas::new(1, false);
@@ -464,9 +475,8 @@ mod tests {
     fn objects_are_skinned_whole_by_the_chunk_that_holds_their_base() {
         let mut canvas = Canvas::new(1, false);
         // An oak right next to the border with chunk (1, 0): its crown spills over.
-        let oak = [code("tree:oak"), 3.0, 31.5, 16.0, 0.0, 1.0];
-        let rock = [code("rock:boulder"), 1.0, 10.0, 10.0, 1.0, 1.0];
-        let objects: Vec<f32> = oak.iter().chain(&rock).copied().collect();
+        let mut objects = rec([code("tree:oak"), 3.0, 31.5, 16.0, 0.0, 1.0]);
+        objects.extend(rec([code("rock:boulder"), 1.0, 10.0, 10.0, 1.0, 1.0]));
         let blank_n = canvas.build_chunk(0, 0, eye(), ASPECT, blank()).cards.len();
         let c = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &[], objects: &objects });
         assert_eq!(c.placed, 2);
@@ -490,16 +500,30 @@ mod tests {
     }
 
     #[test]
+    fn objects_grow_with_their_parameters() {
+        let mut canvas = Canvas::new(1, false);
+        let oak = code("tree:oak");
+        let usual = rec([oak, 3.0, 16.0, 16.0, 0.0, 1.0]);
+        let mut tall = usual.clone();
+        let i = super::super::params::param_descs(Kind::all()[oak as usize]).iter().position(|d| d.name == "height").unwrap();
+        tall[6 + i] = 2.0;
+        let mut top = |objects: &[f32]| canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &[], objects }).bounds[0][5];
+        let (a, b) = (top(&usual), top(&tall));
+        assert!(b > a * 1.6, "height 2 makes a taller oak: {a} -> {b}");
+    }
+
+    #[test]
     fn unknown_or_broken_objects_are_skipped() {
         let mut canvas = Canvas::new(1, false);
-        let objects = [999.0, 1.0, 5.0, 5.0, 0.0, 1.0, code("rock:slab"), 1.0, f32::NAN, 5.0, 0.0, 1.0];
+        let mut objects = rec([999.0, 1.0, 5.0, 5.0, 0.0, 1.0]);
+        objects.extend(rec([code("rock:slab"), 1.0, f32::NAN, 5.0, 0.0, 1.0]));
         let c = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &[], objects: &objects });
         assert_eq!(c.placed, 0);
     }
 
     #[test]
     fn deterministic() {
-        let objects = [code("bush:juniper"), 9.0, -80.0, 70.0, 0.4, 1.2];
+        let objects = rec([code("bush:juniper"), 9.0, -80.0, 70.0, 0.4, 1.2]);
         let data = ChunkData { tiles: &[], objects: &objects };
         let a = Canvas::new(5, true).build_chunk(-3, 2, eye(), ASPECT, data).cards;
         let mut canvas = Canvas::new(5, true);
@@ -551,7 +575,7 @@ mod tests {
         let mut objects = Vec::new();
         for k in 0..30 {
             let (x, z) = (4.0 + (k % 6) as f32 * 5.0, 2.0 + (k / 6) as f32 * 6.0);
-            objects.extend_from_slice(&[code(["tree:oak", "tree:spruce", "tree:birch"][k % 3]), k as f32, x, z, k as f32, 1.0]);
+            objects.extend(rec([code(["tree:oak", "tree:spruce", "tree:birch"][k % 3]), k as f32, x, z, k as f32, 1.0]));
         }
         let e = Vec3::new(16.0, 7.0, 60.0);
         let c = canvas.build_chunk(0, 0, e, ASPECT, ChunkData { tiles: &[], objects: &objects });

@@ -13,6 +13,7 @@ pub mod canvas;
 pub mod colonize;
 pub mod gallery;
 pub mod library;
+pub mod params;
 pub mod light;
 pub mod perlin;
 pub mod plants;

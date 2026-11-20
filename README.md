@@ -72,7 +72,10 @@ shape, strength and soft edge are in the brush panel. `Ctrl+Z` / `Ctrl+Y`
 undo and redo any change to the map (`history` in the terminal lists them).
 `O` is the object brush (1 spray evenly spaced trees, bushes, rocks or plants,
 2 place one per click, 3 erase); `V` selects an object (drag to move, `R`
-turn, `Delete` remove).
+turn, `Delete` remove). With the object brush on, the parameters panel has a
+slider for every setting of the kind (tree height, crown size, leaf amount,
+rock lumpiness...), a live preview and named presets; `param` and `preset`
+do the same in the terminal.
 `Ctrl+S` saves the scene in the browser; `Esc` → Save / load lists saved
 scenes, downloads or loads `.scene.json` files (or drop one on the page) and
 exports the view as PNG or ASCII text. Your work is autosaved and comes back

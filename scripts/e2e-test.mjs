@@ -804,6 +804,63 @@ try {
     await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
   });
 
+  await step('generator parameters: sliders from the engine, objects grow with them, live preview, presets, saved in scenes', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    const settled = () => page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+    /** Top of an object's box, from the chunk the engine built. */
+    const topOf = (id) => page.evaluate((id) => {
+      const a = window.__ascii.app, o = a.map.object(id);
+      const [cx, cz] = a.map.chunkOf(o.x, o.z);
+      const b = a.world.chunk(cx, cz)?.data.bounds, i = a.map.objectsIn(cx, cz).indexOf(o);
+      for (let k = 0; b && k + 7 <= b.length; k += 7) if (b[k] === i) return b[k + 5];
+      return null;
+    }, id);
+    try {
+      await run('clearmap yes; objbrush on; objbrush tree:oak; objbrush mode single; objbrush variation 0; param reset');
+      assert.ok(await page.evaluate(() => !document.querySelector('.tui-params').hidden), 'the parameter panel opens with the object brush');
+      const sliders = await page.evaluate(() => [...document.querySelectorAll('.tui-params .tui-slider .tui-label')].map((l) => l.textContent.trim()));
+      assert.ok(sliders.includes('height') && sliders.includes('leaves per twig') && sliders.length >= 10, `one slider per oak parameter (${sliders.length})`);
+      // A usual oak and a height-2 oak.
+      await run('objbrush stroke -10 -30 -10 -30');
+      await run('param height 2');
+      await run('objbrush stroke 10 -30 10 -30');
+      const [usual, tall] = await page.evaluate(() => window.__ascii.app.map.allObjects().sort((a, b) => a.x - b.x).map((o) => o.id));
+      assert.deepEqual(await page.evaluate((id) => window.__ascii.app.map.object(id).params?.[0], tall), 2, 'the tall oak carries height 2');
+      assert.equal(await page.evaluate((id) => window.__ascii.app.map.object(id).params, usual), undefined, 'the usual oak carries no parameters');
+      await settled();
+      const [a, b] = [await topOf(usual), await topOf(tall)];
+      assert.ok(a && b && b > a * 1.6, `the engine grew it taller (${a?.toFixed(1)} m -> ${b?.toFixed(1)} m)`);
+      // The live preview builds.
+      await page.waitForFunction(() => /tree:oak · seed \d+ · \d+ glyphs/.test(document.querySelector('.tui-preview-info').textContent), { timeout: 120_000 });
+      assert.ok(await page.evaluate(() => !!document.querySelector('.tui-preview canvas')), 'the preview has its own view');
+      // A slider works with the mouse: click near the left end of "trunk thickness".
+      const bar = await page.evaluateHandle(() => [...document.querySelectorAll('.tui-params .tui-slider')].find((r) => /trunk thickness/.test(r.textContent)).querySelector('.tui-bar'));
+      const box = await bar.boundingBox();
+      await page.mouse.click(box.x + box.width * 0.12, box.y + box.height / 2);
+      const trunk = Number((await run('param')).find((l) => l.startsWith('trunk ')).split(/\s+/)[1]);
+      assert.ok(trunk < 0.8, `clicking the slider lowers trunk thickness (${trunk})`);
+      // Typing a preset name does not trigger the tools' keys (o would close the object brush).
+      await page.click('.tui-params .tui-input input');
+      await page.keyboard.type('tall oak');
+      await page.keyboard.press('Enter');
+      assert.ok(await page.evaluate(() => !document.querySelector('.tui-params').hidden), 'typing "o" in the field kept the brush open');
+      assert.match((await run('preset')).join('\n'), /tall oak\s+tree:oak .*height=2/);
+      await run('param reset');
+      assert.equal(Number((await run('param')).find((l) => l.startsWith('height')).split(/\s+/)[1]), 1);
+      await run('preset load tall oak');
+      assert.equal(Number((await run('param')).find((l) => l.startsWith('height')).split(/\s+/)[1]), 2, 'the preset brings height 2 back');
+      // Saved scenes keep each object's parameters.
+      await run('save params test; clearmap yes; load params test');
+      const back = await page.evaluate(() => window.__ascii.app.map.allObjects().map((o) => o.params?.[0] ?? null).sort());
+      assert.deepEqual(back, [2, null], 'the tall oak is still tall after save and load');
+      await page.screenshot({ path: join(outDir, '13i-parameters.png') });
+    } finally {
+      for (const c of ['preset delete tall oak', 'delete params test', 'param reset', 'objbrush mode spray', 'objbrush tree:*', 'objbrush variation 0.2', 'tool off', 'clearmap yes', 'canvas 1']) await run(c).catch(() => {});
+    }
+    await waitSettled('canvas');
+    await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+  });
+
   const models = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];
   for (const [i, model] of models.entries()) {
     await step(`model ${model}: renders, readable, matches reference`, async () => {

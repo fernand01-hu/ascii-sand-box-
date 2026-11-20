@@ -280,13 +280,34 @@ next one.
   - [x] Unit tests for the spray maths. e2e: real drags, spacing across a
     chunk border, single, erase, select, move, turn, delete, undo.
 
-- [ ] **11. Generator parameters in the brush.**
-  - Expose *every* generator parameter for every object type: tree height,
-    crown size, leaf amount, branch count, rock roughness, and so on.
-  - Generate the panel from one param description per generator (name,
-    range, default), so new params show up automatically.
-  - **(added)** A live preview of the object before you paint it.
-  - **(added)** Save named presets (for example "my tall birch").
+- [x] **11. Generator parameters in the brush.** (Done on
+      `step-11-generator-params`.)
+  - [x] Each family exposes its settings (`engine/src/scenery/params.rs`):
+    - **conifers:** height, crown start, whorl spacing, branches per whorl,
+      branch length, sag, needle density and size, dead branches, trunk,
+      sway
+    - **broadleaf trees:** height, trunk height, crown width and height,
+      lobes, branch density, twig length, leaves per twig, leaf size,
+      droop, trunk, lean, gnarl
+    - **bushes:** size, width, height, stems, density, twig, leaves, leaf
+      size, upward growth, berries / blossoms
+    - **rocks:** size, width, height, lumpiness, facets, moss (not on
+      pebbles, which are always bare)
+    - **plants:** size
+
+    A Rust test proves each setting changes the object and that defaults
+    give the usual one exactly.
+  - [x] The panel, the terminal (`param`) and saved scenes are all
+    generated from one description per setting (name, label, range,
+    default). Objects store their values (only when off the defaults);
+    scene files store them by name, so new settings never break old files.
+    For a mix ("any tree"), the panel offers the settings the family shares.
+  - [x] **(added)** A live preview: a small viewer of its own (drag to turn
+    it), rebuilt a moment after a change, with "another variant".
+  - [x] **(added)** Named presets (`preset save|load|delete`, or the panel's
+    picker and "save as").
+  - [x] The engine caches assets per parameter set and starts the cache over
+    past 600 assets.
 
 - [ ] **12. (added) Height brush.**
   - Raise, lower and smooth the ground.

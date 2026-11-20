@@ -105,3 +105,22 @@ test('loading is one undoable change', () => {
   h.undo();
   assert.deepEqual(snapshot(m), before, 'undo brings back what was there before loading');
 });
+
+test('object parameters are saved by name, only those off their default', async () => {
+  const { paramsByName, paramsFromNames } = await import('./scenefile.ts');
+  const descs = [{ name: 'height', default: 1 }, { name: 'leaves', default: 3 }, { name: 'lean', default: 0.1 }];
+  assert.equal(paramsByName([1, 3, 0.1], descs), undefined, 'all defaults: nothing saved');
+  assert.deepEqual(paramsByName([2, 3, 0.1], descs), { height: 2 });
+  assert.deepEqual(paramsFromNames({ height: 2 }, descs), [2, 3, 0.1]);
+  // A newer app with a parameter inserted before "leaves" still reads it right.
+  const newer = [{ name: 'height', default: 1 }, { name: 'crown', default: 1 }, { name: 'leaves', default: 3 }, { name: 'lean', default: 0.1 }];
+  assert.deepEqual(paramsFromNames({ height: 2, leaves: 5 }, newer), [2, 1, 5, 0.1]);
+  assert.equal(paramsFromNames({ gone: 4 }, newer), undefined, 'unknown names are ignored');
+  // Through a whole file.
+  const f = JSON.parse(JSON.stringify(buildScene('p', {
+    canvas: { seed: 1, day: false }, weather: { wind: 0, rain: 0, leaves: 0 }, chunkSize: 32, tiles: 64, grounds: GROUNDS, chunks: [],
+    objects: [{ id: 1, kind: 'tree:oak', x: 0, z: 0, yaw: 0, scale: 1, seed: 1, params: { height: 2 } }],
+  })));
+  assert.deepEqual(parseScene(f).objects[0]!.params, { height: 2 });
+  assert.throws(() => parseScene({ ...f, objects: [{ ...f.objects[0], params: { height: 'x' } }] }), /broken parameters/);
+});

@@ -254,6 +254,36 @@ fn body_buffers(body: &[[math::Vec3; 3]]) -> (Vec<f32>, Vec<f32>) {
     (pos, nrm)
 }
 
+/// Every object kind's generator parameters as JSON, one list per kind in
+/// kind-code order (see `objectKinds`): name, label, min, max, step, default.
+#[wasm_bindgen(js_name = objectParams)]
+pub fn object_params() -> String {
+    scenery::params::params_json()
+}
+
+/// One object (kind code, seed, parameter values) on a small studio floor,
+/// for the object brush's live preview; glyphs sized for a `frame_px` tall view.
+#[wasm_bindgen(js_name = buildObjectPreview)]
+pub fn build_object_preview(kind_code: u32, seed: u32, params: &[f32], glyph_aspect: f32, frame_px: f32) -> Result<SceneryScene, JsError> {
+    let kind = scenery::library::Kind::from_code(kind_code).ok_or_else(|| JsError::new(&format!("unknown object kind {kind_code}")))?;
+    if !(glyph_aspect > 0.0 && glyph_aspect.is_finite()) {
+        return Err(JsError::new("glyph_aspect must be a positive number"));
+    }
+    let asset = scenery::params::make_asset(kind, seed, params);
+    let s = scenery::gallery::build_single(&asset, glyph_aspect, frame_px, seed);
+    let (body, body_normals) = body_buffers(&s.body);
+    let w = scenery::sky::wind_dir();
+    let rb = scenery::sky::RAIN_BOX;
+    Ok(SceneryScene {
+        cards: s.cards,
+        body,
+        body_normals,
+        camera: vec![s.target.x, s.target.y, s.target.z, s.eye.x, s.eye.y, s.eye.z, s.fov],
+        glyph: s.glyph,
+        env: vec![0.0, w[0], w[1], 0.0, 0.0, 0.0, rb[0], rb[1], rb[2]],
+    })
+}
+
 /// A gallery sheet of procedural assets: "rocks", "plants", "bushes" or "trees".
 #[wasm_bindgen(js_name = buildGallery)]
 pub fn build_gallery(category: &str, seed: u32, glyph_aspect: f32) -> Result<SceneryScene, JsError> {

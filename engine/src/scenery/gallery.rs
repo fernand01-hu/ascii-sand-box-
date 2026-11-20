@@ -119,6 +119,31 @@ fn lay_out(assets: &[Asset], gap: f32, rows: usize) -> (Vec<Placement>, f32, f32
     (out, row_w.iter().cloned().fold(0.0, f32::max), height)
 }
 
+/**
+ * One object on a small studio floor, for the object brush's live preview:
+ * the camera fits the object, glyphs are ~15 px tall in a `frame_px` tall
+ * view (so a small preview window still reads as ASCII).
+ */
+pub fn build_single(asset: &Asset, glyph_aspect: f32, frame_px: f32, seed: u32) -> SceneOut {
+    let (lo, hi) = asset.bounds();
+    let h = (hi.y - lo.y.min(0.0)).max(0.2);
+    let w = (hi.x - lo.x).max(hi.z - lo.z).max(0.2);
+    let fov = 35.0f32;
+    let half = (fov.to_radians() / 2.0).tan();
+    let dist = (h / 2.0 / half * 1.3).max(w / 2.0 / half * 1.3);
+    let target = Vec3::new(0.0, h * 0.45, 0.0);
+    let eye = target + Vec3::new(0.0, dist * 0.28, dist);
+    let focal = frame_px.max(64.0) / 2.0 / half;
+    let g = 15.0 * dist / focal;
+    let glyphs = Glyphs::new();
+    let mut sk = Skinner::new(&glyphs, g, glyph_aspect, seed as u64);
+    sk.skin(asset, Placement { pos: Vec3::ZERO, yaw: 0.6, scale: 1.0, tint: 1.0 });
+    studio_ground(&mut sk, Vec3::ZERO, (w * 1.2).max(dist * 0.9), eye, focal, seed);
+    let occ = Occlusion::new(&sk.occluders);
+    sk.light(&occ, sun_dir(), &|_| 1.0, Some(eye));
+    SceneOut { cards: std::mem::take(&mut sk.cards), body: std::mem::take(&mut sk.solids), target, eye, fov, glyph: g, assets: 1 }
+}
+
 pub fn build_gallery(cat: Category, seed: u32, glyph_aspect: f32) -> SceneOut {
     let sh = sheet(cat, seed);
     let (placed, width, height) = lay_out(&sh.assets, sh.gap, sh.rows);

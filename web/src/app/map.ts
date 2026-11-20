@@ -25,6 +25,18 @@ export interface MapInfo {
   groundKinds: string[];
   /** Object kind names ("tree:oak"); the index is the kind code. */
   objectKinds: string[];
+  /** Generator parameters per kind (from the engine), for defaults and names. */
+  objectParams?: Record<string, ParamInfo[]>;
+}
+
+/** One generator parameter of a kind (see engine scenery/params.rs). */
+export interface ParamInfo {
+  name: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  default: number;
 }
 
 export interface PlacedObject {
@@ -38,9 +50,14 @@ export interface PlacedObject {
   /** Rotation round the vertical axis, radians. */
   yaw: number;
   scale: number;
+  /**
+   * Generator parameter values in the kind's order (see MapInfo.objectParams);
+   * missing = all defaults. Never changed in place: replaced as a whole.
+   */
+  params?: number[];
 }
 
-export type NewObject = Omit<PlacedObject, 'id' | 'yaw' | 'scale' | 'seed'> & Partial<Pick<PlacedObject, 'yaw' | 'scale' | 'seed'>>;
+export type NewObject = Omit<PlacedObject, 'id' | 'yaw' | 'scale' | 'seed'> & Partial<Pick<PlacedObject, 'yaw' | 'scale' | 'seed' | 'params'>>;
 
 interface ChunkEdits {
   /** tiles x tiles ground codes, row-major (z rows), or null for all canvas. */
@@ -57,7 +74,10 @@ export interface ChunkPayload {
   rev: number;
 }
 
-export const OBJECT_FLOATS = 6;
+/** Parameter value slots per object in a chunk request (engine MAX_PARAMS). */
+export const MAX_PARAMS = 16;
+/** Floats per object in a chunk request: kind, seed, x, z, yaw, scale, parameters. */
+export const OBJECT_FLOATS = 6 + MAX_PARAMS;
 
 /** One change to the map, as the undo history records it. */
 export interface MapEdit {
@@ -211,9 +231,11 @@ export class MapData {
   addObject(o: NewObject): PlacedObject {
     if (!this.info.objectKinds.includes(o.kind)) throw new Error(`unknown object ${JSON.stringify(o.kind)}`);
     if (!Number.isFinite(o.x) || !Number.isFinite(o.z)) throw new Error('object position must be finite');
+    if (o.params && (o.params.length > MAX_PARAMS || !o.params.every(Number.isFinite))) throw new Error('object parameters must be at most 16 finite numbers');
     const obj: PlacedObject = {
       id: this.nextId++, kind: o.kind, x: o.x, z: o.z,
       seed: (o.seed ?? Math.floor(Math.random() * 0xffff)) >>> 0, yaw: o.yaw ?? 0, scale: o.scale ?? 1,
+      ...(o.params?.length ? { params: [...o.params] } : {}),
     };
     this.insert(obj);
     return obj;
@@ -347,7 +369,7 @@ export class MapData {
    * Move / turn / resize an object, keeping its id (it may change chunk).
    * One edit (removed old + added new), so it undoes in one go.
    */
-  updateObject(id: number, change: Partial<Pick<PlacedObject, 'x' | 'z' | 'yaw' | 'scale'>>): PlacedObject | null {
+  updateObject(id: number, change: Partial<Pick<PlacedObject, 'x' | 'z' | 'yaw' | 'scale' | 'params'>>): PlacedObject | null {
     const old = this.object(id);
     if (!old) return null;
     const next: PlacedObject = { ...old, ...change };
@@ -376,7 +398,12 @@ export class MapData {
     const c = this.chunks.get(key);
     const objs = c?.objects ?? [];
     const objects = new Float32Array(objs.length * OBJECT_FLOATS);
-    objs.forEach((o, i) => objects.set([this.info.objectKinds.indexOf(o.kind), o.seed % 0x1000000, o.x, o.z, o.yaw, o.scale], i * OBJECT_FLOATS));
+    objs.forEach((o, i) => {
+      const at = i * OBJECT_FLOATS;
+      objects.set([this.info.objectKinds.indexOf(o.kind), o.seed % 0x1000000, o.x, o.z, o.yaw, o.scale], at);
+      // Parameters, or NaN: "the default" for the engine.
+      for (let k = 0; k < MAX_PARAMS; k++) objects[at + 6 + k] = o.params?.[k] ?? NaN;
+    });
     return { tiles: c?.tiles ? c.tiles.slice() : null, objects, rev: this.revision(key) };
   }
 

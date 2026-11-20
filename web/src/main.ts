@@ -17,6 +17,8 @@ import { ToolSwitch } from './app/tools';
 import { ObjectTool } from './app/objecttool';
 import { SelectTool } from './app/selecttool';
 import { ObjectPanel, SelectPanel } from './ui/objectpanel';
+import { PresetStore } from './app/presets';
+import { ParamPanel } from './ui/parampanel';
 import { Settings } from './app/settings';
 import { Hud } from './ui/hud';
 import { Terminal } from './ui/terminal';
@@ -41,11 +43,13 @@ const undo = new Undo(app, brush);
 const objects = new ObjectTool(app, editor, undo, toolSwitch, settings);
 const select = new SelectTool(app, editor, undo, toolSwitch);
 const scenes = new SceneStore(app, undo, settings);
-const terminal = new Terminal(app, { debug, settings, cursor, tools, editor, brush, undo, scenes, objects, select });
+const presets = new PresetStore();
+const terminal = new Terminal(app, { debug, settings, cursor, tools, editor, brush, undo, scenes, objects, select, presets });
 new Hud(app, { debug, settings, terminal, editor, brush, undo, scenes, objects, select });
 new BrushPanel(app, brush);
 new ObjectPanel(app, objects);
 new SelectPanel(app, select);
+new ParamPanel(app, objects, presets);
 if (DEVTOOLS) {
   void import('./app/devtools').then((m) => m.installDevtools(app, terminal));
 }

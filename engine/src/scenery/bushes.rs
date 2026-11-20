@@ -3,6 +3,7 @@
 
 use super::asset::{unit, Asset, RngExt, UP};
 use super::colonize::{colonize, envelope_points, pipe_radii, smooth};
+use super::params::{p as param, ParamDesc, Values};
 use super::perlin::Perlin;
 use super::style::{Bark, Mat};
 use crate::math::Vec3;
@@ -65,9 +66,60 @@ fn preset(k: BushKind) -> Preset {
 }
 
 pub fn make_bush(seed: u32, kind: BushKind) -> Asset {
+    grow(seed, kind, preset(kind))
+}
+
+fn mid_u(r: (u32, u32)) -> f32 {
+    ((r.0 + r.1) as f32 / 2.0).round()
+}
+
+/// What can be changed on a bush (see `params`).
+pub fn bush_params(kind: BushKind) -> Vec<ParamDesc> {
+    let b = preset(kind);
+    let mut v = vec![
+        param("size", "size", 0.3, 3.0, 0.05, 1.0),
+        param("width", "width", 0.3, 2.5, 0.05, 1.0),
+        param("height", "height", 0.3, 2.5, 0.05, 1.0),
+        param("stems", "stems", 1.0, 12.0, 1.0, mid_u(b.stems)),
+        param("density", "branch density", 0.2, 2.5, 0.05, 1.0),
+        param("twig", "twig length", 0.5, 2.0, 0.05, 1.0),
+        param("leaves", "leaves per twig", 0.0, 8.0, 1.0, b.per as f32),
+        param("leaf_size", "leaf size", 0.4, 2.5, 0.05, 1.0),
+        param("upward", "upward growth", -0.2, 0.4, 0.01, b.trop),
+    ];
+    if let Some((_, prob)) = b.accent {
+        v.push(param("accents", "berries / blossoms", 0.0, 1.0, 0.01, prob));
+    }
+    v
+}
+
+/// A bush grown with parameter values (`params`).
+pub fn make_bush_with(seed: u32, kind: BushKind, v: &Values) -> Asset {
+    let mut p = preset(kind);
+    let m = v.get("size");
+    p.size = (p.size.0 * m, p.size.1 * m);
+    let (w, h) = (v.get("width"), v.get("height"));
+    p.shape = [p.shape[0] * w, p.shape[1] * h, p.shape[2] * w];
+    let st = v.get("stems");
+    if (st - mid_u(p.stems)).abs() > 1e-4 {
+        let n = st.round().max(1.0) as u32;
+        p.stems = (n, n);
+    }
+    p.att = ((p.att as f32 * v.get("density")) as usize).max(40);
+    p.d *= v.get("twig");
+    p.per = v.int("leaves") as usize;
+    let ls = v.get("leaf_size");
+    p.leaf_size = (p.leaf_size.0 * ls, p.leaf_size.1 * ls);
+    p.trop = v.get("upward");
+    if let Some((mats, _)) = p.accent {
+        p.accent = Some((mats, v.get("accents")));
+    }
+    grow(seed, kind, p)
+}
+
+fn grow(seed: u32, kind: BushKind, p: Preset) -> Asset {
     let mut rng = Pcg32::new(seed as u64, 0xb054);
     let noise = Perlin::new(seed as u64 + 5);
-    let p = preset(kind);
     let size = rng.uniform(p.size.0, p.size.1);
     let radii = Vec3::new(p.shape[0], p.shape[1], p.shape[2]) * (size / 2.0);
     let radii = Vec3::new(radii.x * rng.uniform(0.9, 1.1), radii.y * rng.uniform(0.9, 1.1), radii.z * rng.uniform(0.9, 1.1));

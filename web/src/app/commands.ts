@@ -15,6 +15,7 @@ import type { Undo } from './undo';
 import { AUTOSAVE, type SceneStore } from './scenes';
 import { KIND_MIXES, OBJECT_MODES, type ObjectMode, type ObjectTool } from './objecttool';
 import type { SelectTool } from './selecttool';
+import type { PresetStore } from './presets';
 import { statLines, statNames, statValue } from './stats';
 import { TEST_MODELS } from './models';
 import { parseCards, type Settings } from './settings';
@@ -40,6 +41,7 @@ export interface CommandContext {
   scenes: SceneStore;
   objects: ObjectTool;
   select: SelectTool;
+  presets: PresetStore;
   term: {
     aliases: Map<string, string>;
     binds: Map<string, string>;
@@ -552,6 +554,43 @@ const COMMANDS: Command[] = [
     },
   },
   {
+    name: 'param', group: 'map', usage: 'param [<name> <value> | reset]', help: 'generator parameters of the object brush\'s kind: list, set one, or reset',
+    run(_app, [name, value], io, ctx) {
+      const t = ctx.objects;
+      if (name === 'reset') t.resetParams();
+      else if (name !== undefined) wrap(() => t.setParam(name, num(value, name)));
+      const descs = t.paramDescs();
+      if (!descs.length) return io.print(`${t.kind} has no parameters`);
+      io.print(`${t.kind}:`, 'info');
+      for (const d of descs) {
+        const v = t.param(d.name);
+        io.print(`${d.name.padEnd(14)} ${(d.step >= 1 ? String(Math.round(v)) : v.toFixed(2)).padStart(6)}   ${d.min}..${d.max}${Math.abs(v - d.default) > 1e-6 ? `   (default ${d.default})` : ''}   ${d.label}`);
+      }
+    },
+  },
+  {
+    name: 'preset', group: 'map', usage: 'preset [save|load|delete] <name>', help: 'object brush presets: list, save the current kind and parameters, load, delete',
+    run(_app, [verb, ...rest], io, ctx) {
+      const name = rest.join(' ');
+      if (verb === 'save') {
+        const p = wrap(() => ctx.presets.save(name, ctx.objects.kind, ctx.objects.changedParams()));
+        io.print(`saved preset "${p.name}" (${p.kind}, ${Object.keys(p.values).length} changed parameters)`);
+      } else if (verb === 'load') {
+        const p = ctx.presets.get(name);
+        if (!p) throw new CommandError(`no preset "${name}"`);
+        wrap(() => ctx.objects.applyPreset(p));
+        io.print(`loaded preset "${p.name}": ${p.kind}`);
+      } else if (verb === 'delete') {
+        if (!ctx.presets.delete(name)) throw new CommandError(`no preset "${name}"`);
+        io.print(`deleted preset "${name}"`);
+      } else if (verb === undefined) {
+        const all = ctx.presets.list();
+        if (!all.length) return io.print('no presets yet (preset save <name>)');
+        for (const p of all) io.print(`${p.name.padEnd(24)} ${p.kind.padEnd(18)} ${Object.entries(p.values).map(([k, v]) => `${k}=${v}`).join(' ')}`);
+      } else throw new CommandError('preset save|load|delete <name>');
+    },
+  },
+  {
     name: 'select', group: 'map', usage: 'select [<id>|none]', help: 'select an object (select tool, V)',
     run(app, [id], io, ctx) {
       needWorld(app);
@@ -1037,6 +1076,8 @@ function argWords(app: App, cmd: string, ctx: CommandContext | null): string[] {
     case 'tool': return ['paint', 'objects', 'select', 'off'];
     case 'objbrush': return ['on', 'off', 'mode', 'size', 'density', 'spacing', 'variation', 'stroke', ...KIND_MIXES, ...(m?.objectKinds ?? [])];
     case 'select': return ['none'];
+    case 'param': return ['reset', ...(ctx?.objects.paramDescs().map((d) => d.name) ?? [])];
+    case 'preset': return ['save', 'load', 'delete'];
     case 'place': return m?.objectKinds ?? [];
     case 'scatter': return [...Object.keys(KIND_GROUPS), ...(m?.objectKinds ?? [])];
     case 'gallery': return GALLERY_CATEGORIES;
