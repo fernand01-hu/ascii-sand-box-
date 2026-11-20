@@ -21,6 +21,8 @@ import { PresetStore } from './app/presets';
 import { ParamPanel } from './ui/parampanel';
 import { HeightTool } from './app/heighttool';
 import { HeightPanel } from './ui/heightpanel';
+import { Dock } from './ui/dock';
+import { Toolbar } from './ui/toolbar';
 import { Settings } from './app/settings';
 import { Hud } from './ui/hud';
 import { Terminal } from './ui/terminal';
@@ -48,12 +50,18 @@ const height = new HeightTool(app, editor, undo, toolSwitch, settings);
 const scenes = new SceneStore(app, undo, settings);
 const presets = new PresetStore();
 const terminal = new Terminal(app, { debug, settings, cursor, tools, editor, brush, undo, scenes, objects, select, presets, height });
-new Hud(app, { debug, settings, terminal, editor, brush, undo, scenes, objects, select, height });
-new BrushPanel(app, brush);
-new ObjectPanel(app, objects);
-new SelectPanel(app, select);
-new ParamPanel(app, objects, presets);
-new HeightPanel(app, height);
+const hud = new Hud(app, { debug, settings, terminal, editor, brush, undo, scenes, objects, select, height });
+// The options sidebar holds each tool's panel; the toolbar switches tools.
+const dock = new Dock();
+new SelectPanel(app, select, dock.body);
+new BrushPanel(app, brush, dock.body);
+new ObjectPanel(app, objects, dock.body);
+new ParamPanel(app, objects, presets, dock.body);
+new HeightPanel(app, height, dock.body);
+new Toolbar(app, {
+  editor, brush, objects, select, height, undo, scenes, dock,
+  openMenu: () => hud.menu.open(), openTerminal: () => terminal.open(), flash: (t) => hud.flash(t),
+});
 if (DEVTOOLS) {
   void import('./app/devtools').then((m) => m.installDevtools(app, terminal));
 }

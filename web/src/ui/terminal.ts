@@ -66,7 +66,7 @@ export class Terminal {
   private lastLine = '';
 
   constructor(private app: App, ctx: Omit<CommandContext, 'term'>, root: HTMLElement = document.body) {
-    this.panel = new Panel({ title: 'terminal', hint: '` / F1 close · help', className: 'tui-terminal' }, root);
+    this.panel = new Panel({ title: 'terminal', hint: '` / F1 close · help', className: 'tui-terminal', movable: 'terminal' }, root);
     this.prompt = new TextInput({
       label: '>',
       labelWidth: 2,

@@ -87,3 +87,23 @@ export function seeded(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+
+export interface VaryRange {
+  min: number;
+  max: number;
+  /** 1 or more: a whole-number setting. */
+  step: number;
+}
+
+/**
+ * A random value round `base`: +- spread (0-1) of the base, or of half the
+ * range when the base is 0 (so a 0 setting can vary too); kept in range,
+ * rounded for whole-number settings.
+ */
+export function vary(base: number, spread: number, r: VaryRange, random: () => number): number {
+  if (spread <= 0) return base;
+  const amount = Math.abs(base) > 1e-6 ? Math.abs(base) * spread : ((r.max - r.min) / 2) * spread;
+  let v = base + (random() * 2 - 1) * amount;
+  v = Math.min(r.max, Math.max(r.min, v));
+  return r.step >= 1 ? Math.round(v) : v;
+}

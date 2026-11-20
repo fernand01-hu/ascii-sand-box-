@@ -17,7 +17,7 @@ import type { Editor } from './editor';
 import type { ParamInfo } from './map';
 import type { Preset } from './presets';
 import type { Settings } from './settings';
-import { pickKind, spacingFor, sprayDab, type SprayShape } from './spray';
+import { pickKind, spacingFor, sprayDab, vary, type SprayShape } from './spray';
 import type { ToolSwitch } from './tools';
 import type { Undo } from './undo';
 
@@ -40,6 +40,15 @@ export class ObjectTool {
   variation = 0.2;
   /** Generator parameter values per kind or mix ("tree:*"), by parameter name. */
   values: Record<string, Record<string, number>> = {};
+  /** How much each parameter varies per placed object (0-1 = +-0-100%), per kind or mix. */
+  spread: Record<string, Record<string, number>> = {};
+  /**
+   * Varied parameter sets for this stroke, per kind: objects pick from these
+   * few, so a sprayed forest varies without asking the engine to grow a
+   * brand new tree for every single one.
+   */
+  private pool = new Map<string, number[][]>();
+  static readonly POOL = 6;
   private stroke: { last: { x: number; z: number } } | null = null;
   private listeners = new Set<() => void>();
   private draw: DebugDraw;
@@ -91,6 +100,16 @@ export class ObjectTool {
       { name: 'objdensity', help: 'objects per 100 m^2 per dab', persist: true, get: () => String(this.density), set: (v) => this.set({ density: num(v, 'objdensity', 0.1, 200) }) },
       { name: 'objspacing', help: 'spacing factor (1 = each family\'s room)', persist: true, get: () => String(this.spacing), set: (v) => this.set({ spacing: num(v, 'objspacing', 0.2, 5) }) },
       { name: 'objvariation', help: 'random size spread (0-0.8)', persist: true, get: () => String(this.variation), set: (v) => this.set({ variation: num(v, 'objvariation', 0, 0.8) }) },
+      {
+        name: 'objspread', help: 'how much each parameter varies per object (JSON; use the panel or `param <name> ±<pct>`)', persist: true,
+        get: () => JSON.stringify(this.spread),
+        set: (v) => {
+          const x = JSON.parse(v) as unknown;
+          if (!x || typeof x !== 'object') throw new Error('objspread: a JSON object');
+          this.spread = x as Record<string, Record<string, number>>;
+          this.changed();
+        },
+      },
       {
         name: 'objparams', help: 'generator parameters per kind (JSON; use the panel or `param`)', persist: true,
         get: () => JSON.stringify(this.values),
@@ -144,7 +163,32 @@ export class ObjectTool {
 
   resetParams(): void {
     delete this.values[this.kind];
+    delete this.spread[this.kind];
     this.changed();
+  }
+
+  /** How much a parameter varies per object (0-1). */
+  spreadOf(name: string): number {
+    return this.spread[this.kind]?.[name] ?? 0;
+  }
+
+  setSpread(name: string, share: number): void {
+    if (!this.paramDescs().some((d) => d.name === name)) throw new Error(`${this.kind} has no parameter "${name}" (see: param)`);
+    (this.spread[this.kind] ??= {})[name] = Math.min(1, Math.max(0, share));
+    this.changed();
+  }
+
+  /** Give every parameter the same variation. */
+  setAllSpread(share: number): void {
+    const s: Record<string, number> = {};
+    for (const d of this.paramDescs()) s[d.name] = Math.min(1, Math.max(0, share));
+    this.spread[this.kind] = s;
+    this.changed();
+  }
+
+  /** Whether any parameter of the brush's kind varies. */
+  get varies(): boolean {
+    return Object.values(this.spread[this.kind] ?? {}).some((v) => v > 0);
   }
 
   /** The brush's parameter values that differ from the defaults, by name (for presets). */
@@ -160,15 +204,36 @@ export class ObjectTool {
   applyPreset(p: Preset): void {
     this.setKind(p.kind);
     this.values[p.kind] = { ...p.values };
+    if (p.spread) this.spread[p.kind] = { ...p.spread };
+    else delete this.spread[p.kind];
     this.changed();
   }
 
-  /** Parameter values for an object of kind `k` placed now (undefined = all defaults). */
+  /** The brush's variations that are on, by name (for presets). */
+  changedSpread(): Record<string, number> {
+    return Object.fromEntries(Object.entries(this.spread[this.kind] ?? {}).filter(([, v]) => v > 0));
+  }
+
+  /** The brush's base parameter values for kind `k` (undefined = all defaults). */
   paramsFor(k: string): number[] | undefined {
     const descs = this.app.map?.info.objectParams?.[k] ?? [];
     const set = this.values[this.kind] ?? {};
     const vals = descs.map((d) => (Number.isFinite(set[d.name]) ? Math.min(d.max, Math.max(d.min, set[d.name]!)) : d.default));
     return vals.some((v, i) => Math.abs(v - descs[i]!.default) > 1e-6) ? vals : undefined;
+  }
+
+  /** Parameters for one object of kind `k` placed now: the base values, varied from this stroke's pool. */
+  private placedParams(k: string): number[] | undefined {
+    if (!this.varies) return this.paramsFor(k);
+    let pool = this.pool.get(k);
+    if (!pool) this.pool.set(k, (pool = []));
+    if (pool.length < ObjectTool.POOL) {
+      const descs = this.app.map?.info.objectParams?.[k] ?? [];
+      const base = this.paramsFor(k) ?? descs.map((d) => d.default);
+      pool.push(descs.map((d, i) => vary(base[i]!, this.spreadOf(d.name), d, Math.random)));
+      return pool[pool.length - 1];
+    }
+    return pool[Math.floor(Math.random() * pool.length)];
   }
 
   /** The kinds the picker offers: the mixes, then every single kind. */
@@ -213,6 +278,7 @@ export class ObjectTool {
   begin(p: { x: number; z: number }): void {
     this.end();
     const label = this.mode === 'erase' ? 'erase objects' : this.mode === 'single' ? `place ${this.kind}` : `spray ${this.kind}`;
+    this.pool.clear(); // each stroke draws its own variety
     this.undo.begin(label);
     if (this.mode === 'single') {
       this.placeOne(p);
@@ -253,7 +319,7 @@ export class ObjectTool {
     const map = this.app.map;
     if (!map) return;
     const kind = pickKind(this.kind, map.info.objectKinds, Math.random);
-    map.addObject({ kind, x: p.x, z: p.z, yaw: Math.random() * Math.PI * 2, scale: this.randomScale(), seed: (Math.random() * 0xffff) | 0, params: this.paramsFor(kind) });
+    map.addObject({ kind, x: p.x, z: p.z, yaw: Math.random() * Math.PI * 2, scale: this.randomScale(), seed: (Math.random() * 0xffff) | 0, params: this.placedParams(kind) });
   }
 
   private randomScale(): number {
@@ -274,7 +340,7 @@ export class ObjectTool {
     const near = map.objectsNear(p.x, p.z, this.radius + 4 * Math.max(1, this.spacing)).map((o) => ({ x: o.x, z: o.z, spacing: spacingFor(o.kind, this.spacing) }));
     for (const q of sprayDab(p.x, p.z, { radius: this.radius, shape: this.shape, density: this.density, spacing: own }, near, Math.random)) {
       const kind = pickKind(this.kind, map.info.objectKinds, Math.random);
-      map.addObject({ kind, x: q.x, z: q.z, yaw: Math.random() * Math.PI * 2, scale: this.randomScale(), seed: (Math.random() * 0xffff) | 0, params: this.paramsFor(kind) });
+      map.addObject({ kind, x: q.x, z: q.z, yaw: Math.random() * Math.PI * 2, scale: this.randomScale(), seed: (Math.random() * 0xffff) | 0, params: this.placedParams(kind) });
     }
   }
 

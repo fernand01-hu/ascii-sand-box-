@@ -174,6 +174,85 @@
 .tui-preview canvas { display: block; width: 100%; height: 100%; }
 .tui-preview-info { padding: 0 1ch; white-space: pre; }
 
+.tui-spread { color: var(--tui-dim); cursor: pointer; white-space: pre; }
+.tui-spread-on { color: var(--tui-accent); }
+
+/* ---- movable windows, the options sidebar, the toolbar ---------------------- */
+
+.tui-handle {
+  pointer-events: auto;
+  cursor: move;
+  user-select: none;
+}
+
+.tui-dock {
+  right: 8px;
+  top: 14px;
+  bottom: 74px; /* above the toolbar and the status bar */
+  width: min(50ch, 42vw);
+  display: flex;
+  flex-direction: column;
+  padding-right: 0.5ch;
+}
+.tui-dock.tui-moved { bottom: auto; max-height: calc(100vh - 60px); }
+.tui-dock-close { cursor: pointer; }
+.tui-dock-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--tui-border) transparent;
+}
+.tui-dock-empty { padding: 0.6em 1ch; white-space: normal; }
+
+/* Tool panels inside the sidebar: sections, not floating boxes. */
+.tui-panel.tui-docked {
+  position: relative; /* its title is placed against it */
+  left: auto;
+  right: auto;
+  top: auto;
+  bottom: auto;
+  transform: none;
+  max-width: none;
+  width: auto;
+  margin: 1em 0 0.3em;
+  background: transparent;
+  border-style: solid;
+  border-width: 1px;
+}
+.tui-panel.tui-docked .tui-body { max-height: none; overflow: visible; }
+
+.tui-toolbar {
+  left: 50%;
+  bottom: 30px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.2ch;
+  padding: 0.25em 0.8ch;
+  white-space: nowrap;
+  max-width: calc(100vw - 16px);
+  overflow-x: auto;
+}
+.tui-toolbar .tui-grip { color: var(--tui-dim); padding-right: 0.8ch; font-size: 1.1em; }
+.tui-toolbar .tui-sep { color: var(--tui-border); padding: 0 0.4ch; }
+.tui-tool {
+  font: inherit;
+  color: var(--tui-fg);
+  background: transparent;
+  border: 0;
+  padding: 0.05em 0.6ch;
+  cursor: pointer;
+}
+.tui-tool .tui-key { color: var(--tui-accent); }
+.tui-tool:hover { background: var(--tui-select); }
+.tui-tool:disabled { color: var(--tui-dim); cursor: default; }
+.tui-tool:disabled .tui-key { color: var(--tui-dim); }
+/* The tool that is on: reverse video (the button's own transparent background must not win). */
+.tui-tool.tui-sel { background: var(--tui-fg); color: var(--tui-bg); }
+.tui-tool.tui-sel .tui-key { color: var(--tui-bg) !important; }
+
 /* ---- status bar ------------------------------------------------------------ */
 
 .tui-status {
@@ -242,7 +321,8 @@
 
 .tui-perf {
   top: 14px; /* room for the title set into the top border */
-  right: 8px;
+  left: 50%;
+  transform: translateX(-50%); /* top centre: the options sidebar is on the right */
   max-width: calc(100vw - 16px);
   white-space: pre;
   pointer-events: none;
@@ -311,6 +391,7 @@
   .tui { font-size: 11px; }
   .tui-terminal { left: 4px; right: 4px; bottom: 26px; }
   .tui-status .tui-name { display: none; }
-  .tui-perf { top: 12px; right: 4px; }
+  .tui-perf { top: 12px; }
+  .tui-dock { width: calc(100vw - 8px); right: 4px; bottom: 70px; }
   .tui-infobox { top: 12px; left: 4px; }
 }

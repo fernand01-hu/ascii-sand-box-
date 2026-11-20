@@ -8,6 +8,8 @@ export interface Preset {
   /** "tree:birch" or a mix like "tree:*". */
   kind: string;
   values: Record<string, number>;
+  /** How much each parameter varies per object (0-1), if any. */
+  spread?: Record<string, number>;
 }
 
 export class PresetStore {
@@ -33,10 +35,10 @@ export class PresetStore {
     return this.list().find((p) => p.name === name);
   }
 
-  save(name: string, kind: string, values: Record<string, number>): Preset {
+  save(name: string, kind: string, values: Record<string, number>, spread?: Record<string, number>): Preset {
     const n = name.trim();
     if (!/^[\w][\w .-]{0,39}$/.test(n)) throw new Error('a preset name is 1-40 letters, digits, spaces, dots, dashes or underscores');
-    const p: Preset = { name: n, kind, values: { ...values } };
+    const p: Preset = { name: n, kind, values: { ...values }, ...(spread && Object.keys(spread).length ? { spread: { ...spread } } : {}) };
     this.write([...this.list().filter((x) => x.name !== n), p]);
     return p;
   }

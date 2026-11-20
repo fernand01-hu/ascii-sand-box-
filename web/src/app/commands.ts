@@ -559,17 +559,21 @@ const COMMANDS: Command[] = [
     },
   },
   {
-    name: 'param', group: 'map', usage: 'param [<name> <value> | reset]', help: 'generator parameters of the object brush\'s kind: list, set one, or reset',
+    name: 'param', group: 'map', usage: 'param [<name> <value> | <name> ±<pct> | vary <pct> | reset]',
+    help: 'generator parameters of the object brush\'s kind: list, set a base value, set how much it varies per object (±20), vary all, or reset',
     run(_app, [name, value], io, ctx) {
       const t = ctx.objects;
       if (name === 'reset') t.resetParams();
+      else if (name === 'vary') t.setAllSpread(num(value, 'vary %', 0, 100) / 100);
+      else if (name !== undefined && value?.startsWith('±')) wrap(() => t.setSpread(name, num(value.slice(1), `${name} ±%`, 0, 100) / 100));
       else if (name !== undefined) wrap(() => t.setParam(name, num(value, name)));
       const descs = t.paramDescs();
       if (!descs.length) return io.print(`${t.kind} has no parameters`);
       io.print(`${t.kind}:`, 'info');
       for (const d of descs) {
         const v = t.param(d.name);
-        io.print(`${d.name.padEnd(14)} ${(d.step >= 1 ? String(Math.round(v)) : v.toFixed(2)).padStart(6)}   ${d.min}..${d.max}${Math.abs(v - d.default) > 1e-6 ? `   (default ${d.default})` : ''}   ${d.label}`);
+        const sp = t.spreadOf(d.name);
+        io.print(`${d.name.padEnd(14)} ${(d.step >= 1 ? String(Math.round(v)) : v.toFixed(2)).padStart(6)}${sp > 0 ? ` ±${Math.round(sp * 100)}%`.padEnd(6) : '      '}   ${d.min}..${d.max}${Math.abs(v - d.default) > 1e-6 ? `   (default ${d.default})` : ''}   ${d.label}`);
       }
     },
   },
@@ -578,7 +582,7 @@ const COMMANDS: Command[] = [
     run(_app, [verb, ...rest], io, ctx) {
       const name = rest.join(' ');
       if (verb === 'save') {
-        const p = wrap(() => ctx.presets.save(name, ctx.objects.kind, ctx.objects.changedParams()));
+        const p = wrap(() => ctx.presets.save(name, ctx.objects.kind, ctx.objects.changedParams(), ctx.objects.changedSpread()));
         io.print(`saved preset "${p.name}" (${p.kind}, ${Object.keys(p.values).length} changed parameters)`);
       } else if (verb === 'load') {
         const p = ctx.presets.get(name);
@@ -1108,7 +1112,7 @@ function argWords(app: App, cmd: string, ctx: CommandContext | null): string[] {
     case 'height': return ['on', 'off', ...HEIGHT_MODES, 'size', 'strength', 'stroke', 'at'];
     case 'objbrush': return ['on', 'off', 'mode', 'size', 'density', 'spacing', 'variation', 'stroke', ...KIND_MIXES, ...(m?.objectKinds ?? [])];
     case 'select': return ['none'];
-    case 'param': return ['reset', ...(ctx?.objects.paramDescs().map((d) => d.name) ?? [])];
+    case 'param': return ['reset', 'vary', ...(ctx?.objects.paramDescs().map((d) => d.name) ?? [])];
     case 'preset': return ['save', 'load', 'delete'];
     case 'place': return m?.objectKinds ?? [];
     case 'scatter': return [...Object.keys(KIND_GROUPS), ...(m?.objectKinds ?? [])];

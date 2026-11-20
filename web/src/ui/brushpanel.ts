@@ -11,7 +11,7 @@ export class BrushPanel {
   readonly panel: Panel;
 
   constructor(app: App, brush: BrushTool, root: HTMLElement = document.body) {
-    this.panel = new Panel({ title: 'brush', hint: 'P close', className: 'tui-brush', modal: false }, root);
+    this.panel = new Panel({ title: 'brush', hint: 'P close', className: 'tui-brush tui-paint', modal: false, docked: true }, root);
     const kinds = ['canvas', ...PAINT_KEYS];
     // One checkbox per paint, acting as radio buttons.
     const paints = kinds.map((k) => {

@@ -14,6 +14,7 @@
 // panel is open, nothing else (dev hotkeys) sees the keys it handles, and
 // `panelOpen()` tells others to stay quiet.
 
+import { makeMovable } from './drag';
 import './tui.css';
 
 /** One row of a panel. */
@@ -92,6 +93,10 @@ export interface PanelOptions {
    * with whatever handles them (e.g. the brush's root keys).
    */
   modal?: boolean;
+  /** Drag it by its title (the id names it in the saved layout). */
+  movable?: string;
+  /** Lives inside the options sidebar instead of floating. */
+  docked?: boolean;
 }
 
 /** A box with a title in its top border and rows of widgets. */
@@ -102,11 +107,13 @@ export class Panel {
   private focusIndex = -1;
 
   constructor(private opts: PanelOptions, root: HTMLElement = document.body) {
-    this.el = div(`tui tui-box tui-panel ${opts.className ?? ''}`.trim());
+    this.el = div(`tui tui-box tui-panel ${opts.docked ? 'tui-docked ' : ''}${opts.className ?? ''}`.trim());
     this.el.hidden = true;
     this.el.setAttribute('role', 'dialog');
     this.el.setAttribute('aria-label', opts.title);
-    this.el.append(div('tui-title', opts.title));
+    const title = div('tui-title', opts.title);
+    this.el.append(title);
+    if (opts.movable) makeMovable(this.el, title, opts.movable);
     if (opts.hint) this.el.append(div('tui-hint', opts.hint));
     this.body = div('tui-body');
     this.el.append(this.body);

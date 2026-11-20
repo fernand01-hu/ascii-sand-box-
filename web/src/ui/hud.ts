@@ -69,7 +69,7 @@ export class Hud {
     // ---- status bar
     this.status = document.createElement('div');
     this.status.className = 'tui tui-status';
-    this.status.innerHTML = '<span class="tui-name">ASCII SANDBOX</span><span class="tui-info"></span><span class="tui-warn" hidden></span><span class="tui-fps"></span><span class="tui-keys"><b>[Esc]</b> menu <b>[?]</b> help <b>[`]</b> terminal</span>';
+    this.status.innerHTML = '<span class="tui-name">ASCII SANDBOX</span><span class="tui-info"></span><span class="tui-warn" hidden></span><span class="tui-fps"></span><span class="tui-keys"><b>[Tab]</b> options <b>[Esc]</b> menu <b>[?]</b> help</span>';
     this.info = this.status.querySelector('.tui-info')!;
     this.fps = this.status.querySelector('.tui-fps')!;
     this.warn = this.status.querySelector('.tui-warn')!;
@@ -86,7 +86,7 @@ export class Hud {
     root.appendChild(this.status);
 
     // ---- menu
-    this.menu = new Panel({ title: 'menu', hint: 'Esc close', className: 'tui-center tui-menu' }, root);
+    this.menu = new Panel({ title: 'menu', hint: 'Esc close', className: 'tui-center tui-menu', movable: 'menu' }, root);
     this.menu.add(new List([
       { label: 'Brush (paint the ground)', key: 'b', run: () => { this.menu.close(); brush.setActive(!brush.active); } },
       { label: 'Object brush (trees, rocks...)', key: 'o', run: () => { this.menu.close(); objects.setActive(!objects.active); } },
@@ -169,7 +169,7 @@ export class Hud {
       budget.set(budgetIndex());
       fps.set(this.showFps);
     };
-    this.settings = new Panel({ title: 'settings', hint: 'Esc back', className: 'tui-center tui-settings', onOpen: sync }, root);
+    this.settings = new Panel({ title: 'settings', hint: 'Esc back', className: 'tui-center tui-settings', onOpen: sync, movable: 'settings' }, root);
     this.settings.add(
       new Text('world', 'tui-head'), seed, day, view,
       new Text('weather', 'tui-head'), wind, rain, leaves,
@@ -193,16 +193,16 @@ export class Hud {
       speed.set(app.viewer.clockRate);
       stream.set(!!app.world?.frozen);
     };
-    this.debugPanel = new Panel({ title: 'debug', hint: 'Esc back', className: 'tui-center tui-debug', onOpen: syncDebug }, root);
+    this.debugPanel = new Panel({ title: 'debug', hint: 'Esc back', className: 'tui-center tui-debug', onOpen: syncDebug, movable: 'debug' }, root);
     this.debugPanel.add(new Text('overlays', 'tui-head'), ...checks, new Text('world', 'tui-head'), speed, stream,
       new Text('all of these also work from the terminal: debug, set, help', 'tui-dim'));
     debug.onChange(() => { if (this.debugPanel.isOpen) syncDebug(); });
 
     // ---- save / load: rebuilt each time it opens (the list of scenes changes)
-    this.filePanel = new Panel({ title: 'scenes', hint: 'Esc back', className: 'tui-center tui-file', onOpen: () => this.fillFilePanel(scenes) }, root);
+    this.filePanel = new Panel({ title: 'scenes', hint: 'Esc back', className: 'tui-center tui-file', onOpen: () => this.fillFilePanel(scenes), movable: 'scenes' }, root);
 
     // ---- help
-    this.help = new Panel({ title: 'help', hint: 'Esc back', className: 'tui-center tui-help' }, root);
+    this.help = new Panel({ title: 'help', hint: 'Esc back', className: 'tui-center tui-help', movable: 'help' }, root);
     for (const [k, v] of [
       ['mouse drag', 'orbit round the view'],
       ['wheel', 'zoom'],
@@ -219,6 +219,8 @@ export class Hud {
       ['Ctrl+Z / Ctrl+Y', 'undo / redo (also Ctrl+Shift+Z)'],
       ['Ctrl+S', 'save the scene (menu: Save / load)'],
       ['Esc', 'menu / close a panel'],
+      ['Tab', 'show / hide the options sidebar'],
+      ['drag a title', 'move a window (double-click: put it back)'],
       ['Up / Down', 'move in a panel'],
       ['Left / Right', 'change a slider'],
       ['Space / Enter', 'toggle / apply'],
