@@ -208,7 +208,14 @@ export class WorldStreamer implements Ground {
           const keep = 0.6 * reach;
           const [bx, by, bz] = have.data.eye;
           const fromBuilt = Math.hypot(bx - nx, by - g0, bz - nz);
-          if (a < keep && fromBuilt + (keep - a) > FINE_REACH * have.near) {
+          // The engine also spreads rows apart where the view grazes the
+          // ground (by distance / eye height, from its build eye): ground
+          // now at the walker's feet, built while it lay far off, would show
+          // sparse lines. Rebuild once it is spread much more than needed.
+          const spread = (d: number, h: number) => Math.max(d / Math.max(h, 0.5), 2.8);
+          const spreadBuilt = spread(Math.hypot(bx - nx, bz - nz), by - g0);
+          const spreadNow = spread(Math.hypot(eye.x - nx, eye.z - nz), eye.y - g0);
+          if (a < keep && (fromBuilt + (keep - a) > FINE_REACH * have.near || spreadBuilt > 1.3 * spreadNow)) {
             want.push({ cx, cz, prio: -3e6 + a, reason: 'near' });
             continue;
           }
