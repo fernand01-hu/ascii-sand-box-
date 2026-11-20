@@ -1130,6 +1130,22 @@ try {
       await new Promise((r) => setTimeout(r, 2500));
       assert.equal(await page.evaluate(() => window.__ascii.app.viewer.cards.outgoing.length), 0, 'faded glyphs are freed');
       assert.match((await run('lod')).join('\n'), /kept/);
+      // A new object glyph where none was (a face hidden from the old build
+      // eye) shows at once; one replacing nearby glyphs fades in.
+      const faces = await page.evaluate(() => {
+        const cards = window.__ascii.app.viewer.cards;
+        const card = (x, glyph) => [x, 1, 0, 0.3, 0, 0, 0, 0.5, 0, 1, 1, 1, 1, 1024 + glyph, 1, 1];
+        cards.replaceSet('face-probe', new Float32Array(card(0, 3)), 16, undefined, 0);
+        cards.replaceSet('face-probe', new Float32Array([...card(0.1, 4), ...card(6, 5)]), 16, undefined, 0.8, [0, 1, 10]);
+        const f = cards.sets.get('face-probe')[0].mesh.geometry.getAttribute('iFade').array;
+        const res = { nearby: f[0], empty: f[4] };
+        cards.removeSet('face-probe');
+        for (const o of cards.outgoing.filter((o) => o.key.startsWith('face-probe'))) cards.removeSet(o.key);
+        cards.outgoing = cards.outgoing.filter((o) => !o.key.startsWith('face-probe'));
+        return res;
+      });
+      assert.ok(faces.nearby > 0, 'a glyph next to old ones fades in');
+      assert.equal(faces.empty, -1e9, 'a glyph on an empty face shows at once');
       // Freeze: moving no longer rebuilds for detail.
       await run('lod freeze on; lod reset; cam 0 6 60 0 2 -30');
       await new Promise((r) => setTimeout(r, 2500));
