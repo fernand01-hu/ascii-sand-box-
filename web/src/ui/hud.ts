@@ -9,6 +9,7 @@ import type { App } from '../app/app';
 import { DEBUG_OPTIONS, type DebugState } from '../app/debug';
 import { SNAP_STEPS, type Editor } from '../app/editor';
 import type { BrushTool } from '../app/brushtool';
+import type { Undo } from '../app/undo';
 import type { Settings } from '../app/settings';
 import type { Terminal } from './terminal';
 import { addRootKeys, Checkbox, List, Panel, Slider, Text, TextInput } from './widgets';
@@ -19,6 +20,7 @@ export interface HudDeps {
   terminal: Terminal;
   editor: Editor;
   brush: BrushTool;
+  undo: Undo;
 }
 
 /** Card budget steps: 0 = no budget. */
@@ -34,11 +36,14 @@ export class Hud {
   private warn: HTMLSpanElement;
   private editor: Editor;
   private brush: BrushTool;
+  private flashText = '';
+  private flashTimer = 0;
   private info: HTMLSpanElement;
   private fps: HTMLSpanElement;
 
   constructor(private app: App, deps: HudDeps, root: HTMLElement = document.body) {
-    const { debug, settings, terminal, editor, brush } = deps;
+    const { debug, settings, terminal, editor, brush, undo } = deps;
+    undo.onApplied((verb, a) => this.flash(`${verb}: ${a.label}`));
     this.editor = editor;
     this.brush = brush;
     brush.onChange(() => this.refresh());
@@ -65,6 +70,8 @@ export class Hud {
     this.menu = new Panel({ title: 'menu', hint: 'Esc close', className: 'tui-center tui-menu' }, root);
     this.menu.add(new List([
       { label: 'Brush (paint the ground)', key: 'b', run: () => { this.menu.close(); brush.setActive(!brush.active); } },
+      { label: 'Undo (Ctrl+Z)', key: 'u', run: () => undo.undo() },
+      { label: 'Redo (Ctrl+Y)', key: 'r', run: () => undo.redo() },
       { label: 'Settings', key: 's', run: () => this.settings.open() },
       { label: 'Debug', key: 'd', run: () => this.debugPanel.open() },
       { label: 'Terminal', key: 't', run: () => { this.menu.close(); terminal.open(); } },
@@ -180,6 +187,7 @@ export class Hud {
       ['P', 'brush: left drag paints'],
       ['1-4 / E', 'brush paint: grass sand water rock / eraser'],
       ['[ / ]', 'smaller / bigger brush'],
+      ['Ctrl+Z / Ctrl+Y', 'undo / redo (also Ctrl+Shift+Z)'],
       ['Esc', 'menu / close a panel'],
       ['Up / Down', 'move in a panel'],
       ['Left / Right', 'change a slider'],
@@ -199,6 +207,17 @@ export class Hud {
     window.setInterval(() => this.refresh(), 500);
   }
 
+  /** Show a short message in the status bar for a few seconds. */
+  flash(text: string): void {
+    this.flashText = text;
+    clearTimeout(this.flashTimer);
+    this.flashTimer = window.setTimeout(() => {
+      this.flashText = '';
+      this.refresh();
+    }, 3000);
+    this.refresh();
+  }
+
   /** Update the status bar text. */
   refresh(): void {
     const a = this.app, s = a.state, w = s.weather;
@@ -209,7 +228,9 @@ export class Hud {
       : '';
     const where = a.world ? `canvas ${a.canvasOptions.seed} · ${a.canvasOptions.day ? 'day' : 'dusk'}${edit}` : s.model || '…';
     const status = s.status === 'loading' ? ' · loading' : s.status === 'error' ? ' · error' : '';
-    this.info.textContent = `${where}${status} │ wind ${w.wind.toFixed(2)} rain ${w.rain > 0 ? w.rain.toFixed(2) : 'off'} leaves ${w.leaves.toFixed(2)}`;
+    this.info.textContent = this.flashText
+      ? `${where} │ ${this.flashText}`
+      : `${where}${status} │ wind ${w.wind.toFixed(2)} rain ${w.rain > 0 ? w.rain.toFixed(2) : 'off'} leaves ${w.leaves.toFixed(2)}`;
     const f = a.viewer.stats.fps;
     this.fps.textContent = this.showFps ? `${f > 0 ? f.toFixed(f < 10 ? 1 : 0) : 'idle'} fps` : '';
     this.fps.className = `tui-fps ${f === 0 || f >= 30 ? 'tui-ok' : f >= 20 ? 'tui-echo' : 'tui-err'}`;

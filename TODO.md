@@ -217,10 +217,21 @@ next one.
   - [x] **(added)** Unit tests for the brush maths (`npm run test:unit`,
     part of `npm test`).
 
-- [ ] **8. (added) Undo / redo.**
-  - An editor without undo is painful to use. Record each brush stroke as one
-    undoable action, including the list of chunks it touched.
-  - It is cheap if you add it now and hard to add once the brush code grows.
+- [x] **8. (added) Undo / redo.** (Done on `step-08-undo`.)
+  - [x] `Ctrl+Z` undoes, `Ctrl+Y` / `Ctrl+Shift+Z` redoes (Cmd on a Mac).
+    In a text field (the terminal) they keep their usual text meaning.
+  - [x] The map reports every edit (tiles with old and new codes, objects
+    added or removed), so every change is undoable: brush strokes,
+    `place`, `remove`, `scatter`, `fill`, `paint`, even `clearmap`.
+    Objects come back with their id.
+  - [x] One brush stroke is one action, labelled with what it did ("paint
+    sand (312 tiles)"). One terminal line is one action too. Only the
+    chunks an undo touches are rebuilt.
+  - [x] Terminal `undo [n]`, `redo [n]`, `history`; Undo / Redo in the
+    menu; the status bar says what was undone.
+  - [x] Limits: 500 actions or 2 million tile changes. The oldest go first.
+  - [x] Unit tests for the history and the map's edit records
+    (`npm run test:unit`).
 
 - [ ] **9. Save / load scenes.**
   - Save the recipe, not the generated cards: terrain tiles plus a list of

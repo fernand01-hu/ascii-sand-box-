@@ -11,6 +11,7 @@ import { DEBUG_OPTIONS } from './debug';
 import type { DebugTools } from './debugtools';
 import { SNAP_STEPS, type Editor } from './editor';
 import type { BrushTool } from './brushtool';
+import type { Undo } from './undo';
 import { statLines, statNames, statValue } from './stats';
 import { TEST_MODELS } from './models';
 import { parseCards, type Settings } from './settings';
@@ -31,6 +32,7 @@ export interface CommandContext {
   tools: DebugTools;
   editor: Editor;
   brush: BrushTool;
+  undo: Undo;
   term: {
     aliases: Map<string, string>;
     binds: Map<string, string>;
@@ -573,7 +575,35 @@ const COMMANDS: Command[] = [
     },
   },
   {
-    name: 'clearmap', group: 'map', usage: 'clearmap yes', help: 'wipe every edit (paint and objects); needs "yes"',
+    name: 'undo', group: 'map', usage: 'undo [n]', help: 'undo the last change (or n of them); also Ctrl+Z',
+    run(_app, [n], io, ctx) {
+      const done = ctx.undo.undo(n === undefined ? 1 : num(n, 'n', 1, 500));
+      io.print(done.length ? done.map((a) => `undone: ${a.label}`).join('\n') : 'nothing to undo');
+    },
+  },
+  {
+    name: 'redo', group: 'map', usage: 'redo [n]', help: 'redo what was undone (or n of them); also Ctrl+Y',
+    run(_app, [n], io, ctx) {
+      const done = ctx.undo.redo(n === undefined ? 1 : num(n, 'n', 1, 500));
+      io.print(done.length ? done.map((a) => `redone: ${a.label}`).join('\n') : 'nothing to redo');
+    },
+  },
+  {
+    name: 'history', group: 'map', usage: 'history', help: 'what can be undone and redone',
+    run(_app, _x, io, ctx) {
+      const h = ctx.undo.history;
+      if (!h) return io.print('no history yet (show the canvas)');
+      const { undo, redo } = h.list();
+      if (!undo.length && !redo.length) return io.print('nothing to undo or redo');
+      const show = undo.slice(-15);
+      if (undo.length > show.length) io.print(`... ${undo.length - show.length} older`, 'dim');
+      show.forEach((l, i) => io.print(`${String(undo.length - show.length + i + 1).padStart(3)}  ${l}${i === show.length - 1 ? '   <- Ctrl+Z undoes this' : ''}`));
+      for (const l of redo.slice(0, 5)) io.print(`  +  ${l} (undone, Ctrl+Y redoes)`, 'dim');
+      io.print(`limits: ${h.maxActions} actions, ${h.maxSize.toLocaleString()} tile changes`, 'dim');
+    },
+  },
+  {
+    name: 'clearmap', group: 'map', usage: 'clearmap yes', help: 'wipe every edit (paint and objects); needs "yes" (undo brings it back)',
     run(app, [yes], io) {
       const { map: m } = needWorld(app);
       if (yes !== 'yes') throw new CommandError(`this removes ${m.objectCount} objects and the paint of ${m.editedChunks} chunks; type: clearmap yes`);

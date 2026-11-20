@@ -41,6 +41,7 @@ export class BrushPanel {
       new Text('paint', 'tui-head'), ...paints,
       new Text('brush', 'tui-head'), size, square, strength, soft,
       new Text('left drag paints · right drag pans', 'tui-dim'),
+      new Text('Ctrl+Z undo · Ctrl+Y redo', 'tui-dim'),
     );
     const sync = () => {
       kinds.forEach((k, i) => paints[i]!.set(brush.kind === k));

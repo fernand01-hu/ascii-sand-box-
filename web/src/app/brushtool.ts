@@ -40,6 +40,8 @@ export class BrushTool implements BrushOptions {
   private listeners = new Set<() => void>();
   private strokeListeners = new Set<(s: Stroke) => void>();
   private draw: DebugDraw;
+  /** Set by the undo history: each stroke becomes one undoable action. */
+  group: { begin(label: string): void; end(label?: string): void } | null = null;
 
   constructor(private app: App, private editor: Editor, settings: Settings) {
     this.draw = new DebugDraw(app.viewer.overlay);
@@ -162,6 +164,7 @@ export class BrushTool implements BrushOptions {
   /** Start a stroke at p (one dab there). */
   begin(p: { x: number; z: number }): void {
     this.end();
+    this.group?.begin(this.kind === 'canvas' ? 'erase' : `paint ${this.kind}`);
     this.stroking = { seed: (Math.random() * 0x7fffffff) | 0, last: p, changes: [] };
     this.dab(p);
   }
@@ -179,7 +182,10 @@ export class BrushTool implements BrushOptions {
   end(): Stroke | null {
     const s = this.stroking;
     this.stroking = null;
-    if (!s || s.changes.length === 0) return null;
+    if (!s) return null;
+    const n = s.changes.length;
+    this.group?.end(n ? `${this.kind === 'canvas' ? 'erase' : `paint ${this.kind}`} (${n} tiles)` : undefined);
+    if (n === 0) return null;
     const stroke = { kind: this.kind, changes: s.changes };
     for (const f of this.strokeListeners) f(stroke);
     return stroke;
