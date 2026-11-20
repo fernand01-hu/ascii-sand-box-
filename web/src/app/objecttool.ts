@@ -287,14 +287,15 @@ export class ObjectTool {
       }
       return;
     }
-    const y = this.app.world.info.ground + 0.1, l = new Lines();
+    const map = this.app.map, g = this.app.world.info.ground, l = new Lines();
+    const yAt = (x: number, z: number) => g + (map ? map.heightAt(x, z) : 0), piece = map?.hasHeights ? 0.5 : Infinity;
     const col = this.mode === 'erase' ? COLORS.dirty : COLORS.edited;
     if (this.mode === 'single') {
-      l.seg(p.x - 0.6, y, p.z, p.x + 0.6, y, p.z, col);
-      l.seg(p.x, y, p.z - 0.6, p.x, y, p.z + 0.6, col);
-      l.circle(p.x, y, p.z, spacingFor(this.kind, this.spacing) / 2, col, 24);
-    } else if (this.shape === 'square') l.box(p.x - this.radius, y, p.z - this.radius, p.x + this.radius, y, p.z + this.radius, col);
-    else l.circle(p.x, y, p.z, this.radius, col, 48);
+      l.drape(p.x - 0.6, p.z, p.x + 0.6, p.z, col, yAt, 0.1, piece);
+      l.drape(p.x, p.z - 0.6, p.x, p.z + 0.6, col, yAt, 0.1, piece);
+      l.circleOn(p.x, p.z, spacingFor(this.kind, this.spacing) / 2, col, yAt, 0.1, 24);
+    } else if (this.shape === 'square') l.squareOn(p.x, p.z, this.radius, col, yAt, 0.1, piece);
+    else l.circleOn(p.x, p.z, this.radius, col, yAt, 0.1, 48);
     this.draw.set('tiles', l);
     this.app.viewer.requestRender();
   }

@@ -180,7 +180,8 @@ export class SelectTool {
     }
     const g = this.app.world.info.ground, l = new Lines(), b = this.box(o);
     if (b) l.box(b[0]!, b[1]!, b[2]!, b[3]!, b[4]!, b[5]!, COLORS.marker);
-    l.circle(o.x, g + 0.08, o.z, this.footprint(o), COLORS.marker, 32);
+    const map = this.app.map;
+    l.circleOn(o.x, o.z, this.footprint(o), COLORS.marker, (x, z) => g + (map ? map.heightAt(x, z) : 0), 0.08, 32);
     this.draw.set('outlines', l);
     this.app.viewer.requestRender();
   }

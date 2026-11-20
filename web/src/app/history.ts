@@ -154,13 +154,14 @@ export class History<E> {
 // ---- the map's undo rules ------------------------------------------------------
 
 /** Undo / redo map edits: tiles back to their old codes, objects removed or put back. */
-export function mapApplier(map: Pick<MapData, 'setTiles' | 'removeObject' | 'restoreObject'>): Applier<MapEdit> {
+export function mapApplier(map: Pick<MapData, 'setTiles' | 'setHeights' | 'removeObject' | 'restoreObject'>): Applier<MapEdit> {
   return {
     undo(edits) {
       for (let k = edits.length - 1; k >= 0; k--) {
         const e = edits[k]!;
         for (const o of e.added ?? []) map.removeObject(o.id);
         if (e.tiles?.length) map.setTiles([...e.tiles].reverse().map((c) => ({ gi: c.gi, gj: c.gj, code: c.from })));
+        if (e.heights?.length) map.setHeights([...e.heights].reverse().map((c) => ({ vi: c.vi, vj: c.vj, h: c.from })));
         for (const o of e.removed ?? []) map.restoreObject(o);
       }
     },
@@ -168,6 +169,7 @@ export function mapApplier(map: Pick<MapData, 'setTiles' | 'removeObject' | 'res
       for (const e of edits) {
         for (const o of e.removed ?? []) map.removeObject(o.id);
         if (e.tiles?.length) map.setTiles(e.tiles.map((c) => ({ gi: c.gi, gj: c.gj, code: c.to })));
+        if (e.heights?.length) map.setHeights(e.heights.map((c) => ({ vi: c.vi, vj: c.vj, h: c.to })));
         for (const o of e.added ?? []) map.restoreObject(o);
       }
     },
@@ -175,7 +177,7 @@ export function mapApplier(map: Pick<MapData, 'setTiles' | 'removeObject' | 'res
 }
 
 export function mapEditSize(e: MapEdit): number {
-  return (e.tiles?.length ?? 0) + (e.added?.length ?? 0) + (e.removed?.length ?? 0);
+  return (e.tiles?.length ?? 0) + (e.heights?.length ?? 0) + (e.added?.length ?? 0) + (e.removed?.length ?? 0);
 }
 
 export function mapEditLabel(e: MapEdit): string {
@@ -183,6 +185,7 @@ export function mapEditLabel(e: MapEdit): string {
   if (e.removed?.length === 1 && !e.tiles?.length && !e.added?.length) return `remove ${e.removed[0]!.kind}`;
   const parts: string[] = [];
   if (e.tiles?.length) parts.push(`${e.tiles.length} tiles`);
+  if (e.heights?.length) parts.push(`${e.heights.length} height points`);
   if (e.added?.length) parts.push(`+${e.added.length} objects`);
   if (e.removed?.length) parts.push(`-${e.removed.length} objects`);
   return parts.join(', ') || 'edit';

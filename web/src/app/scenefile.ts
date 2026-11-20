@@ -4,11 +4,13 @@
 // Ground paints are stored by name, so files keep working if paints are
 // added or reordered later. `version` says how to read the rest: a newer
 // file than this code understands is refused with a clear message.
+//   version 1: chunks hold paint
+//   version 2: chunks hold paint and/or ground heights (centimetres)
 //
 // No runtime imports, so it can be unit-tested with node --test.
 
 export const SCENE_FORMAT = 'ascii-sandbox-scene';
-export const SCENE_VERSION = 1;
+export const SCENE_VERSION = 2;
 
 export interface SceneObject {
   id: number;
@@ -36,7 +38,9 @@ export interface SceneFile {
   tiles: number;
   /** Ground paint names; the tile bytes index into this list. */
   grounds: string[];
-  chunks: { cx: number; cz: number; tiles: string }[];
+  /** Height points per chunk side (1 m apart), version 2+. */
+  heightPoints?: number;
+  chunks: { cx: number; cz: number; tiles?: string; heights?: string }[];
   objects: SceneObject[];
 }
 
@@ -79,6 +83,37 @@ export function decodeTiles(s: string, length: number): Uint8Array {
   return out;
 }
 
+// ---- height coding: centimetres as little-endian int16, then base64 -------------
+
+export function encodeHeights(h: Float32Array): string {
+  const bytes = new Uint8Array(h.length * 2);
+  h.forEach((v, i) => {
+    const c = Math.max(-32768, Math.min(32767, Math.round(v * 100)));
+    bytes[i * 2] = c & 0xff;
+    bytes[i * 2 + 1] = (c >> 8) & 0xff;
+  });
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+export function decodeHeights(s: string, length: number): Float32Array {
+  let bin: string;
+  try {
+    bin = atob(s);
+  } catch {
+    throw new SceneError('a chunk\'s heights are not valid base64');
+  }
+  if (bin.length !== length * 2) throw new SceneError('a chunk\'s heights have the wrong size');
+  const out = new Float32Array(length);
+  for (let i = 0; i < length; i++) {
+    let c = bin.charCodeAt(i * 2) | (bin.charCodeAt(i * 2 + 1) << 8);
+    if (c & 0x8000) c -= 0x10000;
+    out[i] = c / 100;
+  }
+  return out;
+}
+
 // ---- building and reading -----------------------------------------------------
 
 export interface SceneContent {
@@ -88,7 +123,9 @@ export interface SceneContent {
   chunkSize: number;
   tiles: number;
   grounds: string[];
-  chunks: { cx: number; cz: number; tiles: Uint8Array }[];
+  /** Height points per chunk side. */
+  heightPoints: number;
+  chunks: { cx: number; cz: number; tiles: Uint8Array | null; heights: Float32Array | null }[];
   objects: SceneObject[];
 }
 
@@ -104,7 +141,12 @@ export function buildScene(name: string, c: SceneContent, saved = new Date()): S
     chunkSize: c.chunkSize,
     tiles: c.tiles,
     grounds: [...c.grounds],
-    chunks: c.chunks.map((k) => ({ cx: k.cx, cz: k.cz, tiles: encodeTiles(k.tiles) })),
+    heightPoints: c.heightPoints,
+    chunks: c.chunks.map((k) => ({
+      cx: k.cx, cz: k.cz,
+      ...(k.tiles ? { tiles: encodeTiles(k.tiles) } : {}),
+      ...(k.heights ? { heights: encodeHeights(k.heights) } : {}),
+    })),
     objects: c.objects.map((o) => ({
       id: o.id, kind: o.kind, x: o.x, z: o.z, yaw: o.yaw, scale: o.scale, seed: o.seed,
       ...(o.params && Object.keys(o.params).length ? { params: { ...o.params } } : {}),
@@ -132,11 +174,17 @@ export function parseScene(raw: unknown): SceneContent & { name: string; saved: 
   if (!c || !isInt(c.seed) || typeof c.day !== 'boolean') throw new SceneError('the file has no valid canvas settings');
   if (!w || !isNum(w.wind) || !isNum(w.rain) || !isNum(w.leaves)) throw new SceneError('the file has no valid weather');
   const n = f.tiles;
+  const hv = f.version >= 2 && isInt(f.heightPoints) ? f.heightPoints : Math.round(f.chunkSize) + 1;
   const chunks = f.chunks.map((k, i) => {
-    if (!k || !isInt(k.cx) || !isInt(k.cz) || typeof k.tiles !== 'string') throw new SceneError(`chunk ${i} is broken`);
-    const tiles = decodeTiles(k.tiles, n * n);
-    for (const v of tiles) if (v >= f.grounds!.length) throw new SceneError(`chunk ${k.cx},${k.cz} uses a paint the file doesn't name`);
-    return { cx: k.cx, cz: k.cz, tiles };
+    if (!k || !isInt(k.cx) || !isInt(k.cz)) throw new SceneError(`chunk ${i} is broken`);
+    // Version 1 chunks always have paint; from version 2 paint and heights are each optional.
+    if (f.version! < 2 && typeof k.tiles !== 'string') throw new SceneError(`chunk ${i} is broken`);
+    if (k.tiles !== undefined && typeof k.tiles !== 'string') throw new SceneError(`chunk ${i} is broken`);
+    if (k.heights !== undefined && typeof k.heights !== 'string') throw new SceneError(`chunk ${i} is broken`);
+    const tiles = k.tiles !== undefined ? decodeTiles(k.tiles, n * n) : null;
+    if (tiles) for (const v of tiles) if (v >= f.grounds!.length) throw new SceneError(`chunk ${k.cx},${k.cz} uses a paint the file doesn't name`);
+    const heights = f.version! >= 2 && k.heights !== undefined ? decodeHeights(k.heights, hv * hv) : null;
+    return { cx: k.cx, cz: k.cz, tiles, heights };
   });
   const objects = f.objects.map((o, i) => {
     if (!o || typeof o.kind !== 'string' || !isNum(o.x) || !isNum(o.z) || !isNum(o.yaw) || !isNum(o.scale) || !isInt(o.seed) || !isInt(o.id)) {
@@ -161,6 +209,7 @@ export function parseScene(raw: unknown): SceneContent & { name: string; saved: 
     chunkSize: f.chunkSize,
     tiles: n,
     grounds: f.grounds,
+    heightPoints: hv,
     chunks,
     objects,
   };
@@ -172,13 +221,13 @@ export function parseScene(raw: unknown): SceneContent & { name: string; saved: 
  */
 export function remapGrounds(chunks: SceneContent['chunks'], from: readonly string[], to: readonly string[]): SceneContent['chunks'] {
   const used = new Set<number>();
-  for (const k of chunks) for (const v of k.tiles) used.add(v);
+  for (const k of chunks) for (const v of k.tiles ?? []) used.add(v);
   const map = from.map((g, code) => {
     const i = to.indexOf(g);
     if (i < 0 && used.has(code)) throw new SceneError(`the file uses a paint this version doesn't have: ${g}`);
     return Math.max(0, i);
   });
-  return chunks.map((k) => ({ cx: k.cx, cz: k.cz, tiles: k.tiles.map((v) => map[v]!) }));
+  return chunks.map((k) => ({ cx: k.cx, cz: k.cz, tiles: k.tiles ? k.tiles.map((v) => map[v]!) : null, heights: k.heights }));
 }
 
 export interface ParamNames {

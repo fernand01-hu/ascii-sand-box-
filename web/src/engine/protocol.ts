@@ -139,7 +139,7 @@ export type WorkerRequest =
   | {
     kind: 'worldChunk'; id: number; cx: number; cz: number; eye: [number, number, number]; glyphAspect: number;
     /** The chunk's map data (see app/map.ts): ground tiles or null, objects, revision. */
-    tiles: Uint8Array | null; objects: Float32Array; rev: number;
+    tiles: Uint8Array | null; heights: Float32Array | null; objects: Float32Array; rev: number;
   };
 
 export type WorkerResponse =

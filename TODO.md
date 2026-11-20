@@ -309,9 +309,27 @@ next one.
   - [x] The engine caches assets per parameter set and starts the cache over
     past 600 assets.
 
-- [ ] **12. (added) Height brush.**
-  - Raise, lower and smooth the ground.
-  - Only start this once flat 2D editing works well.
+- [x] **12. (added) Height brush.** (Done on `step-12-height-brush`.
+      Milestone 2, "I can fill a scene with objects", is complete.)
+  - [x] Height brush (`H`): raise (`1`), lower (`2`), smooth (`3`), flatten
+    (`4`, to the height where the stroke starts), size and strength,
+    smooth cosine falloff (`app/heightbrush.ts`). One stroke is one undo.
+  - [x] Heights per chunk on a 1 m grid (33 × 33). Border points are shared
+    and written into every chunk that holds them, so the ground is
+    seamless. Flat chunks store nothing.
+  - [x] The engine follows the heights. Ground glyphs sit on the surface and
+    tilt with the slope. Objects stand on the ground. The opaque ground is
+    a 1 m mesh, and physics heights come from it too. The glyph-stacking
+    spread measures the view angle to the real surface, so a hillside
+    facing you keeps its rows.
+  - [x] The cursor finds the real ground under the mouse (it steps along
+    the view ray). The grid, chunk borders, tile grid, brush outlines and
+    markers drape over the terrain.
+  - [x] Scene files version 2 store heights (centimetres). Version 1 files
+    still load.
+  - [x] Unit tests (falloff, modes, shared borders, undo, file round trip,
+    version 1). Rust test on a sloped plane. e2e: drag, undo, every mode,
+    cursor on a hilltop, an object on a hill, save / load.
 
 ## Phase 3: Visual quality
 

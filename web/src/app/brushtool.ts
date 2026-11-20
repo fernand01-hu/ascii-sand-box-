@@ -221,10 +221,11 @@ export class BrushTool implements BrushOptions {
       }
       return;
     }
-    const y = this.app.world.info.ground + 0.1, r = this.radius, l = new Lines();
+    const map = this.app.map, g = this.app.world.info.ground, r = this.radius, l = new Lines();
+    const yAt = (x: number, z: number) => g + (map ? map.heightAt(x, z) : 0), piece = map?.hasHeights ? 0.5 : Infinity;
     const ring = (rad: number) => {
-      if (this.shape === 'square') l.box(p.x - rad, y, p.z - rad, p.x + rad, y, p.z + rad, COLORS.marker);
-      else l.circle(p.x, y, p.z, rad, COLORS.marker, 40);
+      if (this.shape === 'square') l.squareOn(p.x, p.z, rad, COLORS.marker, yAt, 0.1, piece);
+      else l.circleOn(p.x, p.z, rad, COLORS.marker, yAt, 0.1, 40);
     };
     ring(r);
     if (this.soft > 0.05 && r * (1 - this.soft) > 0.1) ring(r * (1 - this.soft));

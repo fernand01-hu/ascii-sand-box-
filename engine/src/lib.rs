@@ -398,18 +398,22 @@ impl CanvasWorld {
     /// Chunk (cx, cz) with glyphs sized for an eye at (ex, ey, ez). `tiles`:
     /// empty (all canvas) or tiles x tiles ground codes, row-major from the
     /// chunk corner; `objects`: the placed objects whose base is in this
-    /// chunk, `OBJECT_FLOATS` each (see `worldConsts`).
+    /// chunk, `OBJECT_FLOATS` each (see `worldConsts`); `heights`: empty
+    /// (flat) or 33 x 33 ground heights, 1 m apart from the corner.
     #[wasm_bindgen(js_name = buildChunk)]
     #[allow(clippy::too_many_arguments)]
-    pub fn build_chunk(&mut self, cx: i32, cz: i32, ex: f32, ey: f32, ez: f32, glyph_aspect: f32, tiles: &[u8], objects: &[f32]) -> Result<WorldChunk, JsError> {
-        use scenery::canvas::{ChunkData, OBJECT_FLOATS, TILES};
+    pub fn build_chunk(&mut self, cx: i32, cz: i32, ex: f32, ey: f32, ez: f32, glyph_aspect: f32, tiles: &[u8], objects: &[f32], heights: &[f32]) -> Result<WorldChunk, JsError> {
+        use scenery::canvas::{ChunkData, HEIGHTS, OBJECT_FLOATS, TILES};
+        if !heights.is_empty() && (heights.len() != HEIGHTS * HEIGHTS || !heights.iter().all(|h| h.is_finite())) {
+            return Err(JsError::new(&format!("heights must be empty or {} finite values", HEIGHTS * HEIGHTS)));
+        }
         if !tiles.is_empty() && tiles.len() != TILES * TILES {
             return Err(JsError::new(&format!("tiles must be empty or {} bytes, got {}", TILES * TILES, tiles.len())));
         }
         if !objects.len().is_multiple_of(OBJECT_FLOATS) {
             return Err(JsError::new(&format!("objects must be {OBJECT_FLOATS} floats each, got {}", objects.len())));
         }
-        let c = self.inner.build_chunk(cx, cz, math::Vec3::new(ex, ey, ez), glyph_aspect, ChunkData { tiles, objects });
+        let c = self.inner.build_chunk(cx, cz, math::Vec3::new(ex, ey, ez), glyph_aspect, ChunkData { tiles, objects, heights });
         let (body, body_normals) = body_buffers(&c.body);
         Ok(WorldChunk {
             cards: c.cards,

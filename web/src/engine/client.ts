@@ -171,6 +171,7 @@ export class EngineClient {
     for (const s of this.pool) if (s.load < slot.load) slot = s;
     const transfer: Transferable[] = [data.objects.buffer];
     if (data.tiles) transfer.push(data.tiles.buffer);
+    if (data.heights) transfer.push(data.heights.buffer);
     return slot.send({ kind: 'worldChunk', id: this.nextId++, cx, cz, eye, glyphAspect, ...data }, transfer);
   }
 

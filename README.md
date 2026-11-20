@@ -60,7 +60,7 @@ Needs Rust (`rustup target add wasm32-unknown-unknown`), `wasm-pack` and Node.
 npm install
 npm run dev        # build the engine, start the dev server
 npm run build      # production build in dist/ (static files, host anywhere)
-npm test           # Rust tests, unit tests (brush, spray, undo, scene files), typecheck + build, WASM smoke test, headless-Chrome e2e
+npm test           # Rust tests, unit tests (brushes, spray, heights, undo, scene files), typecheck + build, WASM smoke test, headless-Chrome e2e
 ```
 
 In the viewer: drag to orbit, wheel to zoom, right-drag to pan. `T` switches
@@ -75,7 +75,8 @@ undo and redo any change to the map (`history` in the terminal lists them).
 turn, `Delete` remove). With the object brush on, the parameters panel has a
 slider for every setting of the kind (tree height, crown size, leaf amount,
 rock lumpiness...), a live preview and named presets; `param` and `preset`
-do the same in the terminal.
+do the same in the terminal. `H` is the height brush: raise, lower, smooth or
+flatten the ground (hills and valleys); everything follows the terrain.
 `Ctrl+S` saves the scene in the browser; `Esc` → Save / load lists saved
 scenes, downloads or loads `.scene.json` files (or drop one on the page) and
 exports the view as PNG or ASCII text. Your work is autosaved and comes back
