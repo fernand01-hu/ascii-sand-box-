@@ -53,6 +53,12 @@ export function addGlobalKeys(f: KeyHandler): void {
   listen();
 }
 
+/** A root-key handler asked before all the others (e.g. play mode silencing the editor's keys). */
+export function prependRootKeys(f: KeyHandler): void {
+  rootKeys.unshift(f);
+  listen();
+}
+
 /** Keys pressed while no panel is open (e.g. Esc opens the menu). */
 export function addRootKeys(f: KeyHandler): void {
   rootKeys.push(f);

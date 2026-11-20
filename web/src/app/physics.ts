@@ -26,12 +26,25 @@ export interface Ground {
   inBounds(x: number, z: number): boolean;
   /** Colliders near (x, z): calls `f(x, z, radius, top)` for each. */
   collidersNear(x: number, z: number, f: (cx: number, cz: number, r: number, top: number) => void): void;
+  /** Water can be waded through (slowly) instead of blocking the way. */
+  wade?: boolean;
+  /** What the ground is at (x, z), e.g. "sand" (walking speed depends on it). */
+  surface?(x: number, z: number): string;
 }
+
+/** Walking speed on each kind of ground (wading water: no running or jumping either). */
+export const SURFACE_SPEED: Record<string, number> = { sand: 0.85, rock: 0.95, water: 0.45 };
+/** How deep the player stands in water they wade through (m). */
+export const WADE_DEPTH = 0.35;
 
 /** Colliders bucketed on a grid, for fast nearby lookups. */
 export class ColliderGrid {
   private grid = new Map<number, number[]>();
-  constructor(readonly c: Float32Array, private cell = 4) {
+  readonly c: Float32Array;
+  private cell: number;
+  constructor(c: Float32Array, cell = 4) {
+    this.c = c;
+    this.cell = cell;
     for (let i = 0; i + 4 <= c.length; i += 4) {
       const r = c[i + 2]! + PLAYER.radius;
       const x0 = Math.floor((c[i]! - r) / cell), x1 = Math.floor((c[i]! + r) / cell);
@@ -55,7 +68,9 @@ export class ColliderGrid {
 /** A finite scene's heightfield as a Ground. */
 export class GridGround implements Ground {
   private colliders: ColliderGrid;
-  constructor(readonly world: World) {
+  readonly world: World;
+  constructor(world: World) {
+    this.world = world;
     this.colliders = new ColliderGrid(world.colliders);
   }
   height(x: number, z: number): number {
@@ -126,7 +141,10 @@ export const PLAYER = {
 export class Physics {
   private acc = 0;
 
-  constructor(readonly ground: Ground) {}
+  readonly ground: Ground;
+  constructor(ground: Ground) {
+    this.ground = ground;
+  }
 
   height(x: number, z: number): number {
     return this.ground.height(x, z);
@@ -136,9 +154,14 @@ export class Physics {
     return this.ground.isWater(x, z);
   }
 
-  /** Can the player stand at (x, z)? (loaded, inside the world, dry land) */
+  /** Can the player stand at (x, z)? (loaded, inside the world, dry land or water to wade) */
   walkable(x: number, z: number): boolean {
-    return this.ground.inBounds(x, z) && Number.isFinite(this.ground.height(x, z)) && !this.ground.isWater(x, z);
+    return this.ground.inBounds(x, z) && Number.isFinite(this.ground.height(x, z)) && (!!this.ground.wade || !this.ground.isWater(x, z));
+  }
+
+  /** Is the player wading at (x, z)? */
+  wading(x: number, z: number): boolean {
+    return !!this.ground.wade && this.ground.isWater(x, z);
   }
 
   /** A dry, gentle spot near (x, z) to start from. */
@@ -184,11 +207,13 @@ export class Physics {
       wx /= wl;
       wz /= wl;
     }
-    const speed = input.run ? PLAYER.run : PLAYER.walk;
+    const wading = this.wading(s.x, s.z);
+    const kind = wading ? 'water' : this.ground.surface?.(s.x, s.z) ?? '';
+    const speed = (input.run && !wading ? PLAYER.run : PLAYER.walk) * (SURFACE_SPEED[kind] ?? 1);
     const a = Math.min(1, (s.onGround ? PLAYER.accelGround : PLAYER.accelAir) * dt);
     s.vx += (wx * speed - s.vx) * a;
     s.vz += (wz * speed - s.vz) * a;
-    if (input.jump && s.onGround) {
+    if (input.jump && s.onGround && !wading) {
       s.vy = PLAYER.jump;
       s.onGround = false;
     }
@@ -199,8 +224,8 @@ export class Physics {
     this.moveAxis(s, 0, s.vz * dt);
     this.pushOut(s);
 
-    // Vertical: fall, land on the ground, never below it.
-    const g = this.height(s.x, s.z);
+    // Vertical: fall, land on the ground (in water, on the bed: knee deep), never below it.
+    const g = this.height(s.x, s.z) - (this.wading(s.x, s.z) ? WADE_DEPTH : 0);
     if (!Number.isFinite(g)) {
       s.vy = 0; // the ground here isn't loaded yet: hold still
       return;

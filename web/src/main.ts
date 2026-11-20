@@ -25,6 +25,7 @@ import { Dock } from './ui/dock';
 import { Toolbar } from './ui/toolbar';
 import { Lab } from './app/lab';
 import { Look } from './app/look';
+import { PlayMode } from './app/playmode';
 import { LabPanel } from './ui/labpanel';
 import { Settings } from './app/settings';
 import { Hud } from './ui/hud';
@@ -54,6 +55,7 @@ const scenes = new SceneStore(app, undo, settings);
 const presets = new PresetStore();
 const look = new Look(app, settings);
 const lab = new Lab(app, look);
+const play = new PlayMode(app, toolSwitch, editor, lab);
 const terminal = new Terminal(app, { debug, settings, cursor, tools, editor, brush, undo, scenes, objects, select, presets, height, lab });
 const hud = new Hud(app, { debug, settings, terminal, editor, brush, undo, scenes, objects, select, height, look });
 // The options sidebar holds each tool's panel; the toolbar switches tools.
@@ -78,7 +80,19 @@ window.addEventListener('resize', () => lab.relayout());
 new Toolbar(app, {
   editor, brush, objects, select, height, undo, scenes, dock,
   openMenu: () => hud.menu.open(), openTerminal: () => terminal.open(), flash: (t) => hud.flash(t),
-  lab,
+  lab, play,
+});
+// Walking needs the whole view: the options sidebar steps aside while playing.
+let dockWasShown = false;
+play.onChange(() => {
+  hud.refresh();
+  if (play.playing && dock.shown) {
+    dockWasShown = true;
+    dock.show(false);
+  } else if (!play.playing && dockWasShown) {
+    dockWasShown = false;
+    dock.show(true);
+  }
 });
 if (DEVTOOLS) {
   void import('./app/devtools').then((m) => m.installDevtools(app, terminal));

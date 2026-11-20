@@ -1025,6 +1025,50 @@ try {
     await waitSettled('canvas');
   });
 
+  await step('play mode: F walks the canvas, bumps into rocks, wades through water, F back to editing', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    const settled = () => page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+    // Step the player's own physics in the page: frames are slow in software rendering.
+    const walk = (seconds) => page.evaluate((seconds) => {
+      const p = window.__ascii.app.player;
+      for (let t = 0; t < seconds; t += 1 / 60) p.physics.update(p.state, { forward: 1, right: 0, run: false, jump: false }, 1 / 60);
+      return { x: p.state.x, y: p.state.y, z: p.state.z };
+    }, seconds);
+    try {
+      await run('clearmap yes; place rock:boulder 0 -8 2 4; fill water 6 -20 14 4; cam 0 2 0 0 1.6 -20');
+      await settled();
+      await page.keyboard.press('f');
+      assert.ok(await page.evaluate(() => !!window.__ascii.app.player), 'F starts play mode');
+      assert.match(await page.evaluate(() => document.querySelector('.tui-status').textContent), /PLAY/);
+      assert.ok(await page.evaluate(() => document.querySelector('.tui-toolbar [data-tool=play]').classList.contains('tui-sel')), 'the play button is on');
+      // Editor keys stay quiet while playing.
+      await page.keyboard.press('h');
+      assert.equal(await page.evaluate(() => document.querySelector('.tui-height').hidden), true, 'H does not open the height brush');
+      // Walking north runs into the boulder and stops at it.
+      await page.evaluate(() => { const s = window.__ascii.app.player.state; s.x = 0; s.z = 0; s.yaw = 0; });
+      const stop = await walk(4);
+      const rock = await page.evaluate(() => { let r = 0; window.__ascii.app.world.collidersNear(0, -8, (x, z, rr) => { if (Math.hypot(x, z + 8) < 0.1) r = rr; }); return r; });
+      assert.ok(rock > 0.3, `the boulder blocks (collider r ${rock.toFixed(2)})`);
+      assert.ok(stop.z > -8 + rock && stop.z < -8 + rock + 1, `stopped at the boulder (z ${stop.z.toFixed(2)})`);
+      // Walking east into the water: slower, knee deep.
+      await page.evaluate(() => { const s = window.__ascii.app.player.state; s.x = 0; s.z = -14; s.yaw = -Math.PI / 2; s.vx = s.vz = 0; });
+      const dry = await walk(1);
+      await page.evaluate(() => { const s = window.__ascii.app.player.state; s.x = 9; s.z = -14; s.vx = s.vz = 0; });
+      const wet = await walk(1);
+      assert.ok(wet.x - 9 < (dry.x - 0) * 0.6, `wading is slower (${(wet.x - 9).toFixed(2)} vs ${dry.x.toFixed(2)} m)`);
+      const ground = await page.evaluate((x) => window.__ascii.app.map.heightAt(x, -14) + window.__ascii.app.world.info.ground, wet.x);
+      assert.ok(wet.y < ground - 0.2, `knee deep in the water (y ${wet.y.toFixed(2)}, ground ${ground.toFixed(2)})`);
+      await page.screenshot({ path: join(outDir, '13m-play.png') });
+      await page.keyboard.press('f');
+      assert.equal(await page.evaluate(() => window.__ascii.app.player), null, 'F goes back to editing');
+      assert.ok(await page.evaluate(() => window.__ascii.app.viewer.controls.enabled), 'the editing camera is back');
+    } finally {
+      await page.evaluate(() => window.__ascii.app.stopPlaying());
+      for (const c of ['clearmap yes', 'canvas 1']) await run(c).catch(() => {});
+    }
+    await waitSettled('canvas');
+  });
+
   const models = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];
   for (const [i, model] of models.entries()) {
     await step(`model ${model}: renders, readable, matches reference`, async () => {

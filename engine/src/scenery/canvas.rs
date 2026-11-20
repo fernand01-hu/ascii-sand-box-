@@ -315,6 +315,7 @@ impl Canvas {
         // Objects first: generate (or fetch) their assets while `lib` may change.
         let mut objects: Vec<(usize, Kind, Placement)> = Vec::new();
         let mut bounds: Vec<[f32; 7]> = Vec::new();
+        let mut colliders: Vec<[f32; 4]> = Vec::new();
         self.lib.trim(); // between builds: drop the cache if it grew too big
         for (index, o) in data.objects.chunks_exact(OBJECT_FLOATS).enumerate() {
             let Some(&kind) = self.kinds.get(o[0] as usize) else { continue };
@@ -333,6 +334,19 @@ impl Canvas {
             let (lo, hi) = self.lib.assets[asset].bounds();
             let r = [lo.x, hi.x, lo.z, hi.z].iter().fold(0.0f32, |m, v| m.max(v.abs())) * pl.scale;
             bounds.push([index as f32, x - r, pl.pos.y + lo.y * pl.scale, z - r, x + r, pl.pos.y + hi.y * pl.scale, z + r]);
+            // What the walking player bumps into (x, z, radius, top): tree trunks,
+            // rocks, and bushes big enough to block; plants are walked through.
+            let top = pl.pos.y + hi.y * pl.scale;
+            match kind {
+                Kind::Tree(_) => {
+                    let a = &self.lib.assets[asset];
+                    let trunk = a.wood.iter().filter(|w| w.level == 0 && w.p0.y.min(w.p1.y) < 1.0).fold(0.0f32, |m, w| m.max(w.r));
+                    colliders.push([x, z, (trunk.max(0.08) * pl.scale).max(0.12), top]);
+                }
+                Kind::Rock(_) => colliders.push([x, z, r * 0.75, top]),
+                Kind::Bush(_) if hi.y * pl.scale > 0.9 => colliders.push([x, z, r * 0.6, top]),
+                _ => {}
+            }
             objects.push((asset, kind, pl));
         }
 
@@ -380,7 +394,7 @@ impl Canvas {
             cards: std::mem::take(&mut sk.cards),
             body,
             heights: if field.h.is_empty() { vec![GROUND; HEIGHTS * HEIGHTS] } else { field.h.iter().map(|h| GROUND + h).collect() },
-            colliders: Vec::new(),
+            colliders,
             placed: objects.len(),
             bounds,
         }
@@ -737,6 +751,24 @@ mod tests {
             v.iter().sum::<f32>() / v.len().max(1) as f32
         };
         assert!(sand(4.6, 5.0) < sand(12.0, 30.0) * 0.85, "wet sand by the water: {} vs {}", sand(4.6, 5.0), sand(12.0, 30.0));
+    }
+
+    #[test]
+    fn placed_trees_rocks_and_big_bushes_block_the_walker_plants_do_not() {
+        let mut canvas = Canvas::new(1, false);
+        let objs: Vec<f32> = [
+            rec([code("tree:oak"), 3.0, 8.0, 8.0, 0.0, 1.0]),
+            rec([code("rock:boulder"), 1.0, 20.0, 8.0, 0.0, 1.5]),
+            rec([code("plant:fern"), 1.0, 8.0, 20.0, 0.0, 1.0]),
+        ]
+        .concat();
+        let c = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &[], objects: &objs, heights: &[] });
+        assert_eq!(c.colliders.len(), 2, "the tree and the rock, not the fern: {:?}", c.colliders);
+        let tree = c.colliders.iter().find(|k| k[0] == 8.0 && k[1] == 8.0).expect("the oak's trunk");
+        assert!(tree[2] > 0.1 && tree[2] < 1.0, "a trunk, not the crown: r {}", tree[2]);
+        assert!(tree[3] > 4.0, "as tall as the tree: top {}", tree[3]);
+        let rock = c.colliders.iter().find(|k| k[0] == 20.0).expect("the boulder");
+        assert!(rock[2] > 0.3, "the rock's size: r {}", rock[2]);
     }
 
     #[test]

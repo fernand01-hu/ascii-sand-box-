@@ -13,6 +13,7 @@ import type { SelectTool } from '../app/selecttool';
 import type { Undo } from '../app/undo';
 import type { Dock } from './dock';
 import type { Lab } from '../app/lab';
+import type { PlayMode } from '../app/playmode';
 import { makeMovable } from './drag';
 import './tui.css';
 
@@ -29,6 +30,7 @@ export interface ToolbarDeps {
   openTerminal: () => void;
   flash: (text: string) => void;
   lab: Lab;
+  play: PlayMode;
 }
 
 interface Button {
@@ -66,6 +68,15 @@ export class Toolbar {
             d.flash(e instanceof Error ? e.message : String(e));
           }
         }, () => d.lab.enabled],
+      ],
+      [
+        ['play', 'F', 'play: walk the canvas in first person', () => {
+          try {
+            d.play.toggle();
+          } catch (e) {
+            d.flash(e instanceof Error ? e.message : String(e));
+          }
+        }, () => d.play.playing],
       ],
       [
         ['undo', '^Z', 'undo', () => d.undo.undo()],
@@ -114,6 +125,7 @@ export class Toolbar {
     for (const t of [d.brush, d.objects, d.select, d.height, d.editor]) t.onChange(() => this.refresh());
     d.dock.onChange(() => this.refresh());
     d.lab.onChange(() => this.refresh());
+    d.play.onChange(() => this.refresh());
     app.onSceneChange(() => this.refresh());
     this.refresh();
   }
@@ -123,7 +135,7 @@ export class Toolbar {
     for (const b of this.buttons) {
       b.el.classList.toggle('tui-sel', !!b.on?.());
       // Editing tools are for the canvas.
-      if (['select', 'paint', 'objects', 'height', 'top', 'grid', 'lab'].includes(b.el.dataset.tool ?? '')) b.el.disabled = !canvas;
+      if (['select', 'paint', 'objects', 'height', 'top', 'grid', 'lab', 'play'].includes(b.el.dataset.tool ?? '')) b.el.disabled = !canvas;
     }
   }
 }
