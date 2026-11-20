@@ -752,7 +752,7 @@ try {
       // Single: one click, one object; Ctrl+Z takes it back.
       await page.keyboard.press('2');
       const n0 = await count();
-      const empty = await screenOf(-60, -20);
+      const empty = await screenOf(10, -40); // in view, clear of the panels
       await page.mouse.click(empty.x, empty.y);
       assert.equal(await count(), n0 + 1, 'single places exactly one');
       await ctrlZ();
