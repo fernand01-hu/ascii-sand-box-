@@ -992,6 +992,29 @@ try {
     await waitSettled('canvas');
   });
 
+  await step('look lab: split panes, variants, time of day, shadow map, off again', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    try {
+      await run('place tree:oak 0 -24 1.4 3');
+      await page.keyboard.press('l');
+      assert.ok(await page.evaluate(() => window.__ascii.lab.enabled), 'L turns the lab on');
+      await run('lab layout 4; lab all baked now now; lab pane 2 light shadows; lab pane 3 water all; lab pane 4 weather storm; lab time 10');
+      const st = await page.evaluate(() => ({ panes: window.__ascii.app.viewer.panes?.length, labels: document.querySelectorAll('.tui-lab-label').length, panel: !document.querySelector('.tui-lab').hidden }));
+      assert.deepEqual(st, { panes: 4, labels: 4, panel: true }, '4 panes, 4 labels, the lab panel');
+      await new Promise((r) => setTimeout(r, 2500));
+      assert.ok(await page.evaluate(() => !!window.__ascii.lab.sun), 'the sun shadow map is drawn for the shadows pane');
+      assert.match((await run('lab list')).join('\n'), /shadows-glyphs/);
+      assert.match((await run('lab pane 1 light nope')).join('\n'), /no light variant/);
+      await page.screenshot({ path: join(outDir, '13l-look-lab.png') });
+      await run('lab off');
+      const off = await page.evaluate(() => ({ panes: window.__ascii.app.viewer.panes, labels: document.querySelectorAll('.tui-lab-label').length, fx: window.__ascii.app.viewer.cards.material.uniforms.uFxA.value.toArray() }));
+      assert.deepEqual(off, { panes: null, labels: 0, fx: [0, 0, 0, 0] }, `off: one view, classic look (${JSON.stringify(off)})`);
+    } finally {
+      for (const c of ['lab off', 'lab time off', 'lab layout 2', 'clearmap yes', 'canvas 1']) await run(c).catch(() => {});
+    }
+    await waitSettled('canvas');
+  });
+
   const models = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];
   for (const [i, model] of models.entries()) {
     await step(`model ${model}: renders, readable, matches reference`, async () => {

@@ -114,6 +114,7 @@ export function installDevtools(app: App, terminal: Terminal): void {
   }) as DebugHandle;
   // Not enumerable, so JSON snapshots of the state skip it (it links back to the state).
   Object.defineProperty(window.__ascii, 'app', { value: app, enumerable: false });
+  Object.defineProperty(window.__ascii, 'lab', { value: terminal.ctx.lab, enumerable: false });
 
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;

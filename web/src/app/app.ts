@@ -5,13 +5,22 @@ import { Color, Vector3 } from 'three';
 import { EngineClient, SupersededError } from '../engine/client';
 import type { CardSettings, EngineResult, GalleryCategory } from '../engine/protocol';
 import { createGlyphAtlas, glyphAspect, type GlyphAtlas } from '../render/atlas';
-import { CALM, DEFAULT_LIGHTING, SURFACE_MATERIAL, type Environment, type Lighting, type MaterialDef } from '../render/cards';
+import { CALM, DEFAULT_LIGHTING, LAB_GLYPHS, SURFACE_MATERIAL, type Environment, type Lighting, type MaterialDef } from '../render/cards';
 import { BACKGROUND } from '../render/viewer';
 import { Player } from './player';
 import { MapData, OBJECT_FLOATS } from './map';
 import { WorldStreamer } from './world';
 
 /** Lighting of the scenery `dusk` preset (light.py): stronger sky, no hemisphere falloff. */
+/**
+ * The engine's charset plus the glyphs the look lab draws with, appended at
+ * the end so the engine's own glyph indices don't move.
+ */
+function withLabGlyphs(charset: string): string {
+  const have = new Set(Array.from(charset));
+  return charset + Array.from(new Set(Array.from(LAB_GLYPHS))).filter((c) => !have.has(c)).join('');
+}
+
 export const SCENERY_LIGHTING: Omit<Lighting, 'sunDir'> = {
   sunColor: new Vector3(1.3, 0.92, 0.58),
   skyColor: new Vector3(0.46, 0.52, 0.8),
@@ -136,7 +145,7 @@ export class App {
   }
 
   constructor(container: HTMLElement) {
-    this.atlas = createGlyphAtlas(DEFAULT_CHARSET);
+    this.atlas = createGlyphAtlas(withLabGlyphs(DEFAULT_CHARSET));
     this.viewer = new Viewer(container, this.atlas);
   }
 
@@ -147,9 +156,10 @@ export class App {
 
   /** The glyph atlas for an engine-normalized charset (rebuilt only when it changes). */
   atlasFor(charset: string): GlyphAtlas {
-    if (this.atlas.chars.join('') !== charset) {
+    const full = withLabGlyphs(charset);
+    if (this.atlas.chars.join('') !== full) {
       this.atlas.dispose();
-      this.atlas = createGlyphAtlas(charset);
+      this.atlas = createGlyphAtlas(full);
       this.atlas.texture.anisotropy = this.viewer.renderer.capabilities.getMaxAnisotropy();
     }
     return this.atlas;

@@ -3,6 +3,7 @@
 // for `help`. Dev-only commands (the testbed pine) are added with
 // `registerCommand` from devtools.ts, so they never reach production.
 
+import { LAB_SCENE, LAB_VIEWS, LAYOUTS, LIGHTS, WATERS, WEATHERS, type Lab, type LabLayout } from './lab';
 import { GALLERY_CATEGORIES, type GalleryCategory } from '../engine/protocol';
 import type { App } from './app';
 import type { Cursor } from './cursor';
@@ -45,6 +46,7 @@ export interface CommandContext {
   select: SelectTool;
   presets: PresetStore;
   height: HeightTool;
+  lab: Lab;
   term: {
     aliases: Map<string, string>;
     binds: Map<string, string>;
@@ -1047,6 +1049,50 @@ const COMMANDS: Command[] = [
     },
   },
   {
+    name: 'lab', group: 'world',
+    usage: 'lab [on|off|list|scene|view wide|lake|hill|oak|stream|layout 1|wipe|2|4|pane <n> light|weather|water <variant>|all <light> <weather> <water>|time <hours>|off]',
+    help: 'look lab: compare lighting, weather and water variants side by side (Phase 3)',
+    async run(_app, args, io, ctx) {
+      const lab = ctx.lab;
+      const [a, b, c, d, e] = args;
+      if (a === 'on' || a === undefined && !lab.enabled) wrap(() => lab.setEnabled(true));
+      else if (a === 'off') lab.setEnabled(false);
+      else if (a === 'layout') {
+        if (!LAYOUTS.includes(b as LabLayout)) throw new CommandError(`layout: ${LAYOUTS.join(', ')}`);
+        lab.setLayout(b as LabLayout);
+      } else if (a === 'pane') {
+        const i = num(b, 'pane', 1, 4) - 1;
+        if (c !== 'light' && c !== 'weather' && c !== 'water') throw new CommandError('pane <n> light|weather|water <variant>');
+        wrap(() => lab.setPane(i, c, d ?? ''));
+      } else if (a === 'all') {
+        for (let i = 0; i < 4; i++) wrap(() => {
+          if (b) lab.setPane(i, 'light', b);
+          if (c) lab.setPane(i, 'weather', c);
+          if (d) lab.setPane(i, 'water', d);
+        });
+      } else if (a === 'time') {
+        if (b === 'off' || b === 'scene') lab.setHour(null);
+        else lab.setHour(num(b, 'hours', 0, 24));
+      } else if (a === 'view') {
+        const line = LAB_VIEWS[b ?? ''];
+        if (!line) throw new CommandError(`view: ${Object.keys(LAB_VIEWS).join(', ')}`);
+        await ctx.term.exec(line);
+      } else if (a === 'scene') {
+        io.print('building the test scene...', 'dim');
+        for (const line of LAB_SCENE) await ctx.term.exec(line);
+        if (!lab.enabled) wrap(() => lab.setEnabled(true));
+        io.print('test scene ready: lake, stream, meadow, forested hill across chunk borders, rocks, a lone oak');
+      } else if (a === 'list') {
+        for (const [title, list] of [['light', LIGHTS], ['weather', WEATHERS], ['water', WATERS]] as const) {
+          io.print(title, 'info');
+          for (const v of list) io.print(`  ${v.id.padEnd(15)} ${v.name.slice(3).padEnd(20)} ${v.help}`);
+        }
+      } else if (a !== undefined && a !== 'on') throw new CommandError('lab [on|off|list|scene|view|layout|pane|all|time]');
+      void e;
+      for (const l of lab.describe()) io.print(l);
+    },
+  },
+  {
     name: 'repeat', group: 'terminal', usage: 'repeat <n> <command line>', help: 'run a command line n times',
     async run(_app, [ns, ...rest], io, ctx) {
       const n = num(ns, 'n', 1, 1000);
@@ -1112,6 +1158,7 @@ function argWords(app: App, cmd: string, ctx: CommandContext | null): string[] {
     case 'height': return ['on', 'off', ...HEIGHT_MODES, 'size', 'strength', 'stroke', 'at'];
     case 'objbrush': return ['on', 'off', 'mode', 'size', 'density', 'spacing', 'variation', 'stroke', ...KIND_MIXES, ...(m?.objectKinds ?? [])];
     case 'select': return ['none'];
+    case 'lab': return ['on', 'off', 'list', 'scene', 'view', ...Object.keys(LAB_VIEWS), 'layout', 'pane', 'all', 'time', ...LAYOUTS, 'light', 'weather', 'water', ...LIGHTS.map((v) => v.id), ...WEATHERS.map((v) => v.id), ...WATERS.map((v) => v.id)];
     case 'param': return ['reset', 'vary', ...(ctx?.objects.paramDescs().map((d) => d.name) ?? [])];
     case 'preset': return ['save', 'load', 'delete'];
     case 'place': return m?.objectKinds ?? [];

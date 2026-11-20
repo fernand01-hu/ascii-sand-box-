@@ -23,6 +23,8 @@ import { HeightTool } from './app/heighttool';
 import { HeightPanel } from './ui/heightpanel';
 import { Dock } from './ui/dock';
 import { Toolbar } from './ui/toolbar';
+import { Lab } from './app/lab';
+import { LabPanel } from './ui/labpanel';
 import { Settings } from './app/settings';
 import { Hud } from './ui/hud';
 import { Terminal } from './ui/terminal';
@@ -49,7 +51,8 @@ const select = new SelectTool(app, editor, undo, toolSwitch);
 const height = new HeightTool(app, editor, undo, toolSwitch, settings);
 const scenes = new SceneStore(app, undo, settings);
 const presets = new PresetStore();
-const terminal = new Terminal(app, { debug, settings, cursor, tools, editor, brush, undo, scenes, objects, select, presets, height });
+const lab = new Lab(app);
+const terminal = new Terminal(app, { debug, settings, cursor, tools, editor, brush, undo, scenes, objects, select, presets, height, lab });
 const hud = new Hud(app, { debug, settings, terminal, editor, brush, undo, scenes, objects, select, height });
 // The options sidebar holds each tool's panel; the toolbar switches tools.
 const dock = new Dock();
@@ -58,9 +61,22 @@ new BrushPanel(app, brush, dock.body);
 new ObjectPanel(app, objects, dock.body);
 new ParamPanel(app, objects, presets, dock.body);
 new HeightPanel(app, height, dock.body);
+new LabPanel(app, lab, (line) => terminal.run(line), dock.body);
+lab.onChange(() => {
+  if (lab.enabled && !dock.shown) dock.show(true);
+});
+// Split panes stop where the options sidebar starts (when it sits on the right).
+lab.room = () => {
+  if (!dock.shown) return 1;
+  const r = dock.el.getBoundingClientRect();
+  return r.left > window.innerWidth * 0.4 ? (r.left - 6) / window.innerWidth : 1;
+};
+dock.onChange(() => lab.relayout());
+window.addEventListener('resize', () => lab.relayout());
 new Toolbar(app, {
   editor, brush, objects, select, height, undo, scenes, dock,
   openMenu: () => hud.menu.open(), openTerminal: () => terminal.open(), flash: (t) => hud.flash(t),
+  lab,
 });
 if (DEVTOOLS) {
   void import('./app/devtools').then((m) => m.installDevtools(app, terminal));

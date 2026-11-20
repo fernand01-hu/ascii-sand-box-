@@ -23,6 +23,7 @@ export const DEBUG_OPTIONS: readonly DebugOption[] = [
   { id: 'bodies', label: 'hidden solid shapes (wireframe)' },
   { id: 'light', label: 'light view: sun white, sky blue' },
   { id: 'size', label: 'glyph size tint' },
+  { id: 'shadowmap', label: 'sun shadow map: lit white, shadow red (look lab)' },
   { id: 'heat', label: 'stacking heat map' },
   { id: 'inspector', label: 'glyph inspector (point the mouse)' },
   { id: 'perf', label: 'performance overlay', key: 'F3' },
@@ -30,7 +31,7 @@ export const DEBUG_OPTIONS: readonly DebugOption[] = [
 ];
 
 /** Options that colour the glyphs: only one at a time. */
-const EXCLUSIVE = [['light', 'size']];
+const EXCLUSIVE = [['light', 'size', 'shadowmap']];
 
 const STORE_KEY = 'ascii-sandbox.debug';
 

@@ -333,6 +333,14 @@ next one.
 
 ## Phase 3: Visual quality
 
+- [ ] **Look lab (branch `phase3-lab`).** Variants of steps 13-15 shown side by side, live:
+  - 1, 2 or 4 panes, or a wipe, all showing the same camera. Each pane picks a lighting, weather and water variant.
+  - Shared controls: time of day, wind, rain, leaves.
+  - A test scene with camera spots (`lab scene`, `lab view lake`).
+  - `L`, the toolbar button or `lab` in the terminal.
+  - Once winners are picked, they become steps 13-15 and the rest is dropped.
+  - Water waits on the user's reference video.
+
 - [ ] **13. (added) Weather on painted scenes.**
   - Make sure wind sways painted grass, trees and reeds, rain falls over the
     whole view distance, and leaves blow from painted trees.

@@ -253,6 +253,33 @@
 .tui-tool.tui-sel { background: var(--tui-fg); color: var(--tui-bg); }
 .tui-tool.tui-sel .tui-key { color: var(--tui-bg) !important; }
 
+/* ---- look lab ------------------------------------------------------------- */
+
+.tui-lab-label {
+  position: fixed;
+  z-index: 5;
+  pointer-events: none;
+  padding: 0.1em 0.8ch;
+  background: color-mix(in srgb, var(--tui-bg) 82%, transparent);
+  border: 1px solid var(--tui-border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+.tui-lab-label b { color: var(--tui-accent); }
+.tui-lab-divider {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  margin-left: -4px;
+  z-index: 6;
+  cursor: ew-resize;
+  background: linear-gradient(90deg, transparent 3px, var(--tui-accent) 3px, var(--tui-accent) 6px, transparent 6px);
+}
+.tui-lab .tui-dim { white-space: normal; }
+
 /* ---- status bar ------------------------------------------------------------ */
 
 .tui-status {

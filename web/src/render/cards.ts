@@ -24,6 +24,9 @@ import {
   Vector2,
   Vector3,
   Vector4,
+  DataTexture,
+  Matrix4 as Mat4,
+  type Texture,
 } from 'three';
 import type { GlyphAtlas } from './atlas';
 import { CHUNK_FLOATS } from '../engine/chunks';
@@ -40,6 +43,22 @@ export const CARD_STRIDE = 16;
  * camera every frame, so they read from any viewing angle.
  */
 const MATERIAL_SHIFT = 1024;
+/** Glyphs the look lab draws with; the app adds them to every atlas. */
+export const RAMP_SHADE = '@%#&*+=-:.';
+export const RAMP_WAVE = "_.-~^'";
+export const RAMP_SPLASH = ".oO°";
+export const RAMP_FOAM = "~*o°";
+export const LAB_GLYPHS = RAMP_SHADE + RAMP_WAVE + RAMP_SPLASH + RAMP_FOAM;
+/** A 16-colour palette in the spirit of old PC text modes, toned for scenery. */
+const RETRO_PALETTE: [number, number, number][] = [
+  [0.05, 0.05, 0.08], [0.1, 0.15, 0.45], [0.12, 0.45, 0.15], [0.1, 0.5, 0.5],
+  [0.55, 0.12, 0.1], [0.45, 0.15, 0.5], [0.6, 0.38, 0.1], [0.68, 0.68, 0.7],
+  [0.35, 0.35, 0.4], [0.3, 0.4, 0.95], [0.35, 0.85, 0.3], [0.35, 0.9, 0.9],
+  [0.95, 0.35, 0.3], [0.9, 0.4, 0.9], [0.98, 0.9, 0.35], [0.98, 0.98, 1.0],
+];
+const BLANK = new DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+BLANK.needsUpdate = true;
+
 /** Size of the shader's material table. */
 export const MAX_MATERIALS = 64;
 
@@ -150,6 +169,23 @@ uniform float uLeaves;
 uniform vec3 uRainBox;
 uniform vec3 uLeafBox;  // min x, min z, size
 uniform float uUnder;   // 1 in the underpaint pass (particles stay out of it)
+// ---- look lab (Phase 3): features each pane can switch on, all 0 = the classic look
+uniform float uDepthPass; // 1 in the sun shadow-map pass
+uniform vec4 uFxA;     // sun light (0 baked, 1 shadow map), shade (0 colour, 1 glyph ramp, 2 retro 16, 3 amber), cloud shadows, gusts
+uniform vec4 uFxB;     // rain look (0 streaks, 1 splashes + wet ground), mist, storm, ground height
+uniform vec4 uWaterFx; // waves, shore + depth + foam, glints + sky, rain rings
+uniform float uRampShade[10]; // glyph slots, densest first (-1: missing)
+uniform float uRampWave[6];   // flat to crest
+uniform float uRampSplash[4]; // drop to ring
+uniform float uRampFoam[4];
+uniform vec3 uPalette[16];
+uniform sampler2D uShadowMap;
+uniform mat4 uShadowMat;
+uniform vec2 uShadowInfo; // texel size, depth units per metre
+uniform sampler2D uShore;
+uniform vec3 uShoreBox;   // min x, min z, size (m); size 0 = no map
+uniform vec3 uSkyTint;
+uniform float uFlash;
 
 attribute vec3 iCenter;
 attribute vec3 iU;
@@ -164,6 +200,41 @@ varying float vAlpha;
 
 float hash(vec3 p) {
   return fract(sin(dot(p, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
+}
+
+float vnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = hash(vec3(i, 0.0));
+  float b = hash(vec3(i + vec2(1.0, 0.0), 0.0));
+  float c = hash(vec3(i + vec2(0.0, 1.0), 0.0));
+  float d = hash(vec3(i + vec2(1.0, 1.0), 0.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// Sun visibility from the shadow map at a card's centre (3 x 3 taps, soft).
+float sunMap(vec3 p, float size) {
+  vec4 s = uShadowMat * vec4(p, 1.0);
+  vec3 c = s.xyz * 0.5 + 0.5;
+  if (c.x <= 0.0 || c.x >= 1.0 || c.y <= 0.0 || c.y >= 1.0 || c.z >= 1.0) return 1.0;
+  float bias = (0.35 + 0.8 * size) * uShadowInfo.y;
+  float lit = 0.0;
+  for (int j = -1; j <= 1; j++) {
+    for (int i = -1; i <= 1; i++) {
+      float d = texture2D(uShadowMap, c.xy + vec2(float(i), float(j)) * uShadowInfo.x * 1.5).r;
+      lit += step(c.z - bias, d);
+    }
+  }
+  return lit / 9.0;
+}
+
+// Shore map: x = how far into the water (0 shore .. 1 = 10 m+), y = how far from water on land.
+vec2 shoreAt(vec2 xz) {
+  if (uShoreBox.z <= 0.0) return vec2(1.0);
+  vec2 uv = (xz - uShoreBox.xy) / uShoreBox.z;
+  if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0) return vec2(1.0);
+  return texture2D(uShore, uv).rg;
 }
 
 vec3 rotateAbout(vec3 v, vec3 axis, float a) {
@@ -197,6 +268,11 @@ void main() {
   float alphaMul = 1.0;
 
   if (uUnder > 0.5 && (rain || leaf)) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
+  // The shadow map holds what casts shadows: objects, not the ground glyphs, sky or particles.
+  if (uDepthPass > 0.5 && (lean || emissive || rain || leaf)) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     return;
   }
@@ -272,8 +348,17 @@ void main() {
   // Wind: flexible cards lean and shift downwind; gust fronts travel with
   // the wind across the land, and each card flutters at its own rate.
   vec3 sway = vec3(0.0);
+  float gustLit = 0.0;
   if (C.x > 0.0 && ws > 0.0 && !rain && !leaf) {
     float gust = 0.55 + 0.45 * sin(uTime * 0.8 - dot(center.xz, uWind.xy) * 0.09 + h);
+    if (uFxA.w > 0.5) {
+      // Gust fronts: patches of strong wind drifting downwind across the land,
+      // visible as waves of bending, brighter grass (wind through wheat).
+      vec2 gp = (center.xz - uWind.xy * uTime * (2.0 + 9.0 * ws)) * 0.045;
+      float g = smoothstep(0.35, 0.8, vnoise(gp) * 0.7 + vnoise(gp * 2.7) * 0.3);
+      gust = 0.2 + 1.5 * g;
+      gustLit = g * smoothstep(0.3, 0.8, C.x);
+    }
     float flutter = sin(uTime * (2.6 + 1.4 * h) + h * 31.0 + dot(center.xz, vec2(0.7, 0.4)));
     float amt = ws * C.x * gust;
     float size = length(V);
@@ -313,9 +398,71 @@ void main() {
   if (emissive || rain) {
     vColor = iColor.rgb;
     vAlpha = baseA * alphaMul * (rain ? 1.0 : smoothstep(0.02, 0.25, abs(facing)));
+    if (cardMode > 3.5 && cardMode < 4.5) vColor = vColor * uSkyTint + uFlash * vec3(0.5, 0.55, 0.7);
+    if (waterLean) {
+      vec3 wc = iColor.rgb;
+      if (uWaterFx.y > 0.5) {
+        // Shallow water near the shore is lighter and greener, deep water darker;
+        // foam laps in and out along the shoreline.
+        float d = shoreAt(center.xz).x;
+        wc = mix(wc * vec3(1.35, 1.6, 1.45) + vec3(0.03, 0.08, 0.07), wc * 0.7, smoothstep(0.0, 0.6, d));
+        float lap = sin(uTime * 1.3 - d * 40.0 + h * 2.0);
+        if (d < 0.16 && lap > 0.15) {
+          float k = uRampFoam[int(clamp((lap - 0.15) / 0.85, 0.0, 0.999) * 4.0)];
+          if (k >= 0.0) glyph = k;
+          wc = mix(wc, vec3(0.92, 0.95, 1.0), 0.75 * (1.0 - d / 0.16));
+          vAlpha = max(vAlpha, 0.85);
+        }
+      }
+      if (uWaterFx.x > 0.5) {
+        // Travelling waves drawn with the glyphs themselves: flat _ . - ~ to the crest.
+        vec2 wdir = normalize(uWind.xy + vec2(0.0001, 0.0));
+        float ph = dot(center.xz, wdir) * 0.7 + vnoise(center.xz * 0.12) * 5.0 - uTime * (1.2 + 2.0 * ws);
+        float w = 0.5 + 0.5 * sin(ph);
+        float k = uRampWave[int(clamp(w, 0.0, 0.999) * 6.0)];
+        if (k >= 0.0) glyph = k;
+        wc *= 0.75 + 0.55 * w;
+      }
+      if (uWaterFx.z > 0.5) {
+        // Sky reflected at grazing angles, and sun glitter: sparkling glyphs along the sun's path.
+        float fres = pow(1.0 - clamp(abs(dot(n0, toCam)), 0.0, 1.0), 3.0);
+        wc = mix(wc, uHazeColor * 1.15, 0.65 * fres);
+        vec3 r = reflect(-toCam, n0);
+        float g = pow(clamp(dot(r, uSunDir), 0.0, 1.0), 24.0);
+        float tw = step(0.6, hash(center + floor(uTime * 5.0 + h * 9.0)));
+        if (g * tw > 0.25) {
+          float k = uRampSplash[1];
+          if (k >= 0.0) glyph = k;
+          wc += uGlintColor * 1.4 * g;
+          vAlpha = max(vAlpha, 0.9);
+        }
+      }
+      if (uWaterFx.w > 0.5 && uRain > 0.02) {
+        // Rain rings: a drop lands, then a ring opens: . o O then gone.
+        float cyc = uTime * 1.6 + h * 17.0;
+        float f = fract(cyc);
+        if (hash(center + floor(cyc)) < uRain * 0.45) {
+          float k = uRampSplash[int(clamp(f, 0.0, 0.999) * 4.0)];
+          if (k >= 0.0) glyph = k;
+          wc = mix(wc, vec3(0.85, 0.9, 1.0), 0.6 * (1.0 - f));
+          vAlpha = max(vAlpha, 0.8 * (1.0 - f) + 0.2);
+        }
+      }
+      vColor = wc + uFlash * 0.3;
+    }
   } else {
     float ts = leaf ? 1.0 : iLight.x;
     float tk = leaf ? 1.0 : iLight.y;
+    if (uFxA.x > 0.5 && uDepthPass < 0.5 && !leaf) {
+      // Shadow map: the sun's own view, live (crosses chunks, hills cast shadows,
+      // the sun can move). The bake still darkens the inside of crowns a little.
+      ts = sunMap(center, length(iV)) * (0.55 + 0.45 * iLight.x);
+    }
+    if (uFxA.z > 0.5) {
+      // Cloud shadows drifting with the wind.
+      vec2 cp = (center.xz - uWind.xy * uTime * (1.5 + 6.0 * ws)) * 0.011;
+      ts *= mix(1.0, 0.3, smoothstep(0.42, 0.72, vnoise(cp) * 0.65 + vnoise(cp * 2.3) * 0.35));
+    }
     ts *= 1.0 - 0.6 * uRain; // overcast while it rains
     float ndl = dot(Nlight, uSunDir);
     float diff = clamp((ndl + A.w) / (1.0 + A.w), 0.0, 1.0);
@@ -324,6 +471,20 @@ void main() {
     float hemi = mix(1.0, 0.55 + 0.45 * Nlight.y, uTone.w);
     vec3 rad = iColor.rgb * (ts * uSunColor * (1.25 * diff + A.z * back) + uTone.y * tk * hemi * uSkyColor + uTone.z)
              + A.x * spec * ts * uGlintColor;
+    rad *= 1.0 + 0.45 * gustLit;
+    rad += iColor.rgb * uFlash * (0.4 + 0.6 * hemi) * vec3(0.9, 0.95, 1.1);
+    if (uFxB.x > 0.5 && lean && uRain > 0.02) {
+      // Wet ground: darker, with a sheen toward the light; drops splash on it.
+      float wspec = pow(clamp(dot(Nlight, normalize(uSunDir + toCam)), 0.0, 1.0), 30.0);
+      rad = rad * (1.0 - 0.35 * uRain) + uRain * (0.25 * wspec * uSunColor + 0.06 * uSkyColor);
+      float cyc = uTime * 2.2 + h * 23.0;
+      float f = fract(cyc);
+      if (hash(center + floor(cyc)) < uRain * 0.22) {
+        float k = uRampSplash[int(clamp(f, 0.0, 0.999) * 4.0)];
+        if (k >= 0.0) glyph = k;
+        rad = mix(rad, vec3(0.7, 0.75, 0.85), 0.6 * (1.0 - f));
+      }
+    }
     vColor = 1.0 - exp(-uTone.x * rad);
     // Per-material distance haze, as in the pine script's ground.
     float hz = B.w * pow(clamp(dist / uHazeDist, 0.0, 1.0), 0.65);
@@ -340,9 +501,45 @@ void main() {
     float hz = (1.0 - exp(-dist / (uFog.x * (1.0 - 0.55 * uRain)))) * uFog.y;
     vColor = mix(vColor, uHazeColor, hz);
   }
+  if (uFxB.y > 0.5 && !emissive && !rain && !leaf) {
+    // Mist: banks of fog hugging the low ground, drifting slowly.
+    float low = exp(-max(center.y - uFxB.w, 0.0) / 2.2);
+    float n = vnoise((center.xz - uWind.xy * uTime * 1.2) * 0.04) * 0.7 + vnoise(center.xz * 0.11 + uTime * 0.05) * 0.3;
+    vColor = mix(vColor, uHazeColor * 1.08, clamp(low * smoothstep(0.25, 0.75, n) * smoothstep(3.0, 25.0, dist), 0.0, 0.8));
+  }
+  if (uFxA.y > 0.5 && !emissive && !rain && !leaf && uDebugView < 0.5) {
+    float lum = dot(vColor, vec3(0.3, 0.59, 0.11));
+    if (uFxA.y < 1.5) {
+      // Glyph shading: brightness picks the glyph (@ % # * + = - : . from lit to dark),
+      // the colour keeps the hue.
+      float k = uRampShade[int(clamp(1.0 - lum * 1.5, 0.0, 0.999) * 10.0)];
+      if (k >= 0.0) glyph = k;
+      float mx = max(vColor.r, max(vColor.g, vColor.b));
+      vColor = mix(vColor, vColor / max(mx, 1e-3) * (0.35 + 0.6 * sqrt(lum)), 0.6);
+    } else if (uFxA.y < 2.5) {
+      // Retro 16 colours, with a little per-glyph dither so gradients still read.
+      vec3 c = vColor + (h - 0.5) * 0.08;
+      float best = 1e9;
+      vec3 pick = c;
+      for (int i = 0; i < 16; i++) {
+        vec3 d = c - uPalette[i];
+        float e = dot(d, d);
+        if (e < best) { best = e; pick = uPalette[i]; }
+      }
+      vColor = pick;
+    } else {
+      // Amber terminal: one phosphor colour, brightness only.
+      vColor = vec3(1.0, 0.68, 0.22) * pow(lum * 1.3, 0.85) + vec3(0.02, 0.01, 0.0);
+    }
+  }
   // Debug views (sky, rain and leaves keep their colour).
   if (uDebugView > 0.5 && !emissive && !rain && !leaf) {
-    if (uDebugView < 1.5) {
+    if (uDebugView > 2.5) {
+      // Sun shadow map (look lab): lit white, shadowed red; blue outside the map.
+      vec4 sm = uShadowMat * vec4(center, 1.0);
+      vec3 c3 = sm.xyz * 0.5 + 0.5;
+      vColor = (c3.x <= 0.0 || c3.x >= 1.0 || c3.y <= 0.0 || c3.y >= 1.0) ? vec3(0.1, 0.2, 0.8) : mix(vec3(0.9, 0.1, 0.1), vec3(0.95), sunMap(center, length(iV)));
+    } else if (uDebugView < 1.5) {
       // Baked light: sun visibility as white, sky visibility as blue.
       vColor = vec3(0.85 * iLight.x) + vec3(0.04, 0.09, 0.32) * iLight.y;
     } else {
@@ -444,8 +641,25 @@ export class CardLayer {
         uRainBox: { value: new Vector3(36, 24, 36) },
         uLeafBox: { value: new Vector3(0, 0, 1) },
         uUnder: { value: 0 },
+        uDepthPass: { value: 0 },
+        uFxA: { value: new Vector4(0, 0, 0, 0) },
+        uFxB: { value: new Vector4(0, 0, 0, 0) },
+        uWaterFx: { value: new Vector4(0, 0, 0, 0) },
+        uRampShade: { value: new Array(10).fill(-1) },
+        uRampWave: { value: new Array(6).fill(-1) },
+        uRampSplash: { value: new Array(4).fill(-1) },
+        uRampFoam: { value: new Array(4).fill(-1) },
+        uPalette: { value: RETRO_PALETTE.map((c) => new Vector3(...c)) },
+        uShadowMap: { value: BLANK },
+        uShadowMat: { value: new Mat4() },
+        uShadowInfo: { value: new Vector2(1 / 2048, 1 / 800) },
+        uShore: { value: BLANK },
+        uShoreBox: { value: new Vector3(0, 0, 0) },
+        uSkyTint: { value: new Vector3(1, 1, 1) },
+        uFlash: { value: 0 },
       },
     });
+    this.setRamps(atlas);
     this.setLighting(lighting);
     this.setMaterials([SURFACE_MATERIAL]);
     this.setMode('blend');
@@ -456,8 +670,8 @@ export class CardLayer {
   }
 
   /** Debug colouring: 'normal', 'light' (baked sun / sky) or 'size' (glyph size). */
-  setDebugView(view: 'normal' | 'light' | 'size'): void {
-    this.material.uniforms.uDebugView!.value = view === 'light' ? 1 : view === 'size' ? 2 : 0;
+  setDebugView(view: 'normal' | 'light' | 'size' | 'shadowmap'): void {
+    this.material.uniforms.uDebugView!.value = view === 'light' ? 1 : view === 'size' ? 2 : view === 'shadowmap' ? 3 : 0;
   }
 
   /**
@@ -621,11 +835,53 @@ export class CardLayer {
     return this.chunks.map((c) => c.mesh);
   }
 
+  /** Glyph slots the lab features draw with (shading ramp, waves, splashes, foam). */
+  setRamps(atlas: GlyphAtlas): void {
+    const u = this.material.uniforms;
+    const slots = (chars: string) => Array.from(chars).map((c) => atlas.chars.indexOf(c));
+    u.uRampShade!.value = slots(RAMP_SHADE);
+    u.uRampWave!.value = slots(RAMP_WAVE);
+    u.uRampSplash!.value = slots(RAMP_SPLASH);
+    u.uRampFoam!.value = slots(RAMP_FOAM);
+  }
+
+  /** Switch the lab features (all zero = the classic look). */
+  setFx(a: Vector4, b: Vector4, water: Vector4): void {
+    const u = this.material.uniforms;
+    (u.uFxA!.value as Vector4).copy(a);
+    (u.uFxB!.value as Vector4).copy(b);
+    (u.uWaterFx!.value as Vector4).copy(water);
+  }
+
+  setShadowMap(tex: Texture | null, mat?: Mat4, info?: Vector2): void {
+    const u = this.material.uniforms;
+    u.uShadowMap!.value = tex ?? BLANK;
+    if (mat) (u.uShadowMat!.value as Mat4).copy(mat);
+    if (info) (u.uShadowInfo!.value as Vector2).copy(info);
+  }
+
+  setShore(tex: Texture | null, box?: Vector3): void {
+    const u = this.material.uniforms;
+    u.uShore!.value = tex ?? BLANK;
+    (u.uShoreBox!.value as Vector3).copy(tex && box ? box : new Vector3());
+  }
+
+  setSkyTint(tint: Vector3, flash = 0): void {
+    (this.material.uniforms.uSkyTint!.value as Vector3).copy(tint);
+    this.material.uniforms.uFlash!.value = flash;
+  }
+
+  /** The card meshes (for passes that swap their material, like the sun shadow map). */
+  get chunkMeshes(): Mesh<InstancedBufferGeometry, ShaderMaterial>[] {
+    return this.chunks.map((c) => c.mesh);
+  }
+
   setAtlas(atlas: GlyphAtlas): void {
     const u = this.material.uniforms;
     u.uAtlas!.value = atlas.texture;
     (u.uGrid!.value as Vector2).set(atlas.cols, atlas.rows);
     (u.uInset!.value as Vector2).set(...atlas.inset);
+    this.setRamps(atlas);
   }
 
   /** Material table for the current scene; card material ids index into it. */
