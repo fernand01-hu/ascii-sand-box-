@@ -150,21 +150,72 @@ next one.
   - [x] The debug terminal is rebuilt from the same panel and text input.
     The brush panel (step 7) and save dialog (step 9) will be too.
 
+- [x] **5b. Debug tools (added on request).** (Done on
+      `step-05b-debug-tools`.) The terminal and every debug tool ship in
+      all builds. One shared list of debug options drives the menu
+      (`Esc` → Debug), the terminal (`debug <option> on|off`) and hotkeys,
+      and choices are remembered between visits.
+  - [x] Info box (`F2`): position, chunk and tile, compass facing, orbit
+    target, world clock and speed, weather, seed and view, map counts, and
+    stats pinned with `watch`.
+  - [x] Overlays: chunk borders coloured by state (`F4`), chunk labels,
+    object labels (`#id kind`), object outlines (box + footprint), paint
+    tile grid round the cursor, culling boxes, origin and axes, hidden
+    solid shapes as wireframe, stacking heat map, performance overlay
+    (`F3`; title no longer cut off).
+  - [x] Light view (baked sun white, sky blue) and glyph-size tint.
+  - [x] Glyph inspector: point at any character to see its material, mode,
+    chunk, object, size, colour and light.
+  - [x] Cursor readout: the ground point under the mouse (chunk, tile,
+    paint). Step 6 will reuse it.
+  - [x] Terminal: `chunk`, `obj`, `here`, `tile`, `goto`, `look`, `cam`,
+    `time`, `speed`, `day`, `dusk`, `stream`, `rebuild`, `fill`,
+    `scatter`, `clearmap`, `debug`, `set`, `watch`, `profile`, `bench`,
+    `verify`, `mem`, `workers`, `link`, `screenshot`, `alias`, `bind`,
+    `repeat`, `copy`, `log save`; `;` chains commands, `!!` repeats;
+    `help` is grouped.
+  - [x] Rebuild log (why each chunk was built, how long it took), freeze
+    streaming, determinism check (`verify`).
+  - [x] Settings remembered between visits. The canvas keeps your weather
+    when you come back to it. A warning counter (`⚠ n`) sits in the
+    status bar. Share links (`link`) bring back seed, camera, settings and
+    debug options.
+
 ## Phase 2: Scene editor
 
-- [ ] **6. (added) Editing camera and ground picking.**
-  - A top-down / orthographic camera mode for editing.
-  - A grid overlay and snapping.
-  - Convert the mouse position into a point on the ground plane
-    (raycasting). Every brush needs this.
+- [x] **6. (added) Editing camera and ground picking.** (Done on
+      `step-06-editing-camera`.)
+  - [x] Top-down view (`T`): the camera looks straight down, north up.
+    Drag pans, the wheel sets the height, the arrow keys pan (Shift is
+    faster), and `T` again returns to the same orbit view. It is a
+    perspective camera pointing down, not an orthographic one, because
+    glyph sizes depend on the distance from the eye.
+  - [x] Grid on the ground (`G`). Its spacing follows the height or the
+    snap size, and chunk borders are drawn brighter.
+  - [x] Snapping (off / 0.5 / 1 / 2 / 4 / 8 m), with a marker on the
+    snapped point under the mouse.
+  - [x] Ground picking: the ground point under the mouse (from step 5b's
+    cursor). `editor.point()` is what the brushes will use.
+  - [x] In the menu (Settings → editing), the terminal (`camera`, `grid`,
+    `snap`, `set`) and the status bar. Remembered between visits.
 
-- [ ] **7. Terrain brush on the 2D plane.**
-  - Paint grass, sand, water and rock onto the `#` canvas.
-  - Brush size, shape (circle / square) and strength.
-  - **(added)** An eraser that paints the `#` canvas back.
-  - **(added)** Soft edges, so sand fades into grass instead of making hard
-    tile borders.
-  - **(added)** Unit tests for the brush, run by `npm test`.
+- [x] **7. Terrain brush on the 2D plane.** (Done on `step-07-terrain-brush`.)
+  - [x] Paint grass, sand, water and rock onto the `#` canvas: `P` turns the
+    brush on, the left button paints, `1`–`4` pick the paint. In the orbit
+    view the middle button rotates; right drag pans in both views.
+  - [x] Brush size (`[` / `]`, 0.25–32 m), shape (circle / square) and
+    strength (share of tiles each dab paints).
+  - [x] **(added)** An eraser (`E`) that paints the `#` canvas back.
+  - [x] **(added)** Soft edges: tiles near the rim are painted with a chance
+    that falls off toward the edge, so sand fades into grass. The dice are
+    a hash of tile and stroke, so passing back and forth doesn't flicker.
+  - [x] Strokes follow the snapped cursor, with dabs evenly spaced along the
+    path. Each finished stroke carries every tile change (old → new) for
+    step 8's undo.
+  - [x] Brush panel (docked, from the widgets), menu item, status bar,
+    terminal (`brush`, `dab`, `stroke`), settings remembered.
+  - [x] **(added)** Unit tests for the brush maths (`npm run test:unit`,
+    part of `npm test`).
 
 - [ ] **8. (added) Undo / redo.**
   - An editor without undo is painful to use. Record each brush stroke as one

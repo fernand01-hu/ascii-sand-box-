@@ -4,6 +4,7 @@
 // changed, so an idle page costs nothing.
 
 import {
+  Group,
   BufferAttribute,
   BufferGeometry,
   Color,
@@ -26,6 +27,8 @@ export const BACKGROUND = new Color(0x090c13);
 export class Viewer {
   readonly renderer: WebGLRenderer;
   readonly scene = new Scene();
+  /** Debug lines and markers: drawn over the glyphs, left out of the underpaint wash. */
+  readonly overlay = new Group();
   readonly camera = new PerspectiveCamera(35, 1, 0.01, 100);
   readonly controls: OrbitControls;
   readonly cards: CardLayer;
@@ -38,7 +41,10 @@ export class Viewer {
   private contextLost = false;
   /** Render every frame and advance the animation clock (wind, water, rain). */
   animate = false;
-  private clockStart = performance.now();
+  // World clock (drives wind, water, rain, leaves): base + elapsed x speed.
+  private clockBase = 0;
+  private clockSince = performance.now();
+  private clockSpeed = 1;
   private frozenTime: number | null = null;
 
   constructor(private container: HTMLElement, atlas: GlyphAtlas) {
@@ -55,7 +61,8 @@ export class Viewer {
     this.body.visible = false;
     this.cards = new CardLayer(atlas);
     this.underpaint = new Underpaint(this.cards);
-    this.scene.add(this.body, this.cards.group);
+    this.overlay.renderOrder = 2;
+    this.scene.add(this.body, this.cards.group, this.overlay);
 
     this.camera.position.set(3, 2, 5);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -136,6 +143,7 @@ export class Viewer {
     eye: Vector3,
     opts: { fov?: number; far?: number; body?: { positions: Float32Array; normals: Float32Array } } = {},
   ): void {
+    this.stopMotion();
     if (opts.body && opts.body.positions.length > 0) {
       this.setBody(opts.body.positions, opts.body.normals);
       this.cards.setMode('coverage', 0.75); // cards must win against the body they sit on
@@ -171,7 +179,9 @@ export class Viewer {
     this.cards.cullSky(this.camera);
     this.cards.applyBudget(this.camera);
     if (this.underpaint.enabled) {
+      this.overlay.visible = false;
       this.underpaint.render(this.renderer, this.scene, this.camera, this.cards, this.background);
+      this.overlay.visible = true;
     } else {
       this.renderer.setRenderTarget(null);
       this.renderer.clear();
@@ -224,6 +234,12 @@ export class Viewer {
       if (Math.abs(px[i]! - br) + Math.abs(px[i + 1]! - bgc) + Math.abs(px[i + 2]! - bb) > 24) lit++;
     }
     return lit / (w * h);
+  }
+
+  /** Draw a frame now and return it as a PNG data URL (the `screenshot` command). */
+  snapshot(): string {
+    this.draw();
+    return this.renderer.domElement.toDataURL('image/png');
   }
 
   /** Glyph stacking on screen right now (see CardLayer.stacking). */
@@ -281,7 +297,20 @@ export class Viewer {
     canvas.remove();
   }
 
+  /**
+   * Drop the camera's leftover momentum (damping keeps it gliding after a
+   * drag or a wheel turn). Call before placing the camera, or the old glide
+   * carries on into the new view.
+   */
+  stopMotion(): void {
+    const damping = this.controls.enableDamping;
+    this.controls.enableDamping = false;
+    this.controls.update(); // applies what was left, all at once
+    this.controls.enableDamping = damping;
+  }
+
   private frame(bounds: Sphere): void {
+    this.stopMotion();
     const r = Math.max(bounds.radius, 1e-3);
     const fov = (this.camera.fov * Math.PI) / 180;
     const fit = Math.min(fov, 2 * Math.atan(Math.tan(fov / 2) * this.camera.aspect));
@@ -321,9 +350,43 @@ export class Viewer {
 
   /** Freeze the animation clock at `t` seconds (tests), or `null` to run. */
   freezeTime(t: number | null): void {
+    if (t === null && this.frozenTime !== null) this.setClock(this.frozenTime);
     this.frozenTime = t;
     if (t !== null) this.cards.setTime(t);
     this.requestRender();
+  }
+
+  /** The world clock, seconds (what wind, water, rain and leaves animate from). */
+  get clock(): number {
+    return this.frozenTime ?? this.clockBase + ((performance.now() - this.clockSince) / 1000) * this.clockSpeed;
+  }
+
+  get clockFrozen(): boolean {
+    return this.frozenTime !== null;
+  }
+
+  /** Set the world clock to `t` seconds; it keeps running from there. */
+  setClock(t: number): void {
+    this.clockBase = t;
+    this.clockSince = performance.now();
+    if (this.frozenTime !== null) this.frozenTime = t;
+    this.cards.setTime(t);
+    this.requestRender();
+  }
+
+  /** How fast the world clock runs (1 = real time, 0.25 slow motion, 0 stopped). */
+  get clockRate(): number {
+    return this.clockSpeed;
+  }
+
+  setClockRate(speed: number): void {
+    this.setClock(this.clock); // re-base so the clock doesn't jump
+    this.clockSpeed = Math.max(0, speed);
+  }
+
+  /** The opaque bodies (hidden solid shapes) by set key, for the debug wireframe. */
+  get bodyMeshes(): ReadonlyMap<string, Mesh<BufferGeometry, MeshBasicMaterial>> {
+    return this.bodies;
   }
 
   /** Called every frame with the time step (s) while set; e.g. the player. */
@@ -342,7 +405,7 @@ export class Viewer {
     }
     const moved = this.controls.enabled && this.controls.update(); // keeps damping going
     if (this.animate && this.frozenTime === null) {
-      this.cards.setTime((performance.now() - this.clockStart) / 1000);
+      this.cards.setTime(this.clock);
       this.dirty = true;
     }
     if (moved || this.dirty) {

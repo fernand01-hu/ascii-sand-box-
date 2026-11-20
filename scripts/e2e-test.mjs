@@ -53,7 +53,7 @@ try {
   const page = await browser.newPage();
   page.on('console', (m) => {
     const t = m.text();
-    const expected = t.includes('could not load broken.stl') || /GPU stall|Automatic fallback to software WebGL/.test(t);
+    const expected = t.includes('could not load broken.stl') || t.includes('[expected]') || /GPU stall|Automatic fallback to software WebGL/.test(t);
     if ((m.type() === 'error' || m.type() === 'warning') && !expected) problems.push(`[${m.type()}] ${t}`);
     if (t.startsWith('[ascii]')) console.log(`       ${t}`);
   });
@@ -76,6 +76,7 @@ try {
       // Never leave play mode or the terminal on (they swallow the keys the
       // next steps press), nor a card budget.
       await page.evaluate(() => window.__ascii?.stopPlaying?.()).catch(() => {});
+      await page.evaluate(() => window.__ascii?.app?.world && window.__ascii.run('camera orbit')).catch(() => {});
       await page.evaluate(() => {
         // Close every open panel (terminal, menu, settings...), top first.
         for (let k = 0; k < 6 && document.querySelector('.tui-panel:not([hidden])'); k++) {
@@ -282,14 +283,14 @@ try {
     assert.ok(await visible('.tui-menu'), 'Esc opens the menu');
     await page.keyboard.press('9'); // a gallery hotkey: must not fire under the menu
     assert.equal((await state()).model, 'canvas');
-    await page.keyboard.press('Enter'); // first item: Settings
-    assert.ok(await visible('.tui-settings'), 'Enter opens settings');
-    // Rows: seed, daytime, view, wind, rain, leaves, fps, budget.
+    await page.keyboard.press('s'); // Settings, by its letter
+    assert.ok(await visible('.tui-settings'), 's opens settings');
+    // Rows: seed, daytime, view, wind, rain, leaves, top-down, grid, snap, fps, budget.
     for (let k = 0; k < 3; k++) await page.keyboard.press('ArrowDown');
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('ArrowRight');
     assert.equal((await state()).weather.wind, 0.4, 'Right twice raises the wind by 2 steps');
-    for (let k = 0; k < 3; k++) await page.keyboard.press('ArrowDown');
+    for (let k = 0; k < 6; k++) await page.keyboard.press('ArrowDown');
     await page.keyboard.press(' ');
     await page.waitForFunction(() => /fps/.test(document.querySelector('.tui-status .tui-fps').textContent), { timeout: 5000 });
     // Mouse: click near the right end of the rain bar.
@@ -320,6 +321,240 @@ try {
     for (const c of ['canvas 1', 'wind 0.3', 'rain off']) await page.evaluate((c) => window.__ascii.run(c), c);
     await waitSettled('canvas');
     await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+  });
+
+  await step('debug tools: menu panel, overlays, inspector, light view, terminal tools, link, warnings', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    try {
+    const visible = (sel) => page.evaluate((sel) => [...document.querySelectorAll(sel)].some((e) => !e.hidden), sel);
+    // The menu's Debug panel: its first checkbox is the info box.
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('d');
+    assert.ok(await visible('.tui-debug'), 'menu → Debug opens the debug panel');
+    await page.keyboard.press(' ');
+    assert.ok(await visible('.tui-infobox'), 'the first checkbox shows the info box');
+    assert.match(await page.evaluate(() => document.querySelector('.tui-infobox').textContent), /facing\s+N/);
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    assert.match((await run('debug')).join('\n'), /\[x\] info/, 'the terminal sees what the menu set');
+    // Line overlays.
+    await run('place tree:oak 4 -28 1 3; debug chunks on; debug outlines on; debug axes on; debug culling on');
+    await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+    await new Promise((r) => setTimeout(r, 600));
+    const layers = await page.evaluate(() => window.__ascii.app.viewer.overlay.children.length);
+    assert.ok(layers >= 4, `chunk, outline, axes and culling lines are drawn (${layers} layers)`);
+    // Labels.
+    await run('debug chunkLabels on; debug objects on');
+    await page.waitForFunction(() => [...document.querySelectorAll('.tui-label-tag')].some((t) => !t.hidden && /#\d+ tree:oak/.test(t.textContent)), { timeout: 10_000 });
+    assert.ok(await page.evaluate(() => [...document.querySelectorAll('.tui-label-tag')].some((t) => !t.hidden && /^-?\d+,-?\d+/.test(t.textContent))), 'chunk coordinates are labelled');
+    await page.screenshot({ path: join(outDir, '13e-debug-overlays.png') });
+    // Light view and glyph size tint are one-at-a-time.
+    await run('debug light on');
+    assert.equal(await page.evaluate(() => window.__ascii.app.viewer.cards.material.uniforms.uDebugView.value), 1);
+    await run('debug size on');
+    assert.equal(await page.evaluate(() => window.__ascii.app.viewer.cards.material.uniforms.uDebugView.value), 2);
+    assert.match((await run('debug')).join('\n'), /\[ \] light/, 'turning on the size tint turns the light view off');
+    await run('debug size off');
+    // Glyph inspector: point at the ground in front of the camera.
+    await run('debug inspector on');
+    await page.mouse.move(500, 600);
+    await page.mouse.move(503, 602);
+    await page.waitForFunction(() => { const e = document.querySelector('.tui-inspect'); return e && !e.hidden && /GroundGrass|Canvas|sun/.test(e.textContent); }, { timeout: 10_000 });
+    // Heat map, perf overlay (its title must not be cut off).
+    await run('debug heat on; perf on');
+    assert.ok(await visible('.tui-heat'));
+    const perfTitle = await page.evaluate(() => {
+      const box = document.querySelector('.tui-perf'), t = box.querySelector('.tui-title');
+      return { overflow: getComputedStyle(box).overflow, top: t.getBoundingClientRect().top, height: t.getBoundingClientRect().height };
+    });
+    assert.notEqual(perfTitle.overflow, 'hidden', 'the perf box must not clip its title');
+    assert.ok(perfTitle.top >= 0, 'the perf title is on screen');
+    // Terminal tools.
+    assert.match((await run('set wind 0.7')).join('\n'), /wind = 0.70/);
+    assert.equal((await state()).weather.wind, 0.7);
+    await run('alias storm wind 1');
+    await run('storm');
+    assert.equal((await state()).weather.wind, 1, 'an alias runs its command');
+    await run('wind 0.4; rain 0.5');
+    assert.equal((await state()).weather.rain, 0.5, '; runs several commands');
+    await run('rain 0');
+    await run('!!');
+    assert.equal((await state()).weather.rain, 0);
+    await run('bind k wind 0.2');
+    await page.keyboard.press('k');
+    await page.waitForFunction(() => window.__ascii.weather.wind === 0.2, { timeout: 5000 });
+    assert.match((await run('verify')).join('\n'), /identical/);
+    assert.match((await run('profile 1')).join('\n'), /fps average/);
+    assert.match((await run('clearmap')).join('\n'), /type: clearmap yes/, 'clearmap asks first');
+    assert.match((await run('time 10')).join('\n'), /world clock 10\.\d s/);
+    assert.match((await run('stream off')).join('\n'), /frozen/);
+    await run('stream on');
+    for (const c of ['chunk', 'obj 1', 'here', 'workers', 'mem', 'stats', 'set', 'help debug']) {
+      const out = (await run(c)).join('\n');
+      assert.ok(out.length > 0 && !/unknown command|^error/m.test(out), `${c} answers`);
+    }
+    // A share link brings the camera back.
+    const link = (await run('link'))[0];
+    assert.match(link, /#seed=1&cam=/);
+    await run('cam 50 20 50 60 0 40');
+    assert.equal(await page.evaluate((h) => window.__ascii.applyLink(h), link.split('#')[1]), true);
+    const cam = await page.evaluate(() => window.__ascii.app.viewer.camera.position.toArray());
+    assert.ok(Math.abs(cam[0]) < 0.1 && Math.abs(cam[1] - 7) < 0.1, `the link restored the camera (${cam.map((v) => v.toFixed(1))})`);
+    // Warnings while the terminal is closed show up in the status bar; clicking opens the terminal.
+    await page.evaluate(() => console.warn('[expected] a test warning'));
+    assert.match(await page.evaluate(() => document.querySelector('.tui-warn').textContent), /⚠ 1/);
+    await page.click('.tui-warn');
+    assert.ok(await visible('.tui-terminal'), 'clicking the counter opens the terminal');
+    assert.equal(await page.evaluate(() => document.querySelector('.tui-warn').hidden), true, 'opening the terminal clears it');
+    await page.keyboard.press('Escape');
+    } finally {
+      // Back to a clean state for the next steps, even if something above failed.
+      await page.evaluate(() => { for (let k = 0; k < 6 && document.querySelector('.tui-panel:not([hidden])'); k++) window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+      for (const c of ['clearmap yes', 'bind k', 'alias storm', 'watch off', 'wind 0.3', 'rain 0', 'time 0', 'canvas 1',
+        ...['info', 'cursor', 'chunks', 'outlines', 'axes', 'culling', 'chunkLabels', 'objects', 'tiles', 'bodies', 'inspector', 'heat', 'perf', 'light', 'size', 'rebuilds'].map((d) => `debug ${d} off`)]) await run(c);
+    }
+    await waitSettled('canvas');
+    await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+    assert.equal(await page.evaluate(() => window.__ascii.app.viewer.overlay.children.length), 0, 'every overlay is gone again');
+  });
+
+  await step('editing camera: T looks straight down, pans and zooms, G grid, snapping, T back to orbit', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    const cam = () => page.evaluate(() => {
+      const v = window.__ascii.app.viewer;
+      const d = v.camera.getWorldDirection(v.camera.position.clone());
+      return { pos: v.camera.position.toArray(), target: v.controls.target.toArray(), dirY: d.y };
+    });
+    const settleCam = () => new Promise((r) => setTimeout(r, 900)); // damping
+    const before = await cam();
+    const offset = Math.hypot(before.pos[0] - before.target[0], before.pos[1] - before.target[1], before.pos[2] - before.target[2]);
+    await page.keyboard.press('t');
+    await settleCam();
+    let c = await cam();
+    assert.ok(c.dirY < -0.99, `T looks straight down (dir y ${c.dirY.toFixed(3)})`);
+    assert.ok(Math.abs(c.pos[0] - c.target[0]) < 0.05 && Math.abs(c.pos[2] - c.target[2]) < 0.05, 'the camera is right above its target');
+    // The ground under the middle of the screen is the target.
+    const mid = await page.evaluate(() => window.__ascii.groundAt(window.innerWidth / 2, (window.innerHeight) / 2));
+    assert.ok(mid && Math.hypot(mid.x - c.target[0], mid.z - c.target[2]) < 1, 'the screen centre looks at the target');
+    // Arrow up pans north (-z).
+    await page.keyboard.press('ArrowUp');
+    await settleCam();
+    const north = await cam();
+    assert.ok(north.target[2] < c.target[2] - 0.5, 'ArrowUp moves north');
+    // Dragging pans (never rotates in this view).
+    await page.mouse.move(500, 400);
+    await page.mouse.down();
+    await page.mouse.move(650, 400, { steps: 10 });
+    await page.mouse.up();
+    await settleCam();
+    const dragged = await cam();
+    assert.ok(Math.abs(dragged.target[0] - north.target[0]) > 1, 'dragging pans the view');
+    assert.ok(dragged.dirY < -0.99, 'still looking straight down after dragging');
+    // The wheel changes the height.
+    await page.mouse.wheel({ deltaY: 400 });
+    await settleCam();
+    const higher = await cam();
+    assert.ok(higher.pos[1] > dragged.pos[1] + 1, 'wheel out raises the camera');
+    // Grid and snapping.
+    await page.keyboard.press('g');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(await page.evaluate(() => window.__ascii.app.viewer.overlay.children.length > 0), 'G draws the grid');
+    await run('snap 1');
+    await page.mouse.move(430, 330);
+    await page.mouse.move(433, 333);
+    const p = await page.evaluate(() => window.__ascii.cursorPoint());
+    assert.ok(p && Number.isInteger(p.x) && Number.isInteger(p.z), `the cursor point snaps to 1 m (${p && `${p.x}, ${p.z}`})`);
+    const status = await page.evaluate(() => document.querySelector('.tui-status').textContent);
+    assert.match(status, /TOP · grid · snap 1 m/);
+    await page.screenshot({ path: join(outDir, '13f-top-view.png') });
+    // The menu agrees (s: Settings, whatever the menu last had selected).
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('s');
+    assert.match(await page.evaluate(() => document.querySelector('.tui-settings').textContent), /\[x\] top-down view/);
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    // T again: back to orbiting from the same distance.
+    await page.keyboard.press('t');
+    await settleCam();
+    const back = await cam();
+    const backOffset = Math.hypot(back.pos[0] - back.target[0], back.pos[1] - back.target[1], back.pos[2] - back.target[2]);
+    assert.ok(back.dirY > -0.9, 'orbiting again');
+    assert.ok(Math.abs(backOffset - offset) < 0.5, `the orbit distance comes back (${backOffset.toFixed(1)} vs ${offset.toFixed(1)})`);
+    await run('snap off; grid off; camera orbit; canvas 1');
+    await waitSettled('canvas');
+    await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+  });
+
+  await step('terrain brush: P, paint by dragging, keys, size, soft edge, square, eraser, panel, stroke record', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    const ground = (x, z) => page.evaluate((x, z) => window.__ascii.app.map.groundAt(x, z), x, z);
+    const settled = () => page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+    try {
+      await page.keyboard.press('t'); // top-down: easiest to paint in
+      await new Promise((r) => setTimeout(r, 900));
+      await page.keyboard.press('p');
+      assert.ok(await page.evaluate(() => !document.querySelector('.tui-brush').hidden), 'P shows the brush panel');
+      assert.match(await page.evaluate(() => document.querySelector('.tui-status').textContent), /BRUSH grass/);
+      await page.keyboard.press('2'); // sand
+      const before = await page.evaluate(() => window.__ascii.app.viewer.controls.target.toArray());
+      // Paint a line by dragging with the left button.
+      await page.mouse.move(420, 380);
+      const a = await page.evaluate(() => window.__ascii.cursorPoint());
+      await page.mouse.down();
+      await page.mouse.move(580, 380, { steps: 12 });
+      const b = await page.evaluate(() => window.__ascii.cursorPoint());
+      await page.mouse.up();
+      assert.ok(a && b, 'the mouse is over the ground');
+      const mid = { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 };
+      assert.equal(await ground(mid.x, mid.z), 'sand', 'dragging paints sand along the way');
+      assert.equal(await ground(a.x, a.z), 'sand', 'and where it started');
+      const after = await page.evaluate(() => window.__ascii.app.viewer.controls.target.toArray());
+      assert.ok(Math.hypot(after[0] - before[0], after[2] - before[2]) < 0.01, 'painting does not move the camera');
+      await settled();
+      await page.screenshot({ path: join(outDir, '13g-brush.png') });
+      // Size keys: ] one size up (2 -> 3 m), [ back down.
+      await page.keyboard.press(']');
+      assert.match((await run('brush grass')).join('\n'), /brush on: grass, circle 3 m/, '] makes the brush bigger');
+      await page.keyboard.press('[');
+      assert.match((await run('brush grass')).join('\n'), /circle 2 m/, '[ makes it smaller again');
+      // Soft edge: a big soft dab is solid in the middle and patchy near the rim.
+      await run('brush size 8; brush soft 0.6; brush strength 1');
+      await run('dab 40 -60');
+      assert.equal(await ground(40.2, -60.2), 'grass', 'solid in the middle');
+      const rim = await page.evaluate(() => {
+        const m = window.__ascii.app.map;
+        let painted = 0, n = 0;
+        for (let k = 0; k < 72; k++) {
+          const ang = (k / 72) * Math.PI * 2;
+          n++;
+          if (m.groundAt(40 + 7.3 * Math.cos(ang), -60 + 7.3 * Math.sin(ang)) === 'grass') painted++;
+        }
+        return painted / n;
+      });
+      assert.ok(rim > 0.02 && rim < 0.9, `near the rim only some tiles are painted (${(rim * 100).toFixed(0)}%)`);
+      // A square brush paints its corners (a circle of the same size would not).
+      await run('brush rock; brush shape square; brush soft 0; brush size 2; dab 20.25 -20.25');
+      assert.equal(await ground(21.9, -21.9), 'rock', 'square corner painted');
+      // Eraser.
+      await page.keyboard.press('e');
+      assert.match((await run('set')).join('\n'), /^paint\s+canvas/m, 'E switches to the eraser');
+      await run('dab 20.25 -20.25');
+      assert.equal(await ground(20.25, -20.25), 'canvas', 'the eraser paints the canvas back');
+      // The panel works with the mouse: click "water".
+      const waterRow = await page.evaluateHandle(() => [...document.querySelectorAll('.tui-brush .tui-check')].find((r) => /water/.test(r.textContent)));
+      await waterRow.click();
+      assert.match((await run('set')).join('\n'), /^paint\s+water/m, 'clicking a paint in the panel picks it');
+      // A stroke along a line, from the terminal.
+      const out = (await run('stroke -30 -45 -20 -45'))[0];
+      assert.match(out, /water: \d+ tiles changed/);
+      assert.equal(await ground(-25, -45), 'water');
+      await page.keyboard.press('p');
+      assert.ok(await page.evaluate(() => document.querySelector('.tui-brush').hidden), 'P hides the brush panel');
+    } finally {
+      for (const c of ['brush off', 'brush grass', 'brush size 2', 'brush shape circle', 'brush strength 1', 'brush soft 0.3', 'clearmap yes', 'camera orbit', 'canvas 1']) await run(c);
+    }
+    await waitSettled('canvas');
+    await settled();
   });
 
   const models = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];

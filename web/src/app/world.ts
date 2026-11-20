@@ -10,6 +10,8 @@
 //     view grazes the ground). Screen density stays the same everywhere.
 // Memory stays bounded: only chunks within `radius` (+2 before dropping)
 // are kept; the edits themselves live in MapData, not here.
+// For the debug tools it records, per chunk, why and how fast it was last
+// built, and it can be frozen (no loading or rebuilding) to look around.
 
 import type { EngineClient } from '../engine/client';
 import type { WorldChunkData, WorldInfo } from '../engine/protocol';
@@ -18,10 +20,32 @@ import type { Viewer } from '../render/viewer';
 import { chunkKey, type MapData } from './map';
 import { ColliderGrid, type Ground } from './physics';
 
+/** Why a chunk was (re)built. */
+export type BuildReason = 'new' | 'edit' | 'move' | 'angle';
+
 interface Loaded {
   data: WorldChunkData;
   colliders: ColliderGrid;
+  /** Engine time to build it (ms), cards it holds, why it was built, when. */
+  buildMs: number;
+  cards: number;
+  reason: BuildReason;
+  builtAt: number;
 }
+
+/** One chunk as the debug tools see it. */
+export interface ChunkInfo {
+  cx: number;
+  cz: number;
+  key: string;
+  state: 'loaded' | 'building' | 'dirty';
+  /** Holds paint or objects. */
+  edited: boolean;
+  loaded: Loaded | null;
+}
+
+/** Called after every build: the chunk, why, how long the engine took (ms), cards. */
+export type BuildListener = (key: string, reason: BuildReason, ms: number, cards: number) => void;
 
 export class WorldStreamer implements Ground {
   /** View distance in chunks. */
@@ -43,6 +67,9 @@ export class WorldStreamer implements Ground {
   /** Of those, rebuilds of loaded chunks because the viewer moved (glyph sizes). */
   viewBuilds = 0;
   private flushQueued = false;
+  /** While true, nothing is loaded, rebuilt or dropped. */
+  frozen = false;
+  private buildListeners = new Set<BuildListener>();
 
   constructor(
     private engine: EngineClient,
@@ -81,15 +108,55 @@ export class WorldStreamer implements Ground {
     return this.inflight.size;
   }
 
+  /** Called after every chunk build (rebuild log, debug overlays). */
+  onBuilt(f: BuildListener): () => void {
+    this.buildListeners.add(f);
+    return () => this.buildListeners.delete(f);
+  }
+
+  /** Every chunk loaded or being built, for the debug tools. */
+  chunks(): ChunkInfo[] {
+    const out: ChunkInfo[] = [];
+    const seen = new Set<string>();
+    const add = (key: string, loaded: Loaded | null, cx: number, cz: number) => {
+      seen.add(key);
+      out.push({
+        cx, cz, key, loaded,
+        state: this.inflight.has(key) ? 'building' : this.dirty.has(key) ? 'dirty' : 'loaded',
+        edited: this.map.objectsIn(cx, cz).length > 0 || this.map.hasPaint(cx, cz),
+      });
+    };
+    for (const [k, l] of this.loaded) add(k, l, l.data.cx, l.data.cz);
+    for (const k of this.inflight) {
+      if (seen.has(k)) continue;
+      const m = /^w(-?\d+),(-?\d+)$/.exec(k);
+      if (m) add(k, null, Number(m[1]), Number(m[2]));
+    }
+    return out;
+  }
+
+  /** One chunk's record (null if not loaded). */
+  chunk(cx: number, cz: number): Loaded | null {
+    return this.loaded.get(this.key(cx, cz)) ?? null;
+  }
+
+  /** Build these chunks again now (or every loaded chunk). Returns how many. */
+  rebuild(which: [number, number][] | 'all'): number {
+    const keys = which === 'all' ? [...this.loaded.keys()] : which.map(([cx, cz]) => this.key(cx, cz)).filter((k) => this.loaded.has(k));
+    for (const k of keys) this.dirty.add(k);
+    this.update(this.lastEye, true);
+    return keys.length;
+  }
   /** Call every frame with the viewer's position. */
   update(eye: { x: number; y: number; z: number }, force = false): void {
     this.lastEye = { x: eye.x, y: eye.y, z: eye.z };
+    if (this.frozen) return;
     const now = performance.now();
     if (!force && now - this.lastCheck < 150) return;
     this.lastCheck = now;
     const S = this.info.chunkSize;
     const ccx = Math.floor(eye.x / S), ccz = Math.floor(eye.z / S);
-    const want: { cx: number; cz: number; prio: number }[] = [];
+    const want: { cx: number; cz: number; prio: number; reason: BuildReason }[] = [];
     for (let dz = -this.radius; dz <= this.radius; dz++) {
       for (let dx = -this.radius; dx <= this.radius; dx++) {
         if (dx * dx + dz * dz > this.radius * this.radius + 1) continue;
@@ -100,11 +167,11 @@ export class WorldStreamer implements Ground {
         const dNow = Math.hypot(eye.x - centre[0], eye.z - centre[1]);
         const have = this.loaded.get(k);
         if (!have) {
-          want.push({ cx, cz, prio: dNow });
+          want.push({ cx, cz, prio: dNow, reason: 'new' });
           continue;
         }
         if (this.dirty.has(k)) {
-          want.push({ cx, cz, prio: dNow - 1e6 }); // edits first
+          want.push({ cx, cz, prio: dNow - 1e6, reason: 'edit' }); // edits first
           continue;
         }
         // Rebuild when the glyph sizes chosen at build time are off by much.
@@ -118,7 +185,8 @@ export class WorldStreamer implements Ground {
         const g = this.info.ground;
         const graze = (h: number, d: number) => Math.max(h - g, 0.5) / Math.hypot(Math.max(h - g, 0.5), d);
         const angle = graze(eye.y, Math.max(dNow, floor)) / graze(by, Math.max(dBuilt, floor));
-        if (ratio > 1.7 || ratio < 0.6 || angle > 1.7 || angle < 0.6 || moved > 0.6 * Math.max(dNow, floor)) want.push({ cx, cz, prio: dNow + 1000 });
+        const byDistance = ratio > 1.7 || ratio < 0.6 || moved > 0.6 * Math.max(dNow, floor);
+        if (byDistance || angle > 1.7 || angle < 0.6) want.push({ cx, cz, prio: dNow + 1000, reason: byDistance ? 'move' : 'angle' });
       }
     }
     // Drop chunks well out of range.
@@ -128,11 +196,11 @@ export class WorldStreamer implements Ground {
     want.sort((a, b) => a.prio - b.prio);
     for (const w of want) {
       if (this.inflight.size >= this.maxInflight) break;
-      this.request(w.cx, w.cz, [eye.x, eye.y, eye.z]);
+      this.request(w.cx, w.cz, [eye.x, eye.y, eye.z], w.reason);
     }
   }
 
-  private request(cx: number, cz: number, eye: [number, number, number]): void {
+  private request(cx: number, cz: number, eye: [number, number, number], reason: BuildReason): void {
     const k = this.key(cx, cz);
     this.inflight.add(k);
     const wasDirty = this.dirty.delete(k);
@@ -148,8 +216,10 @@ export class WorldStreamer implements Ground {
         // Replace the old version only now, so nothing flickers out meanwhile.
         this.viewer.cards.addSet(k, res.cards, res.stride, res.chunks);
         if (res.mesh) this.viewer.addBody(k, res.mesh.positions, res.mesh.normals);
-        this.loaded.set(k, { data: res.chunk, colliders: new ColliderGrid(res.chunk.colliders) });
+        const buildMs = res.timings.generateMs;
+        this.loaded.set(k, { data: res.chunk, colliders: new ColliderGrid(res.chunk.colliders), buildMs, cards: res.count, reason, builtAt: performance.now() });
         this.built++;
+        for (const f of this.buildListeners) f(k, reason, buildMs, res.count);
         this.viewer.requestRender();
       },
       (err) => {

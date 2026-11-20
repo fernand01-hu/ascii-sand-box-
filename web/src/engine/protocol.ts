@@ -72,6 +72,8 @@ export interface WorldInfo {
   /** Ground paints (index = tile byte) and object kinds (index = kind code). */
   groundKinds: string[];
   objectKinds: string[];
+  /** Material names by material id (glyph inspector). */
+  materialNames: string[];
 }
 
 export interface WorldChunkData {
@@ -83,6 +85,8 @@ export interface WorldChunkData {
   rev: number;
   /** Objects drawn. */
   placed: number;
+  /** Per object drawn: record index, then its world box (min xyz, max xyz). */
+  bounds: Float32Array;
   /** (grid + 1)^2 heights, 1 m apart, from the chunk corner. */
   heights: Float32Array;
   /** x, z, radius, top y per collider. */

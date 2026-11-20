@@ -210,6 +210,9 @@ pub struct ChunkOut {
     pub colliders: Vec<[f32; 4]>,
     /// Objects skinned (records with an unknown kind are skipped).
     pub placed: usize,
+    /// Per object drawn: its record index in the input, then the world box
+    /// it fills (min x, y, z, max x, y, z; turned boxes are enclosed).
+    pub bounds: Vec<[f32; 7]>,
 }
 
 /// The canvas: a seed for the sky, the time of day, glyph pickers and the
@@ -250,7 +253,8 @@ impl Canvas {
 
         // Objects first: generate (or fetch) their assets while `lib` may change.
         let mut objects: Vec<(usize, Kind, Placement)> = Vec::new();
-        for o in data.objects.chunks_exact(OBJECT_FLOATS) {
+        let mut bounds: Vec<[f32; 7]> = Vec::new();
+        for (index, o) in data.objects.chunks_exact(OBJECT_FLOATS).enumerate() {
             let Some(&kind) = self.kinds.get(o[0] as usize) else { continue };
             if o.iter().any(|v| !v.is_finite()) {
                 continue;
@@ -263,6 +267,9 @@ impl Canvas {
             let sink = if let Kind::Tree(_) = kind { 0.12 } else { 0.03 };
             let tint = 0.85 + 0.3 * hash2(seed as i64, 7);
             let pl = Placement { pos: Vec3::new(x, GROUND - sink, z), yaw: o[4], scale: o[5].clamp(0.05, 20.0), tint };
+            let (lo, hi) = self.lib.assets[asset].bounds();
+            let r = [lo.x, hi.x, lo.z, hi.z].iter().fold(0.0f32, |m, v| m.max(v.abs())) * pl.scale;
+            bounds.push([index as f32, x - r, pl.pos.y + lo.y * pl.scale, z - r, x + r, pl.pos.y + hi.y * pl.scale, z + r]);
             objects.push((asset, kind, pl));
         }
 
@@ -293,6 +300,7 @@ impl Canvas {
             heights: vec![GROUND; (GRID + 1) * (GRID + 1)],
             colliders: Vec::new(),
             placed: objects.len(),
+            bounds,
         }
     }
 }
@@ -462,6 +470,11 @@ mod tests {
         let blank_n = canvas.build_chunk(0, 0, eye(), ASPECT, blank()).cards.len();
         let c = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &[], objects: &objects });
         assert_eq!(c.placed, 2);
+        assert_eq!(c.bounds.len(), 2);
+        let oak_box = c.bounds[0];
+        assert_eq!(oak_box[0], 0.0, "record index");
+        assert!(oak_box[1] < 31.5 && oak_box[4] > 31.5 && oak_box[5] > 5.0, "the box holds the oak: {oak_box:?}");
+        assert_eq!(c.bounds[1][0], 1.0);
         assert!(c.cards.len() > blank_n + 2000 * STRIDE, "objects add cards");
         assert!(c.body.len() > 2, "near rock and trunk add solid bodies");
         let over = c.cards.chunks_exact(STRIDE).filter(|k| k[0] > CHUNK + 0.5 && k[1] > 1.0).count();
