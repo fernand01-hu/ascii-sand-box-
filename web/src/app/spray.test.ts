@@ -58,3 +58,18 @@ test('spacing by family, and "any tree" picks among the trees', () => {
   assert.deepEqual([...picked].sort(), ['tree:oak', 'tree:pine']);
   assert.equal(pickKind('rock:slab', kinds, rnd), 'rock:slab');
 });
+
+test('variation: values spread round the base by +- that share, in range, whole numbers stay whole', async () => {
+  const { vary } = await import('./spray.ts');
+  const rnd = seeded(7);
+  const r = { min: 0.3, max: 2.5, step: 0.05 };
+  const vals = Array.from({ length: 400 }, () => vary(1, 0.2, r, rnd));
+  assert.ok(vals.every((v) => v >= 0.8 - 1e-9 && v <= 1.2 + 1e-9), 'within +-20%');
+  assert.ok(Math.max(...vals) - Math.min(...vals) > 0.3, 'and really spread');
+  assert.equal(vary(1, 0, r, rnd), 1, 'no spread: the base');
+  const counts = Array.from({ length: 200 }, () => vary(6, 0.5, { min: 1, max: 14, step: 1 }, rnd));
+  assert.ok(counts.every((v) => Number.isInteger(v) && v >= 3 && v <= 9), 'whole numbers, +-50%');
+  const zero = Array.from({ length: 200 }, () => vary(0, 0.5, { min: 0, max: 1, step: 0.01 }, rnd));
+  assert.ok(zero.some((v) => v > 0.1) && zero.every((v) => v >= 0 && v <= 0.25 + 1e-9), 'a 0 base varies by a share of the range, kept in range');
+  assert.ok(Array.from({ length: 100 }, () => vary(2.4, 0.5, r, rnd)).every((v) => v <= 2.5), 'clamped to the maximum');
+});

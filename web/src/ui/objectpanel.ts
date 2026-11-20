@@ -14,7 +14,7 @@ export class ObjectPanel {
   readonly panel: Panel;
 
   constructor(app: App, tool: ObjectTool, root: HTMLElement = document.body) {
-    this.panel = new Panel({ title: 'objects', hint: 'O close', className: 'tui-brush tui-objects', modal: false }, root);
+    this.panel = new Panel({ title: 'objects', hint: 'O close', className: 'tui-brush tui-objects', modal: false, docked: true }, root);
     const W = 10;
     const modes = OBJECT_MODES.map((m, i) => new Checkbox(`${m.padEnd(8)} ${i + 1}`, tool.mode === m, () => tool.setMode(m)));
     const kind = new Choice({
@@ -51,7 +51,7 @@ export class SelectPanel {
   readonly panel: Panel;
 
   constructor(app: App, tool: SelectTool, root: HTMLElement = document.body) {
-    this.panel = new Panel({ title: 'select', hint: 'V close', className: 'tui-brush tui-select', modal: false }, root);
+    this.panel = new Panel({ title: 'select', hint: 'V close', className: 'tui-brush tui-select', modal: false, docked: true }, root);
     const what = new Text('click an object to select it');
     const where = new Text('', 'tui-dim');
     this.panel.add(what, where, new Text('drag: move · R: turn (Shift back)', 'tui-dim'), new Text('[ ]: size · Delete: remove · Esc: let go', 'tui-dim'));

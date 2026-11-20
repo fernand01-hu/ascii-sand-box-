@@ -65,7 +65,11 @@ try {
   const state = () => page.evaluate(() => JSON.parse(JSON.stringify(window.__ascii)));
   const coverage = () => page.evaluate(() => window.__ascii.coverage());
 
+  // Quick mode: E2E_ONLY="pattern" runs only the steps whose name matches
+  // (and the final console check), e.g. E2E_ONLY="toolbar|brush".
+  const only = process.env.E2E_ONLY ? new RegExp(process.env.E2E_ONLY, 'i') : null;
   const step = async (name, fn) => {
+    if (only && !only.test(name) && !name.startsWith('no errors')) return;
     try {
       await fn();
       console.log(`  ok   ${name}`);
@@ -124,6 +128,10 @@ try {
   };
 
   await page.goto(url, { waitUntil: 'load' });
+  if (only) {
+    console.log(`  quick mode: only steps matching /${only.source}/i`);
+    await page.waitForFunction(() => window.__ascii && window.__ascii.model === 'canvas' && window.__ascii.status === 'ready', { timeout: 120_000 });
+  }
 
   const chunksLoaded = (n) => page.waitForFunction((n) => { const s = window.__ascii.worldStats(); return s && s.loaded >= n && s.pending === 0; },
     { timeout: 900_000, polling: 1000 }, n);
@@ -493,7 +501,7 @@ try {
       await page.keyboard.press('t'); // top-down: easiest to paint in
       await new Promise((r) => setTimeout(r, 900));
       await page.keyboard.press('p');
-      assert.ok(await page.evaluate(() => !document.querySelector('.tui-brush').hidden), 'P shows the brush panel');
+      assert.ok(await page.evaluate(() => !document.querySelector('.tui-paint').hidden), 'P shows the brush panel');
       assert.match(await page.evaluate(() => document.querySelector('.tui-status').textContent), /BRUSH grass/);
       await page.keyboard.press('2'); // sand
       const before = await page.evaluate(() => window.__ascii.app.viewer.controls.target.toArray());
@@ -542,7 +550,7 @@ try {
       await run('dab 20.25 -20.25');
       assert.equal(await ground(20.25, -20.25), 'canvas', 'the eraser paints the canvas back');
       // The panel works with the mouse: click "water".
-      const waterRow = await page.evaluateHandle(() => [...document.querySelectorAll('.tui-brush .tui-check')].find((r) => /water/.test(r.textContent)));
+      const waterRow = await page.evaluateHandle(() => [...document.querySelectorAll('.tui-paint .tui-check')].find((r) => /water/.test(r.textContent)));
       await waterRow.click();
       assert.match((await run('set')).join('\n'), /^paint\s+water/m, 'clicking a paint in the panel picks it');
       // A stroke along a line, from the terminal.
@@ -550,7 +558,7 @@ try {
       assert.match(out, /water: \d+ tiles changed/);
       assert.equal(await ground(-25, -45), 'water');
       await page.keyboard.press('p');
-      assert.ok(await page.evaluate(() => document.querySelector('.tui-brush').hidden), 'P hides the brush panel');
+      assert.ok(await page.evaluate(() => document.querySelector('.tui-paint').hidden), 'P hides the brush panel');
     } finally {
       for (const c of ['brush off', 'brush grass', 'brush size 2', 'brush shape circle', 'brush strength 1', 'brush soft 0.3', 'clearmap yes', 'camera orbit', 'canvas 1']) await run(c);
     }
@@ -931,6 +939,57 @@ try {
     }
     await waitSettled('canvas');
     await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+  });
+
+  await step('toolbar, options sidebar, movable windows, spray variation', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    const visible = (sel) => page.evaluate((sel) => { const e = document.querySelector(sel); return !!e && !e.hidden; }, sel);
+    try {
+      // The toolbar switches tools; the one that is on is highlighted.
+      await page.click('.tui-toolbar [data-tool=objects]');
+      assert.ok(await page.evaluate(() => document.querySelector('.tui-toolbar [data-tool=objects]').classList.contains('tui-sel')), 'objects is highlighted');
+      assert.ok(await page.evaluate(() => !document.querySelector('.tui-dock .tui-objects').hidden), 'its options are in the sidebar');
+      await page.click('.tui-toolbar [data-tool=paint]');
+      assert.ok(await page.evaluate(() => !document.querySelector('.tui-dock .tui-paint').hidden), 'paint options now');
+      assert.ok(await page.evaluate(() => document.querySelector('.tui-dock .tui-objects').hidden), 'object options gone: one tool at a time');
+      // Tab hides and shows the sidebar.
+      await page.keyboard.press('Tab');
+      assert.equal(await visible('.tui-dock'), false, 'Tab hides it');
+      await page.keyboard.press('Tab');
+      assert.equal(await visible('.tui-dock'), true, 'Tab shows it again');
+      // Windows move by their title, stay there, and go back on double-click.
+      await page.keyboard.press('Escape');
+      const title = await page.$('.tui-menu .tui-title');
+      const t = await title.boundingBox();
+      await page.mouse.move(t.x + 10, t.y + 5);
+      await page.mouse.down();
+      await page.mouse.move(t.x - 190, t.y - 95, { steps: 6 });
+      await page.mouse.up();
+      const moved = await page.evaluate(() => document.querySelector('.tui-menu').getBoundingClientRect().toJSON());
+      assert.ok(Math.abs(moved.top - (t.y - 100)) < 20, `the menu moved up (${moved.top.toFixed(0)})`);
+      await page.keyboard.press('Escape');
+      await page.keyboard.press('Escape');
+      const again = await page.evaluate(() => document.querySelector('.tui-menu').getBoundingClientRect().toJSON());
+      assert.ok(Math.abs(again.left - moved.left) < 2 && Math.abs(again.top - moved.top) < 2, 'it opens where it was left');
+      const tt = await (await page.$('.tui-menu .tui-title')).boundingBox();
+      for (let k = 0; k < 2; k++) await page.mouse.click(tt.x + 10, tt.y + 5);
+      const back = await page.evaluate(() => document.querySelector('.tui-menu').getBoundingClientRect().toJSON());
+      assert.ok(Math.abs(back.left + back.width / 2 - 500) < 30, `double-click puts it back in the middle (${(back.left + back.width / 2).toFixed(0)})`);
+      await page.keyboard.press('Escape');
+      // Spraying with +-40% height gives trees of different heights, all within the range.
+      await run('clearmap yes; objbrush tree:oak; objbrush mode spray; objbrush density 30; objbrush size 16; param reset; param height ±40');
+      assert.match((await run('param')).find((l) => l.startsWith('height')), /±40%/);
+      await run('objbrush stroke -10 -40 10 -40');
+      const heights = await page.evaluate(() => window.__ascii.app.map.allObjects().map((o) => o.params?.[0] ?? 1));
+      assert.ok(heights.length >= 4, `sprayed some oaks (${heights.length})`);
+      assert.ok(new Set(heights.map((h) => h.toFixed(3))).size >= 2, `heights vary (${[...new Set(heights.map((h) => h.toFixed(2)))].join(' ')})`);
+      assert.ok(heights.every((h) => h >= 0.6 - 1e-6 && h <= 1.4 + 1e-6), 'within +-40% of 1');
+      assert.ok(new Set(heights.map((h) => h.toFixed(4))).size <= 6, 'drawn from a small pool per stroke (few unique trees to grow)');
+      await page.screenshot({ path: join(outDir, '13k-toolbar-sidebar.png') });
+    } finally {
+      for (const c of ['param reset', 'objbrush tree:*', 'objbrush density 3', 'objbrush size 6', 'tool off', 'clearmap yes', 'canvas 1']) await run(c).catch(() => {});
+    }
+    await waitSettled('canvas');
   });
 
   const models = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];

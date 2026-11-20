@@ -10,7 +10,7 @@ export class HeightPanel {
   readonly panel: Panel;
 
   constructor(app: App, tool: HeightTool, root: HTMLElement = document.body) {
-    this.panel = new Panel({ title: 'height', hint: 'H close', className: 'tui-brush tui-height', modal: false }, root);
+    this.panel = new Panel({ title: 'height', hint: 'H close', className: 'tui-brush tui-height', modal: false, docked: true }, root);
     const modes = HEIGHT_MODES.map((m, i) => new Checkbox(`${m.padEnd(8)} ${i + 1}`, tool.mode === m, () => tool.setMode(m)));
     const size = new Slider({ label: 'size', labelWidth: 10, min: 1, max: 32, step: 1, value: tool.radius, width: 12, format: (v) => `${v} m  [ ]`, onChange: (v) => tool.set({ radius: v }) });
     const strength = new Slider({
