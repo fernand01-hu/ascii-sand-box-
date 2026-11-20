@@ -13,7 +13,8 @@ import type { Lighting } from '../render/cards';
 import { SunShadow } from '../render/sunshadow';
 import type { ViewPane } from '../render/viewer';
 import type { App } from './app';
-import { ShoreMap } from './shoremap';
+import { MAX_SPEED, ShoreMap } from './shoremap';
+import { DebugDraw, Lines } from '../render/debugdraw';
 import { addRootKeys } from '../ui/widgets';
 import type { MapData } from './map';
 
@@ -64,8 +65,8 @@ export const WEATHERS: WeatherVariant[] = [
 
 export const WATERS: WaterVariant[] = [
   { id: 'now', name: 'A  now', help: 'today\'s leaning water glyphs and shimmer' },
-  { id: 'waves', name: 'B  glyph waves', help: 'waves travel across the water drawn by the glyphs: _ . - ~ ^ to the crest', waves: true },
-  { id: 'shore', name: 'C  shore + foam', help: 'light shallow water at the edge, dark deep water, foam lapping the shore', shore: true },
+  { id: 'waves', name: 'B  flowing waves', help: 'waves drawn with glyphs (_ . - ~ ^) that follow the water: rivers run downhill along their bed, lakes ripple in the wind, waves turn in to the shore', waves: true },
+  { id: 'shore', name: 'C  shore + foam', help: 'light shallow water at the edge, dark deep water, foam where waves break on the shore and in fast rapids', shore: true },
   { id: 'glints', name: 'D  glints + sky', help: 'the sky reflected at grazing angles, sun glitter sparkling on the water', glints: true },
   { id: 'rings', name: 'E  rain rings', help: 'raindrops open rings on the water (. o O); turn the rain on', rings: true },
   { id: 'all', name: 'F  everything', help: 'B to E together', waves: true, shore: true, glints: true, rings: true },
@@ -147,6 +148,10 @@ export class Lab {
   /** Share of the screen width the panes may use from the left (the options sidebar takes the rest). */
   room: () => number = () => 1;
   private watched: MapData | null = null;
+  /** Debug arrows showing the current (lab flow on). */
+  arrows = false;
+  private arrowDraw: DebugDraw | null = null;
+  private arrowRev = -1;
   private nextBolt = 0;
 
   constructor(private app: App) {
@@ -192,7 +197,7 @@ export class Lab {
       if (m && m !== this.watched) {
         this.watched = m;
         m.onEdit((e) => {
-          if (e.tiles?.length) this.shore.invalidate();
+          if (e.tiles?.length || e.heights?.length) this.shore.invalidate();
         });
       }
       this.base = null; // a new scene brings its own light
@@ -266,6 +271,8 @@ export class Lab {
     if (!on) {
       v.panes = null;
       v.beforeDraw = null;
+      this.arrowDraw?.set('tiles', null);
+      this.arrowRev = -1;
       this.restore();
       v.requestRender();
       return;
@@ -368,10 +375,12 @@ export class Lab {
       v.cards.setLighting(now.light);
       this.sun.render(v.renderer, v.scene, v.camera, v.cards, now.light.sunDir, [v.overlay]);
     }
-    // Shore map, when a pane shows the shore.
-    if (app.map && this.uses((p) => !!WATERS.find((w) => w.id === p.water)?.shore)) {
+    // Water map (shore, current), when a pane shows waves or the shore, or the arrows are on.
+    const wv = (p: PaneLook) => { const w = WATERS.find((x) => x.id === p.water); return !!(w?.shore || w?.waves); };
+    if (app.map && (this.arrows || this.uses(wv))) {
       this.shore.update(app.map, v.camera.position.x, v.camera.position.z);
       v.cards.setShore(this.shore.texture, this.shore.box);
+      if (this.arrows && this.arrowRev !== this.shore.revision) this.drawArrows();
     }
   }
 
@@ -397,6 +406,42 @@ export class Lab {
       new Vector4(W.wet ? 1 : 0, W.mist ? 1 : 0, W.storm ? 1 : 0, ground),
       new Vector4(R.waves ? 1 : 0, R.shore ? 1 : 0, R.glints ? 1 : 0, R.rings ? 1 : 0),
     );
+  }
+
+  /** Show or hide arrows for the current on the water (debug). */
+  setArrows(on: boolean): void {
+    this.arrows = on;
+    this.arrowRev = -1;
+    if (!on) this.arrowDraw?.set('tiles', null);
+    this.app.viewer.requestRender();
+    if (on && !this.enabled) this.setEnabled(true);
+  }
+
+  private drawArrows(): void {
+    const sm = this.shore, map = this.app.map, w = this.app.world;
+    if (!map || !w) return;
+    this.arrowRev = sm.revision;
+    this.arrowDraw ??= new DebugDraw(this.app.viewer.overlay);
+    const l = new Lines(), N = sm.size, g = w.info.ground, x0 = sm.box.x, z0 = sm.box.y;
+    for (let j = 1; j < N; j += 2) {
+      for (let i = 1; i < N; i += 2) {
+        const k = j * N + i;
+        if (!sm.water[k]) continue;
+        const x = x0 + i + 0.5, z = z0 + j + 0.5, y = g + map.heightAt(x, z) + 0.35;
+        const fx = sm.flow[k * 2]!, fz = sm.flow[k * 2 + 1]!, s = Math.hypot(fx, fz);
+        if (s < 0.08) {
+          l.seg(x - 0.1, y, z, x + 0.1, y, z, [0.35, 0.5, 0.9]); // still water: a dot
+          continue;
+        }
+        const t = Math.min(1, s / MAX_SPEED), c: [number, number, number] = [0.4 + 0.6 * t, 0.9 - 0.4 * t, 0.3];
+        const len = 0.6 + 1.0 * t, dx = (fx / s) * len, dz = (fz / s) * len;
+        const ex = x + dx, ez = z + dz;
+        l.seg(x, y, z, ex, y, ez, c);
+        l.seg(ex, y, ez, ex - dx * 0.4 - dz * 0.3, y, ez - dz * 0.4 + dx * 0.3, c);
+        l.seg(ex, y, ez, ex - dx * 0.4 + dz * 0.3, y, ez - dz * 0.4 - dx * 0.3, c);
+      }
+    }
+    this.arrowDraw.set('tiles', l);
   }
 
   /** Lines of a terminal listing. */
@@ -469,7 +514,7 @@ export function landscapeLines(): string[] {
   // The river's course: from the mountains (z -118) down to the lake, then out toward the front left.
   const river: [number, number][] = [];
   for (let z = -118; z <= -62; z += 4) river.push([8 + 10 * Math.sin((z + 118) / 14) - (z + 118) * 0.35, z]);
-  for (let t = 0; t <= 1.0001; t += 0.06) river.push([-38 - 30 * t + 6 * Math.sin(t * 7), -30 + 70 * t]);
+  for (let t = 0; t <= 1.0001; t += 0.03) river.push([-38 - 30 * t + 6 * Math.sin(t * 7), -30 + 70 * t]); // points under 3 m apart: no gaps
   const lake = { x: -25, z: -45, r: 18 };
   const f = (v: number) => v.toFixed(1);
 
@@ -487,6 +532,8 @@ export function landscapeLines(): string[] {
   // The lake basin, an island, and the river's bed.
   L.push('height lower; height size 22; height strength 1.2', 'repeat 2 height stroke -30 -45 -20 -45');
   L.push('height raise; height size 4; height strength 0.6', 'height stroke -21 -49 -19 -48');
+  // The land falls away at the front left, so the river leaves the lake and runs off downhill.
+  L.push('height lower; height size 34; height strength 2', 'repeat 2 height stroke -72 34 -64 42');
   L.push('height lower; height size 7; height strength 0.6');
   for (let i = 0; i + 1 < river.length; i += 3) {
     const a = river[i]!, b = river[Math.min(i + 3, river.length - 1)]!;

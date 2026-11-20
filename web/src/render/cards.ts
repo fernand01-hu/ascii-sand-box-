@@ -229,13 +229,17 @@ float sunMap(vec3 p, float size) {
   return lit / 9.0;
 }
 
-// Shore map: x = how far into the water (0 shore .. 1 = 10 m+), y = how far from water on land.
-vec2 shoreAt(vec2 xz) {
-  if (uShoreBox.z <= 0.0) return vec2(1.0);
+// Water map: x = how far into the water (0 shore .. 1 = 10 m+), y = how far from
+// water on land, zw = the current (x, z) as a share of the fastest (2.5 m/s).
+vec4 waterAt(vec2 xz) {
+  if (uShoreBox.z <= 0.0) return vec4(1.0, 1.0, 0.0, 0.0);
   vec2 uv = (xz - uShoreBox.xy) / uShoreBox.z;
-  if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0) return vec2(1.0);
-  return texture2D(uShore, uv).rg;
+  if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0) return vec4(1.0, 1.0, 0.0, 0.0);
+  vec4 t = texture2D(uShore, uv);
+  return vec4(t.rg, t.ba * 2.0 - 1.0);
 }
+vec2 shoreAt(vec2 xz) { return waterAt(xz).xy; }
+
 
 vec3 rotateAbout(vec3 v, vec3 axis, float a) {
   float c = cos(a);
@@ -401,27 +405,55 @@ void main() {
     if (cardMode > 3.5 && cardMode < 4.5) vColor = vColor * uSkyTint + uFlash * vec3(0.5, 0.55, 0.7);
     if (waterLean) {
       vec3 wc = iColor.rgb;
-      if (uWaterFx.y > 0.5) {
-        // Shallow water near the shore is lighter and greener, deep water darker;
-        // foam laps in and out along the shoreline.
-        float d = shoreAt(center.xz).x;
-        wc = mix(wc * vec3(1.35, 1.6, 1.45) + vec3(0.03, 0.08, 0.07), wc * 0.7, smoothstep(0.0, 0.6, d));
-        float lap = sin(uTime * 1.3 - d * 40.0 + h * 2.0);
-        if (d < 0.16 && lap > 0.15) {
-          float k = uRampFoam[int(clamp((lap - 0.15) / 0.85, 0.0, 0.999) * 4.0)];
-          if (k >= 0.0) glyph = k;
-          wc = mix(wc, vec3(0.92, 0.95, 1.0), 0.75 * (1.0 - d / 0.16));
-          vAlpha = max(vAlpha, 0.85);
-        }
-      }
+      vec4 wm = waterAt(center.xz);
+      float d = wm.x;              // 0 at the shore .. 1 = 10 m out
+      vec2 cur = wm.zw * 2.5;      // the current, m/s
+      float spd = length(cur);
+      // Waves arriving at the shore: crests parallel to it, closer together
+      // as the water gets shallow, moving in (the phase falls toward the shore).
+      float near = 1.0 - smoothstep(0.12, 0.38, d);
+      float shorePh = pow(d * 10.0, 0.75) * 2.3 + uTime * 1.7 + vnoise(center.xz * 0.2) * 1.5;
       if (uWaterFx.x > 0.5) {
-        // Travelling waves drawn with the glyphs themselves: flat _ . - ~ to the crest.
-        vec2 wdir = normalize(uWind.xy + vec2(0.0001, 0.0));
-        float ph = dot(center.xz, wdir) * 0.7 + vnoise(center.xz * 0.12) * 5.0 - uTime * (1.2 + 2.0 * ws);
-        float w = 0.5 + 0.5 * sin(ph);
+        float w;
+        if (spd > 0.08) {
+          // Running water: the pattern rides the current (two phases, cross-faded,
+          // so it never stretches out), crests lying across the flow.
+          vec2 fd = cur / spd;
+          vec2 pr = vec2(-fd.y, fd.x);
+          float T = 2.0;
+          float p0 = fract(uTime / T), p1 = fract(uTime / T + 0.5);
+          vec2 a0 = center.xz - cur * p0 * T, a1 = center.xz - cur * p1 * T;
+          float n0 = sin(dot(a0, fd) * 2.4 + vnoise(vec2(dot(a0, fd) * 0.5, dot(a0, pr) * 0.35)) * 6.0);
+          float n1 = sin(dot(a1, fd) * 2.4 + vnoise(vec2(dot(a1, fd) * 0.5, dot(a1, pr) * 0.35) + 17.0) * 6.0);
+          float f0 = 1.0 - abs(2.0 * p0 - 1.0);
+          w = 0.5 + 0.5 * mix(n1, n0, f0);
+          // Faster water is rougher.
+          w = mix(0.35, w, clamp(0.45 + spd * 0.35, 0.0, 1.0));
+        } else {
+          // Still water: small ripples pushed by the wind, calm when the air is.
+          vec2 wdir = normalize(uWind.xy + vec2(0.0001, 0.0));
+          float ph = dot(center.xz, wdir) * 0.8 + vnoise(center.xz * 0.12) * 5.0 - uTime * (0.7 + 1.4 * ws);
+          w = mix(0.25, 0.5 + 0.5 * sin(ph), 0.35 + 0.65 * ws);
+          // Near the shore the waves turn and come in.
+          w = mix(w, 0.5 + 0.5 * sin(shorePh), near * 0.85);
+        }
         float k = uRampWave[int(clamp(w, 0.0, 0.999) * 6.0)];
         if (k >= 0.0) glyph = k;
         wc *= 0.75 + 0.55 * w;
+      }
+      if (uWaterFx.y > 0.5) {
+        // Shallow water near the shore is lighter and greener, deep water darker;
+        // foam where the incoming waves break, and white water in fast currents.
+        wc = mix(wc * vec3(1.35, 1.6, 1.45) + vec3(0.03, 0.08, 0.07), wc * 0.7, smoothstep(0.0, 0.6, d));
+        float lap = sin(shorePh);
+        bool breaking = spd <= 0.08 && d < 0.15 && lap > 0.2;
+        bool rapids = spd > 1.1 && hash(center + floor(uTime * 3.0 + h * 5.0)) < (spd - 1.1) * 0.35;
+        if (breaking || rapids) {
+          float k = uRampFoam[int(clamp(breaking ? (lap - 0.2) / 0.8 : h, 0.0, 0.999) * 4.0)];
+          if (k >= 0.0) glyph = k;
+          wc = mix(wc, vec3(0.92, 0.95, 1.0), breaking ? 0.75 * (1.0 - d / 0.15) : 0.6);
+          vAlpha = max(vAlpha, 0.85);
+        }
       }
       if (uWaterFx.z > 0.5) {
         // Sky reflected at grazing angles, and sun glitter: sparkling glyphs along the sun's path.
