@@ -192,9 +192,9 @@ test('canvas: flat rows of #, seamless chunks, detail falls with distance, sky a
   assert.equal(skyModes[6], 900, 'leaf particles');
   const eye = [16, ground + 1.7, 16];
   const t = performance.now();
-  const none = () => [new Uint8Array(0), new Float32Array(0)];
-  const build = (cx, cz, [tiles, objects] = none()) => {
-    const c = w.buildChunk(cx, cz, ...eye, 0.64, tiles, objects);
+  const none = () => [new Uint8Array(0), new Float32Array(0), new Float32Array(0)];
+  const build = (cx, cz, [tiles, objects, heights] = none()) => {
+    const c = w.buildChunk(cx, cz, ...eye, 0.64, tiles, objects, heights ?? new Float32Array(0));
     const r = { cards: c.takeCards(), h: c.takeHeights(), col: c.takeColliders(), placed: c.placed() };
     c.free();
     return r;
@@ -223,16 +223,27 @@ test('canvas: flat rows of #, seamless chunks, detail falls with distance, sky a
   assert.deepEqual(grounds, ['canvas', 'grass', 'sand', 'water', 'rock']);
   assert.ok(kinds.includes('tree:oak') && kinds.includes('rock:boulder') && kinds.length === 26);
   const grass = new Uint8Array(tiles * tiles).fill(grounds.indexOf('grass'));
-  const oak = new Float32Array([kinds.indexOf('tree:oak'), 3, 16, 16, 0, 1]);
-  assert.equal(oak.length, objFloats);
+  // One object record: kind, seed, x, z, yaw, scale, then parameter slots (NaN = default).
+  const oak = new Float32Array(objFloats).fill(NaN);
+  oak.set([kinds.indexOf('tree:oak'), 3, 16, 16, 0, 1]);
+  const params = JSON.parse(wasm.objectParams());
+  assert.equal(params.length, kinds.length, 'parameters for every kind');
+  assert.ok(params[kinds.indexOf('tree:oak')].some((d) => d.name === 'height'), 'oaks have a height parameter');
   const painted = build(0, 0, [grass, oak]);
   assert.equal(painted.placed, 1);
   assert.ok(painted.cards.length > a.cards.length * 1.2, 'the oak adds cards');
   const grassMat = Math.floor(painted.cards[13] / 1024) % 64;
   const canvasMat = Math.floor(a.cards[13] / 1024) % 64;
   assert.notEqual(grassMat, canvasMat, 'painted ground uses its own material');
-  assert.throws(() => w.buildChunk(0, 0, ...eye, 0.64, new Uint8Array(5), new Float32Array(0)), /tiles must be/);
-  assert.throws(() => w.buildChunk(0, 0, ...eye, 0.64, new Uint8Array(0), new Float32Array(4)), /objects must be/);
+  // A sloped chunk: the physics heights come back with it.
+  const slope = new Float32Array(33 * 33).map((_, k) => 0.1 * (k % 33));
+  const hilly = w.buildChunk(0, 0, ...eye, 0.64, new Uint8Array(0), new Float32Array(0), slope);
+  assert.ok(Math.abs(hilly.takeHeights()[32] - 3.2) < 1e-5, 'heights follow');
+  hilly.free();
+  const empty = new Float32Array(0);
+  assert.throws(() => w.buildChunk(0, 0, ...eye, 0.64, new Uint8Array(5), new Float32Array(0), empty), /tiles must be/);
+  assert.throws(() => w.buildChunk(0, 0, ...eye, 0.64, new Uint8Array(0), new Float32Array(4), empty), /objects must be/);
+  assert.throws(() => w.buildChunk(0, 0, ...eye, 0.64, new Uint8Array(0), new Float32Array(0), new Float32Array(7)), /heights must be/);
   w.free();
 });
 
