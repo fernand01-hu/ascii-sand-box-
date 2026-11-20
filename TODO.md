@@ -33,7 +33,12 @@ A milestone is a stopping point where everything built so far works
 together and can be tested and shown. Then you merge to `main` and start the
 next one.
 
-- **Milestone 1: "I can paint and save a scene."** Steps 1–9.
+- **Milestone 1: "I can paint and save a scene."** Steps 1–9. Done on
+  `dev`, not merged into `main` yet: on 2026-11-19, PR #1 (native desktop
+  app + WebGPU renderer, which removed the TypeScript web app) was merged
+  into `main`, so the two lines diverged. Decision (2026-11-20): hold off.
+  `main` is left alone and work continues on `dev` until the user decides
+  how to bring them together.
 - **Milestone 2: "I can fill a scene with objects."** Steps 10–12.
 - **Milestone 3: "It looks good."** Steps 13–15.
 - **Milestone 4: "I can walk in it."** Phase 4.
