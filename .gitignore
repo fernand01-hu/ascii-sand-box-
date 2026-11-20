@@ -6,3 +6,5 @@ test-results/
 __pycache__/
 native/target/
 dist-linux/
+dev-run/
+.cargo-home/

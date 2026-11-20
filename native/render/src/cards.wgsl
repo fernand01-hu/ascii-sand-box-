@@ -270,7 +270,11 @@ fn eval_card(inst: Inst) -> CardOut {
 // (progress = -fade), card by card in a random order.
 // `lod`: build eye and near distance of a set with continuous detail
 // (near = 0: none); `far`: cards fade out toward this distance (0: never).
-struct Range { start: u32, count: u32, fade: f32, far: f32, lod: vec4<f32> }
+// `total`: cards in the cell when only its first `count` are drawn (their
+// rank is then their place in the cell, which is in random order), else 0.
+// `inner`: cards fade in from this horizontal distance (far ground, under the
+// detailed ring), 0: none.
+struct Range { start: u32, count: u32, fade: f32, far: f32, lod: vec4<f32>, total: u32, inner: f32, p1: u32, p2: u32 }
 
 fn card_hash(i: u32) -> f32 {
   var h = i * 747796405u + 2891336453u;
@@ -301,16 +305,21 @@ fn cs_cards(@builtin(global_invocation_id) gid: vec3<u32>) {
     // a branch), so glyphs keep their size on screen and their coverage.
     let high = floor((inst.glyph + 0.5) / MATERIAL_SHIFT);
     let mode = floor((high + 0.5) / MAX_MATERIALS);
+    // Not for sky, rain, leaves (4-6).
     if (mode < 4.5 || mode > 6.5) {
       let cam = F.cam.xyz;
       let q = max(distance(inst.center, cam), RANGE.lod.w) / max(distance(inst.center, RANGE.lod.xyz), RANGE.lod.w);
-      if (q > 1.0) {
+      // Bark wrapped round a trunk (Solid, 3) is never thinned: the trunk's
+      // opaque body would show through as a dark block.
+      if (q > 1.0 && abs(mode - 3.0) > 0.5) {
         let m = u32(min(high - mode * MAX_MATERIALS, MAX_MATERIALS - 1.0));
         let chain = F.mat_c[m].w > 0.5 && mode > 0.5 && mode < 2.5;
         var share = 1.0 / (q * q);
         if (chain) { share = 1.0 / q; }
         // A soft edge, so cards leave one by one rather than blink.
-        keep = clamp((share - card_hash(i ^ 0x9e3779b9u)) / (0.15 * share) + 1.0, 0.0, 1.0);
+        var rank = card_hash(i ^ 0x9e3779b9u);
+        if (RANGE.total > 0u) { rank = f32(i - RANGE.start) / f32(RANGE.total); }
+        keep = clamp((share - rank) / (0.15 * share) + 1.0, 0.0, 1.0);
         if (chain && mode < 1.5) {
           inst.iv = inst.iv * q;
         } else if (chain) {
@@ -322,6 +331,9 @@ fn cs_cards(@builtin(global_invocation_id) gid: vec3<u32>) {
       }
       if (RANGE.far > 0.0) {
         keep = keep * (1.0 - smoothstep(0.88 * RANGE.far, RANGE.far, distance(inst.center.xz, cam.xz)));
+      }
+      if (RANGE.inner > 0.0) {
+        keep = keep * smoothstep(0.88 * RANGE.inner, RANGE.inner, distance(inst.center.xz, cam.xz));
       }
     }
   }

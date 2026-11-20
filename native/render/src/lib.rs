@@ -61,6 +61,10 @@ struct PostUniform {
     bg: [f32; 4],
 }
 
+/// Trees within this distance of the build eye get trunks with opaque bodies
+/// and bark wrapped round them (the engine's nearest asset tier is 32 m).
+const SOLID_BARK_REACH: f32 = 48.0;
+
 /// A visible draw range: cards `start..start + count` of a set.
 #[derive(Clone, Copy)]
 struct Visible {
@@ -71,6 +75,9 @@ struct Visible {
     count: u32,
     fade: f32,
     lod: Option<CardLod>,
+    /// Cards in the cell when only its first `count` are drawn (continuous
+    /// detail; ranks are then positions in the cell), else 0.
+    total: u32,
 }
 
 struct CardSet {
@@ -149,6 +156,8 @@ pub struct Renderer {
     targets: Option<Targets>,
     sets: BTreeMap<u64, CardSet>,
     bodies: BTreeMap<u64, Body>,
+    /// Bodies waiting for their chunk's cards to finish dissolving in.
+    incoming_bodies: BTreeMap<u64, Body>,
     // reused every frame
     uniform: Box<FrameUniform>,
     visible: Vec<Visible>,
@@ -159,6 +168,7 @@ pub struct Renderer {
     /// Wall clock for dissolves, seconds, set by the shell (`set_clock`).
     clock: f64,
     fading: bool,
+    timing: Option<GpuTiming>,
 }
 
 fn vec4(v: [f32; 3], w: f32) -> [f32; 4] {
@@ -195,7 +205,7 @@ impl Renderer {
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: cs,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: wgpu::BufferSize::new(32) },
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: wgpu::BufferSize::new(48) },
                     count: None,
                 },
             ],
@@ -342,11 +352,13 @@ impl Renderer {
             targets: None,
             sets: BTreeMap::new(),
             bodies: BTreeMap::new(),
+            incoming_bodies: BTreeMap::new(),
             uniform: Box::new(Zeroable::zeroed()),
             visible: Vec::with_capacity(4096),
             outgoing: BTreeMap::new(),
             fade_secs: 0.0,
             clock: 0.0,
+            timing: None,
             fading: false,
         };
         r.set_materials(&[SURFACE_MATERIAL]);
@@ -355,6 +367,29 @@ impl Renderer {
     }
 
     /// A card set is still dissolving: keep drawing frames.
+    /// Measure each frame's GPU passes (needs `Features::TIMESTAMP_QUERY`).
+    /// Returns false when the device cannot.
+    pub fn enable_gpu_timing(&mut self) -> bool {
+        if !self.device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            return false;
+        }
+        self.timing = Some(GpuTiming::new(&self.device, self.queue.get_timestamp_period()));
+        true
+    }
+
+    /// Call after submitting a frame rendered with timing on.
+    pub fn after_submit(&mut self) {
+        if let Some(q) = &mut self.timing {
+            q.after_submit();
+        }
+    }
+
+    /// GPU time (ms) of the card evaluation pass, the underpaint pass, and the
+    /// whole frame (evaluation start to scene end), latest read back, once.
+    pub fn gpu_times(&mut self) -> Option<[f64; 3]> {
+        self.timing.as_mut()?.take(&self.device)
+    }
+
     /// Wall-clock time in seconds (any origin), for dissolves. The renderer
     /// reads no clock itself, so it runs the same in a browser.
     pub fn set_clock(&mut self, secs: f64) {
@@ -434,9 +469,9 @@ impl Renderer {
                         layout: &self.draw_layout,
                         entries: &[wgpu::BindGroupEntry { binding: 0, resource: out.as_entire_binding() }],
                     });
-                    // Only streamed chunks (sets with continuous detail) dissolve:
-                    // a model or scene appears at once.
-                    let streamed = lod.is_some();
+                    // A new world chunk (it has a fade-out edge) or a replaced
+                    // set dissolves in; a landscape's first cards appear at once.
+                    let streamed = lod.is_some_and(|l| l.far > 0.0 || l.inner > 0.0 || self.sets.contains_key(&key));
                     let fade_start = if streamed { now } else { f64::NEG_INFINITY };
                     let old = self.sets.insert(key, CardSet { buf, out, eval_bg, draw_bg, chunks, fade_start, lod });
                     if let (Some(mut old), true) = (old, self.fade_secs > 0.0 && streamed) {
@@ -460,12 +495,24 @@ impl Renderer {
                     }
                     let verts = (positions.len() / 3) as u32;
                     let buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("body"), contents: bytemuck::cast_slice(&positions), usage: wgpu::BufferUsages::VERTEX });
-                    self.bodies.insert(key, Body { buf, verts });
+                    // A chunk's cards dissolve in: its new opaque body (trunks
+                    // and all) waits for them, or it would show as a dark
+                    // silhouette before its bark.
+                    if self.sets.get(&key).is_some_and(|s| s.fade_start == self.clock && self.fade_secs > 0.0) {
+                        self.incoming_bodies.insert(key, Body { buf, verts });
+                    } else {
+                        self.incoming_bodies.remove(&key);
+                        self.bodies.insert(key, Body { buf, verts });
+                    }
                 }
                 RenderEvent::RemoveBody { key } => {
                     self.bodies.remove(&key);
+                    self.incoming_bodies.remove(&key);
                 }
-                RenderEvent::ClearBodies => self.bodies.clear(),
+                RenderEvent::ClearBodies => {
+                    self.bodies.clear();
+                    self.incoming_bodies.clear();
+                }
             }
         }
     }
@@ -477,7 +524,7 @@ impl Renderer {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &self.range_buf, offset: 0, size: wgpu::BufferSize::new(32) }) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &self.range_buf, offset: 0, size: wgpu::BufferSize::new(48) }) },
             ],
         })
     }
@@ -506,10 +553,14 @@ impl Renderer {
             ranges[i * RANGE_STRIDE + 8..i * RANGE_STRIDE + 12].copy_from_slice(bytemuck::bytes_of(&v.fade));
             let lod = v.lod.map_or([0.0; 5], |l| [l.far, l.eye[0], l.eye[1], l.eye[2], l.near]);
             ranges[i * RANGE_STRIDE + 12..i * RANGE_STRIDE + 32].copy_from_slice(bytemuck::cast_slice(&lod));
+            ranges[i * RANGE_STRIDE + 32..i * RANGE_STRIDE + 36].copy_from_slice(bytemuck::bytes_of(&v.total));
+            let inner = v.lod.map_or(0.0f32, |l| l.inner);
+            ranges[i * RANGE_STRIDE + 36..i * RANGE_STRIDE + 40].copy_from_slice(bytemuck::bytes_of(&inner));
         }
         self.queue.write_buffer(&self.range_buf, 0, &ranges);
         let frame_bg = self.frame_bg.as_ref().expect("bg");
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("card eval"), timestamp_writes: None });
+        let ts = self.timing.as_ref().map(|t| wgpu::ComputePassTimestampWrites { query_set: &t.set, beginning_of_pass_write_index: Some(0), end_of_pass_write_index: Some(1) });
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("card eval"), timestamp_writes: ts });
         pass.set_pipeline(&self.eval_pipe);
         pass.set_bind_group(0, frame_bg, &[]);
         for (i, v) in self.visible.iter().enumerate() {
@@ -605,9 +656,17 @@ impl Renderer {
         self.visible.clear();
         let mut total = 0u64;
         let now = self.clock;
+        let cam = glam::Vec3::from(f.camera_pos);
         let fade_secs = f64::from(self.fade_secs);
         let progress = |s: &CardSet| if fade_secs > 0.0 { ((now - s.fade_start) / fade_secs).min(1.0) as f32 } else { 1.0 };
         self.outgoing.retain(|_, s| progress(s) < 1.0);
+        let arrived: Vec<u64> = self.incoming_bodies.keys().copied().filter(|k| self.sets.get(k).is_none_or(|s| progress(s) >= 1.0)).collect();
+        for k in arrived {
+            if let Some(b) = self.incoming_bodies.remove(&k) {
+                self.bodies.insert(k, b);
+            }
+        }
+        self.fading |= !self.incoming_bodies.is_empty();
         self.fading = !self.outgoing.is_empty() || self.sets.values().any(|s| progress(s) < 1.0);
         for (&key, set, outgoing) in self.sets.iter().map(|(k, s)| (k, s, false)).chain(self.outgoing.iter().map(|(k, s)| (k, s, true))) {
             // `fade`: 1 fully shown; below 1 dissolving in; negative dissolving out.
@@ -625,16 +684,47 @@ impl Renderer {
                 if !keep {
                     continue;
                 }
+                // Continuous detail: a cell farther than it was built for keeps
+                // only a share of its cards, and its cards are in random order,
+                // so the kept ones are (at most) its first `k`: draw only those.
+                if let Some(l) = &set.lod {
+                    let pad = glam::Vec3::splat(c.size);
+                    let (lo, hi) = (glam::Vec3::from(c.lo) - pad, glam::Vec3::from(c.hi) + pad);
+                    let cam_d = cam.clamp(lo, hi).distance(cam);
+                    let flat = glam::Vec2::new(cam.x, cam.z);
+                    if l.far > 0.0 && flat.clamp(glam::Vec2::new(lo.x, lo.z), glam::Vec2::new(hi.x, hi.z)).distance(flat) >= l.far {
+                        continue; // past the fade-out edge
+                    }
+                    if l.inner > 0.0 {
+                        let reach = glam::Vec2::new((cam.x - lo.x).abs().max((cam.x - hi.x).abs()), (cam.z - lo.z).abs().max((cam.z - hi.z).abs())).length();
+                        if reach <= 0.88 * l.inner {
+                            continue; // inside the detailed ring, which covers it
+                        }
+                    }
+                    let eye = glam::Vec3::from(l.eye);
+                    let eye_far = (eye - lo).abs().max((eye - hi).abs()).length();
+                    let q_min = cam_d.max(l.near) / eye_far.max(l.near);
+                    // Branch chains keep 1/q, other cards 1/q^2; 1.15: the soft edge.
+                    let share = (1.15 / q_min).min(1.0);
+                    // Cells near the build eye hold the trunks with opaque bodies,
+                    // whose bark is never thinned (see cs_cards): keep them whole.
+                    let k = if eye_far < SOLID_BARK_REACH { c.count } else { ((c.count as f32 * share).ceil() as u32).min(c.count) };
+                    if k < c.count {
+                        total += u64::from(k);
+                        self.visible.push(Visible { key, outgoing, start: c.start, count: k, fade, lod: set.lod, total: c.count });
+                        continue;
+                    }
+                }
                 total += u64::from(c.count);
                 if self.visible.len() > start_len {
                     let last = self.visible.last_mut().expect("non-empty");
                     // Merged ranges stay within one compute dispatch (65535 groups of 64).
-                    if last.start + last.count == c.start && last.count + c.count <= MAX_RANGE {
+                    if last.total == 0 && last.start + last.count == c.start && last.count + c.count <= MAX_RANGE {
                         last.count += c.count;
                         continue;
                     }
                 }
-                self.visible.push(Visible { key, outgoing, start: c.start, count: c.count, fade, lod: set.lod });
+                self.visible.push(Visible { key, outgoing, start: c.start, count: c.count, fade, lod: set.lod, total: 0 });
             }
         }
         total
@@ -692,7 +782,7 @@ impl Renderer {
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Discard },
                 })],
                 depth_stencil_attachment: Some(depth_att(&t.under_depth)),
-                timestamp_writes: None,
+                timestamp_writes: self.timing.as_ref().map(|q| wgpu::RenderPassTimestampWrites { query_set: &q.set, beginning_of_pass_write_index: Some(2), end_of_pass_write_index: Some(3) }),
                 occlusion_query_set: None,
             });
             pass.set_bind_group(0, under_bg, &[]);
@@ -730,7 +820,7 @@ impl Renderer {
                 ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: f64::from(bg[0]), g: f64::from(bg[1]), b: f64::from(bg[2]), a: 1.0 }), store: wgpu::StoreOp::Discard },
             })],
             depth_stencil_attachment: Some(depth_att(&t.depth)),
-            timestamp_writes: None,
+            timestamp_writes: self.timing.as_ref().map(|q| wgpu::RenderPassTimestampWrites { query_set: &q.set, beginning_of_pass_write_index: Some(4), end_of_pass_write_index: Some(5) }),
             occlusion_query_set: None,
         });
         if f.underpaint {
@@ -748,6 +838,9 @@ impl Renderer {
         pass.set_pipeline(if f.coverage { &self.coverage_pipe } else { &self.blend_pipe });
         draw_cards(&mut pass, &self.sets, &self.outgoing, &self.visible, &self.quad_index, &mut draw_calls);
         drop(pass);
+        if let Some(q) = &mut self.timing {
+            q.resolve(encoder);
+        }
         RenderStats { instances, draw_calls, sets: self.sets.len() }
     }
 }
@@ -846,5 +939,72 @@ impl Capture {
 
     pub fn size(&self) -> (u32, u32) {
         self.size
+    }
+}
+
+/// Per-pass GPU timestamps, read back a few frames late without stalling.
+struct GpuTiming {
+    set: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    read: [wgpu::Buffer; 3],
+    /// Per read buffer: 0 free, 1 copied (map after submit), 2 mapping, 3 mapped.
+    state: [std::sync::Arc<std::sync::atomic::AtomicU8>; 3],
+    slot: usize,
+    /// Read buffer this frame copied into, to map once submitted.
+    copied: Option<usize>,
+    period_ns: f32,
+}
+
+impl GpuTiming {
+    const N: u32 = 6;
+
+    fn new(device: &wgpu::Device, period_ns: f32) -> Self {
+        let set = device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("pass times"), ty: wgpu::QueryType::Timestamp, count: Self::N });
+        let size = u64::from(Self::N) * 8;
+        let resolve = device.create_buffer(&wgpu::BufferDescriptor { label: Some("pass times"), size, usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let read = std::array::from_fn(|_| device.create_buffer(&wgpu::BufferDescriptor { label: Some("pass times read"), size, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false }));
+        GpuTiming { set, resolve, read, state: std::array::from_fn(|_| Default::default()), slot: 0, copied: None, period_ns }
+    }
+
+    fn resolve(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        use std::sync::atomic::Ordering;
+        encoder.resolve_query_set(&self.set, 0..Self::N, &self.resolve, 0);
+        let i = self.slot;
+        if self.state[i].load(Ordering::Acquire) == 0 {
+            encoder.copy_buffer_to_buffer(&self.resolve, 0, &self.read[i], 0, u64::from(Self::N) * 8);
+            self.state[i].store(1, Ordering::Release);
+            self.copied = Some(i);
+            self.slot = (i + 1) % 3;
+        }
+    }
+
+    fn after_submit(&mut self) {
+        use std::sync::atomic::Ordering;
+        let Some(i) = self.copied.take() else { return };
+        self.state[i].store(2, Ordering::Release);
+        let st = self.state[i].clone();
+        self.read[i].slice(..).map_async(wgpu::MapMode::Read, move |r| st.store(if r.is_ok() { 3 } else { 0 }, Ordering::Release));
+    }
+
+    fn take(&mut self, device: &wgpu::Device) -> Option<[f64; 3]> {
+        use std::sync::atomic::Ordering;
+        let _ = device.poll(wgpu::PollType::Poll);
+        let mut latest = None;
+        for i in 0..3 {
+            if self.state[i].load(Ordering::Acquire) != 3 {
+                continue;
+            }
+            let t: Vec<u64> = {
+                let d = self.read[i].slice(..).get_mapped_range();
+                bytemuck::cast_slice::<u8, u64>(&d).to_vec()
+            };
+            self.read[i].unmap();
+            self.state[i].store(0, Ordering::Release);
+            let ms = |a: u64, b: u64| b.saturating_sub(a) as f64 * f64::from(self.period_ns) / 1e6;
+            // Apple GPUs overlap passes, so per-pass spans can overlap too:
+            // report eval, and the frame from eval start to scene end.
+            latest = Some([ms(t[0], t[1]), ms(t[2], t[3]), ms(t[0], t[5])]);
+        }
+        latest
     }
 }

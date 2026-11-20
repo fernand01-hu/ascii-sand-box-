@@ -17,9 +17,12 @@ pub enum JobKind {
     /// Parse an STL and place cards on it.
     Stl { bytes: Vec<u8>, z_up: bool, settings: eng::CardConfig, charset: String },
     Gallery { category: Gallery, seed: u32, aspect: f32 },
-    Scene { preset: Preset, seed: u32, aspect: f32 },
+    /// A landscape; `view` (eye, focus) re-skins it for a moved viewer.
+    Scene { preset: Preset, seed: u32, aspect: f32, view: Option<([f32; 3], [f32; 3])> },
     WorldInit { seed: u32, day: bool, aspect: f32 },
     Chunk { seed: u32, day: bool, cx: i32, cz: i32, eye: [f32; 3], aspect: f32 },
+    /// Bare ground of a far tile (`size` m square) beyond the chunks.
+    FarTile { seed: u32, day: bool, tx: i32, tz: i32, size: f32, eye: [f32; 3], aspect: f32 },
     /// Build share `part` of `parts` of the world's assets ahead of streaming.
     WarmAssets { seed: u32, part: usize, parts: usize },
 }
@@ -100,11 +103,19 @@ pub struct ChunkOut {
     pub colliders: Vec<f32>,
 }
 
+pub struct FarOut {
+    pub tx: i32,
+    pub tz: i32,
+    pub eye: [f32; 3],
+    pub cards: CardData,
+}
+
 pub enum Output {
     Model(ModelOut),
     Scene(Box<SceneOut>),
     World(WorldOut),
     Chunk(Box<ChunkOut>),
+    Far(Box<FarOut>),
     Warmed,
 }
 
@@ -182,10 +193,14 @@ impl Worker {
                 let s = eng::build_gallery(category.name(), *seed, *aspect)?;
                 Ok(Output::Scene(Box::new(finish_scene(s, false, eng::scenery_sun_dir()))))
             }
-            JobKind::Scene { preset, seed, aspect } => {
-                let s = eng::build_scene(preset.name(), *seed, *aspect)?;
+            JobKind::Scene { preset, seed, aspect, view } => {
+                let s = eng::build_scene_at(preset.name(), *seed, *aspect, *view)?;
                 let day = s.env[0] > 0.5;
-                Ok(Output::Scene(Box::new(finish_scene(s, true, eng::scene_sun_dir(day)))))
+                // Landscapes are big: cut into culling cells (sky, rain and
+                // leaves stay global), so off-screen ground is skipped.
+                let mut out = finish_scene(s, true, eng::scene_sun_dir(day));
+                out.cards = chunked(std::mem::take(&mut out.cards.cards), false);
+                Ok(Output::Scene(Box::new(out)))
             }
             JobKind::WorldInit { seed, day, aspect } => {
                 let world = self.world(*seed, *day);
@@ -208,6 +223,10 @@ impl Worker {
             JobKind::WarmAssets { seed, part, parts } => {
                 eng::warm_world_assets(*seed, *part, *parts);
                 Ok(Output::Warmed)
+            }
+            JobKind::FarTile { seed, day, tx, tz, size, eye, aspect } => {
+                let cards = self.world(*seed, *day).build_far_tile(*tx, *tz, *size, *eye, *aspect);
+                Ok(Output::Far(Box::new(FarOut { tx: *tx, tz: *tz, eye: *eye, cards: chunked(cards, false) })))
             }
             JobKind::Chunk { seed, day, cx, cz, eye, aspect } => {
                 let c = self.world(*seed, *day).build_chunk(*cx, *cz, *eye, *aspect);

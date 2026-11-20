@@ -142,6 +142,9 @@ pub struct CardLod {
     pub near: f32,
     /// Cards fade out toward this horizontal distance from the camera (0: never).
     pub far: f32,
+    /// Cards fade in from this horizontal distance outward (0: never), where
+    /// the detailed ring fades out: the far ground takes over there.
+    pub inner: f32,
 }
 
 /// Big, infrequent updates to the renderer's GPU state.

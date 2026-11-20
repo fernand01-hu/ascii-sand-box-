@@ -214,6 +214,9 @@ impl BarkPattern {
     }
 }
 
+/// Opaque cores inside thick trunks (off: see `skin_wood`).
+const TRUNK_CORES: bool = false;
+
 pub struct Skinner<'a> {
     /// Glyph height in metres.
     pub g: f32,
@@ -543,15 +546,59 @@ impl<'a> Skinner<'a> {
                     self.push(c, ud * (hh * aspect), vd * hh, alb.map(|x| x * pl.tint * dim), alpha, glyph, Mat::Bark, CardMode::Solid);
                 }
             }
-            // Opaque tube so the trunk hides what is behind it.
-            let sides = if self.solids_on && w.level == 0 { 8 } else { 0 };
-            for k in 0..sides {
-                let (a0, a1) = (k as f32 / sides as f32 * TAU, (k + 1) as f32 / sides as f32 * TAU);
-                let ring = |p: Vec3, a: f32| p + (f0 * fm::cos(a) + s0 * fm::sin(a)) * (r * 0.9);
-                let (q00, q01, q10, q11) = (ring(p0, a0), ring(p0, a1), ring(p1, a0), ring(p1, a1));
-                self.solids.push([q00, q01, q11]);
-                self.solids.push([q00, q11, q10]);
+            // Inner layer: dense, darker glyphs behind the bark, so the wood
+            // reads opaque in characters rather than through a black core.
+            // Thicker wood gets more of it: none at the wrapping threshold,
+            // a full layer from about 2.5 times that.
+            let core = smoothstep(1.6 * g * aspect, 4.0 * g * aspect, 2.0 * r);
+            if core > 0.0 {
+                let ri = r * 0.72;
+                let around_i = (TAU * ri / (g * aspect * 0.8)).ceil() as usize + 1;
+                let bark_def = w.bark.def();
+                for row in 0..rows {
+                    for col in 0..around_i {
+                        if !self.rng.chance(core) {
+                            continue;
+                        }
+                        let tt = (row as f32 + self.rng.uniform(0.1, 0.9)) / rows as f32;
+                        let phi = (col as f32 + self.rng.uniform(0.15, 0.85)) / around_i as f32 * TAU;
+                        let a = p0 + (p1 - p0) * tt;
+                        let nrm = f0 * fm::cos(phi) + s0 * fm::sin(phi);
+                        let c = a + nrm * ri;
+                        let tang = t.cross(nrm);
+                        let hh = g * self.rng.uniform(0.95, 1.15);
+                        let glyph = self.glyphs.barks[w.bark as usize][0].pick(&mut self.rng);
+                        let mix = self.rng.uniform(0.3, 0.6);
+                        let alb: [f32; 3] = std::array::from_fn(|k| (bark_def.alb_plate[k] * mix + bark_def.alb_fissure[k] * (1.0 - mix)) * pl.tint);
+                        let dim = 0.6 + 0.3 * smoothstep(0.0, 0.8, c.y - y_base);
+                        let alpha = self.alpha(Mat::Bark);
+                        self.push(c, tang * (hh * aspect), t * hh, alb.map(|x| x * dim), alpha, glyph, Mat::Bark, CardMode::Solid);
+                    }
+                }
             }
+            // An opaque tube inside would hide what is behind the trunk, but
+            // it reads as a black block between the bark glyphs, unlike
+            // anything else on screen: the inner layer stands for it.
+            if self.solids_on && w.level == 0 && TRUNK_CORES {
+                self.tube(p0, p1, t, r * 0.9, 8);
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    /// An opaque open tube of `sides` faces from `p0` to `p1` (axis `t`).
+    fn tube(&mut self, p0: Vec3, p1: Vec3, t: Vec3, r: f32, sides: usize) {
+        let f0 = {
+            let x = unit(Vec3::X - t * t.x);
+            if x == Vec3::ZERO { unit(Vec3::Z - t * t.z) } else { x }
+        };
+        let s0 = t.cross(f0);
+        for k in 0..sides {
+            let (a0, a1) = (k as f32 / sides as f32 * TAU, (k + 1) as f32 / sides as f32 * TAU);
+            let ring = |p: Vec3, a: f32| p + (f0 * fm::cos(a) + s0 * fm::sin(a)) * r;
+            let (q00, q01, q10, q11) = (ring(p0, a0), ring(p0, a1), ring(p1, a0), ring(p1, a1));
+            self.solids.push([q00, q01, q11]);
+            self.solids.push([q00, q11, q10]);
         }
     }
 
