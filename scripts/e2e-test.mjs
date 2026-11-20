@@ -1056,6 +1056,19 @@ try {
       const near = await page.evaluate(nearNow);
       assert.equal(near.detail, 3, 'play mode widens the fine ground');
       assert.equal(near.built, 3, 'the chunk under the player was rebuilt with the wide fine ground');
+      // Walking on: the ground underfoot is rebuilt from nearby (no sparse rows built for a far eye).
+      await page.evaluate(() => { const s = window.__ascii.app.player.state; s.z -= 12; });
+      const underfoot = () => {
+        const w = window.__ascii.app.world;
+        const p = window.__ascii.app.viewer.camera.position;
+        const S = w.info.chunkSize;
+        const here = w.chunks().find((c) => c.cx === Math.floor(p.x / S) && c.cz === Math.floor(p.z / S));
+        const e = here?.loaded?.data.eye;
+        return e ? Math.hypot(e[0] - p.x, e[2] - p.z) : 1e9;
+      };
+      await page.waitForFunction(`(${underfoot})() < 6`, { timeout: 60_000, polling: 200 }).catch(() => {});
+      const off = await page.evaluate(underfoot);
+      assert.ok(off < 6, `the ground underfoot was rebuilt after walking (built ${off.toFixed(1)} m away)`);
       assert.ok(await page.evaluate(() => document.querySelector('.tui-toolbar [data-tool=play]').classList.contains('tui-sel')), 'the play button is on');
       // Editor keys stay quiet while playing.
       await page.keyboard.press('h');
