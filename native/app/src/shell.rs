@@ -12,6 +12,33 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 use web_time::{Duration, Instant};
+
+#[cfg(not(target_arch = "wasm32"))]
+use crate::trace::{ms, Frame as TraceFrame};
+#[cfg(target_arch = "wasm32")]
+#[derive(Default)]
+#[allow(dead_code)] // measured, not reported on the web yet
+struct TraceFrame {
+    tasks: f64,
+    update: f64,
+    apply: f64,
+    acquire: f64,
+    render: f64,
+    submit: f64,
+    present: f64,
+    set_cards: u32,
+    card_mb: f64,
+    bodies: u32,
+    removed: u32,
+    chunks_in: u32,
+    gpu_prev: f64,
+    gap: f64,
+    passes: [f64; 3],
+}
+#[cfg(target_arch = "wasm32")]
+fn ms(since: Instant) -> f64 {
+    since.elapsed().as_secs_f64() * 1000.0
+}
 use winit::application::ApplicationHandler;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::dpi::LogicalSize;
@@ -30,6 +57,12 @@ pub struct Options {
     pub fade_secs: f32,
     /// `immediate` or `mailbox` instead of vsync (desktop).
     pub present: Option<String>,
+    /// Open the infinite world there (development: relaunch in place).
+    pub pose: Option<ascii_core::session::Pose>,
+    /// Keep writing the viewer's place in the world to this file (desktop).
+    pub pose_file: Option<String>,
+    /// Start walking (running, turning slowly) as soon as the world is up.
+    pub autowalk: bool,
     /// The page's canvas (web).
     #[cfg(target_arch = "wasm32")]
     pub canvas: Option<web_sys::HtmlCanvasElement>,
@@ -106,8 +139,16 @@ struct App {
     pending_gfx: GfxSlot,
     session: Option<Session<Pool>>,
     started: bool,
+    /// Walk on its own once the world is up (ASCII_AUTOWALK, desktop).
+    autowalk: bool,
     /// Frames being read back.
     reading: Vec<(ascii_render::Capture, CaptureDone)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    trace: Option<crate::trace::Trace>,
+    #[cfg(not(target_arch = "wasm32"))]
+    tune_file: Option<crate::trace::TuneFile>,
+    #[cfg(not(target_arch = "wasm32"))]
+    tune: crate::trace::Tune,
     clock: Instant,
     keys: HashSet<KeyCode>,
     events: Vec<ascii_core::RenderEvent>,
@@ -149,6 +190,8 @@ async fn create_gfx(window: Arc<Window>, present: Option<String>) -> Result<Gfx,
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("ascii"),
+            // Per-pass GPU times for the frame trace, where available.
+            required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
             required_limits: wgpu::Limits {
                 max_buffer_size: limits.max_buffer_size.min(1 << 30),
                 // Card sets are bound whole as storage buffers (per-card evaluation).
@@ -225,12 +268,18 @@ impl App {
         let mut g = r?;
         // Streamed chunks dissolve into their rebuilt version instead of popping.
         g.renderer.fade_secs = self.opts.fade_secs;
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.trace.is_some() && !g.renderer.enable_gpu_timing() {
+            log!("[ascii] no GPU timestamps on this device: the trace has no per-pass GPU times");
+        }
         let pool = self.pool.take().ok_or("started twice")?;
         let mut session = Session::new(pool, (g.config.width, g.config.height));
         for c in self.opts.start.drain(..) {
             session.command(c);
         }
-        if let Some((seed, day)) = self.opts.world {
+        if let Some(p) = self.opts.pose.take() {
+            session.show_world_at(p);
+        } else if let Some((seed, day)) = self.opts.world {
             session.show_world(seed, day);
         }
         if !self.perf.enabled {
@@ -243,6 +292,10 @@ impl App {
     }
 
     fn input_state(&self) -> InputState {
+        if self.autowalk {
+            // Benchmark walk (ASCII_AUTOWALK): straight ahead, running.
+            return InputState { forward: 1.0, right: 0.0, run: true, jump: false };
+        }
         let k = |a: KeyCode, b: KeyCode| self.keys.contains(&a) || self.keys.contains(&b);
         let axis = |pos: bool, neg: bool| f64::from(i32::from(pos) - i32::from(neg));
         InputState {
@@ -310,6 +363,9 @@ impl App {
         }
         let input = self.input_state();
         let (Some(g), Some(session)) = (self.gfx.as_mut(), self.session.as_mut()) else { return };
+        let mut fr = TraceFrame::default();
+        let mark = Instant::now();
+        let built_before = session.stats().chunks_built;
         let tasks = TASKS.with(|q| std::mem::take(&mut *q.borrow_mut()));
         for t in tasks {
             t(session);
@@ -324,8 +380,30 @@ impl App {
                 i += 1;
             }
         }
+        fr.tasks = ms(mark);
+        let mark = Instant::now();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(t) = self.tune_file.as_mut().and_then(crate::trace::TuneFile::poll) {
+            if let Some(a) = t.autowalk {
+                self.opts.autowalk = a;
+                if !a {
+                    self.autowalk = false;
+                }
+            }
+            g.renderer.fade_secs = t.fade.unwrap_or(self.opts.fade_secs);
+            self.tune = t;
+            self.force_redraw = true;
+        }
+        if self.opts.autowalk && !self.autowalk && session.stats().chunks_loaded > 200 && (session.playing() || session.play()) {
+            self.autowalk = true;
+        }
+        if self.autowalk {
+            // Turn slowly, so the walk crosses fresh ground and turns back.
+            session.pointer(Pointer::Look { dx: 0.6, dy: 0.0 });
+        }
         let now = self.clock.elapsed().as_secs_f64();
         session.update(now, &input);
+        fr.update = ms(mark);
         SNAPSHOT.with(|snap| {
             let env = session.environment();
             *snap.borrow_mut() = Snapshot { status: Some(session.status().clone()), stats: session.stats(), playing: session.playing(), weather: [env.wind, env.rain, env.leaves], background: session.frame_params().background };
@@ -340,16 +418,58 @@ impl App {
         let capturing = CAPTURES.with(|q| !q.borrow().is_empty());
         self.idle = !changed && !self.force_redraw && !capturing;
         if self.idle {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(t) = &mut self.trace {
+                t.idle();
+            }
             return;
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let dt = match &mut self.trace {
+            Some(t) => {
+                let (dt, gap) = t.frame_start();
+                fr.gap = gap;
+                fr.gpu_prev = t.gpu.take(&g.device);
+                if let Some([e, u, sc]) = g.renderer.gpu_times() {
+                    t.last_passes = [e, u, sc];
+                }
+                fr.passes = t.last_passes;
+                dt
+            }
+            None => 0.0,
+        };
         self.force_redraw = false;
         session.drain_events(&mut self.events);
+        for e in &self.events {
+            match e {
+                ascii_core::RenderEvent::SetCards { cards, .. } => {
+                    fr.set_cards += 1;
+                    fr.card_mb += cards.len() as f64 * 4.0 / 1e6;
+                }
+                ascii_core::RenderEvent::SetBody { .. } => fr.bodies += 1,
+                ascii_core::RenderEvent::RemoveCards { .. } => fr.removed += 1,
+                _ => {}
+            }
+        }
+        fr.chunks_in = session.stats().chunks_built - built_before;
+        let mark = Instant::now();
         g.renderer.set_clock(self.clock.elapsed().as_secs_f64());
         g.renderer.apply_events(&mut self.events);
-        let params = session.frame_params();
+        fr.apply = ms(mark);
+        #[allow(unused_mut)]
+        let mut params = session.frame_params();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(u) = self.tune.underpaint {
+            params.underpaint = u;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(d) = self.tune.fog {
+            params.env.fog_dist = d;
+        }
         for (size, done) in CAPTURES.with(|q| std::mem::take(&mut *q.borrow_mut())) {
             self.reading.push((g.renderer.capture(size, &params), done));
         }
+        let mark = Instant::now();
         let frame = match g.surface.get_current_texture() {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -363,13 +483,32 @@ impl App {
                 return;
             }
         };
+        fr.acquire = ms(mark);
+        let mark = Instant::now();
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(g.view_format), ..Default::default() });
         let mut enc = g.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         self.last_draws = g.renderer.render(&mut enc, &view, (g.config.width, g.config.height), &params);
+        fr.render = ms(mark);
+        let mark = Instant::now();
         g.queue.submit([enc.finish()]);
+        fr.submit = ms(mark);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(t) = &self.trace {
+            t.gpu.submitted(&g.queue);
+            g.renderer.after_submit();
+        }
         self.force_redraw |= g.renderer.fading();
+        let mark = Instant::now();
         g.window.pre_present_notify();
         frame.present();
+        fr.present = ms(mark);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(t) = &mut self.trace {
+            let c = session.camera_position();
+            t.frame(dt, &fr, &session.stats(), [c.x, c.y, c.z], session.playing(), self.last_draws.instances);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = fr;
 
         // Performance journal.
         let p = &mut self.perf;
@@ -395,6 +534,13 @@ impl App {
                     s.chunk_ms_mean,
                     s.chunk_ms_max,
                 );
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if let (Some(path), Some(pose)) = (&self.opts.pose_file, session.pose()) {
+                let tmp = format!("{path}.tmp");
+                if std::fs::write(&tmp, pose.to_line()).is_ok() {
+                    let _ = std::fs::rename(&tmp, path);
+                }
             }
             p.since = t;
             p.frames = 0;
@@ -580,7 +726,14 @@ pub fn run(opts: Options, pool: Pool) -> Result<(), String> {
         pending_gfx: Rc::new(RefCell::new(None)),
         session: None,
         started: false,
+        autowalk: false,
         reading: Vec::new(),
+        #[cfg(not(target_arch = "wasm32"))]
+        trace: crate::trace::Trace::from_env(),
+        #[cfg(not(target_arch = "wasm32"))]
+        tune_file: crate::trace::TuneFile::from_env(),
+        #[cfg(not(target_arch = "wasm32"))]
+        tune: Default::default(),
         clock: Instant::now(),
         keys: HashSet::new(),
         events: Vec::new(),

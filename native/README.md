@@ -50,6 +50,19 @@ the uncapped frame rate).
 `ASCII_FADE=SECONDS` length of the dissolve when a world chunk is replaced
 (default 0.8, 0 turns it off).
 
+## Measuring stutters (desktop)
+
+```
+scripts/dev-loop.sh --day        # runs the world; relaunches in place whenever the profiling build changes
+(cd native && cargo build --profile profiling)   # from elsewhere: triggers that relaunch
+```
+
+`dev-run/trace.jsonl` gets one line per second (fps, worst and p99 frame, GPU time per pass when the device has
+timestamp queries, cards drawn) and one per frame over `ASCII_SPIKE_MS` (25) with where its time went.
+`dev-run/tune.txt` is read live (`autowalk`, `fade`, `underpaint`, `fog`). Outside the loop: `ASCII_TRACE=FILE`,
+`ASCII_TUNE=FILE`, `ASCII_POSE=FILE` (reopen the world where the last run left it), `ASCII_AUTOWALK=1`.
+`ascii-scene shot ... --zoom N` dezooms before the shot.
+
 ## Keys (every platform)
 
 - drag: orbit, right-drag: pan, wheel: zoom. Drop an `.stl` on the window (or the page) or pass it on the command line.
@@ -125,8 +138,8 @@ before the web moved onto this code; they are kept as frozen references.
 
 - `core/tests/parity.rs`: mulberry32 bit-identical to JS; `chunk_cards` identical to `chunks.ts` (table and card
   order after the shuffle); physics trajectories identical to `physics.ts` within 1e-6 over five scenarios
-  (walk, run, jump, collider, water, various frame rates); the native engine against the WASM engine
-  (same buffer lengths and sums; see "Determinism").
+  (walk, run, jump, collider, water, various frame rates). (The check against the former WASM engine went
+  with it: every platform now runs this engine.)
 - `core/tests/session.rs`: a whole world session run twice gives bit-identical render data; the player walks the
   streamed world; galleries and STL load; a broken STL reports an error.
 - `render/tests/offscreen.rs`: off-screen render is deterministic and matches the reference for the sphere.

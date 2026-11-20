@@ -11,6 +11,8 @@ pub mod shell;
 pub mod headless;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pool;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod trace;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
 

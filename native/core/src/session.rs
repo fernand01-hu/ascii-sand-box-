@@ -46,6 +46,45 @@ pub enum Status {
     Error(String),
 }
 
+/// Where the viewer is in the infinite world, to come back to it after a
+/// restart (development: rebuild and relaunch in place).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pose {
+    pub seed: u32,
+    pub day: bool,
+    /// Orbit camera eye and focus.
+    pub eye: [f64; 3],
+    pub target: [f64; 3],
+    /// Walking: feet x, y, z, yaw, pitch.
+    pub player: Option<[f64; 5]>,
+}
+
+impl Pose {
+    /// One line of numbers.
+    pub fn to_line(&self) -> String {
+        let p = self.player.unwrap_or([0.0; 5]);
+        format!(
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            self.seed, u8::from(self.day), self.eye[0], self.eye[1], self.eye[2], self.target[0], self.target[1], self.target[2],
+            u8::from(self.player.is_some()), p[0], p[1], p[2], p[3], p[4]
+        )
+    }
+
+    pub fn from_line(line: &str) -> Option<Pose> {
+        let v: Vec<f64> = line.split_whitespace().map(str::parse).collect::<Result<_, _>>().ok()?;
+        if v.len() != 14 {
+            return None;
+        }
+        Some(Pose {
+            seed: v[0] as u32,
+            day: v[1] != 0.0,
+            eye: [v[2], v[3], v[4]],
+            target: [v[5], v[6], v[7]],
+            player: (v[8] != 0.0).then(|| [v[9], v[10], v[11], v[12], v[13]]),
+        })
+    }
+}
+
 /// What `walk_steps` saw.
 #[derive(Clone, Copy, Debug)]
 pub struct WalkReport {
@@ -79,7 +118,26 @@ pub struct Stats {
 enum Purpose {
     Load { token: u64, name: String },
     Chunk { epoch: u64, cx: i32, cz: i32 },
+    Far { epoch: u64, tx: i32, tz: i32 },
+    /// A landscape re-skinned for a moved viewer.
+    SceneView { token: u64, eye: [f32; 3], target: [f32; 3] },
 }
+
+/// The landscape on screen, for re-skinning it as the viewer moves (its
+/// glyphs and object density are sized for one viewpoint, like world chunks).
+#[derive(Clone, Copy)]
+struct SceneLod {
+    preset: crate::input::Preset,
+    seed: u32,
+    /// Viewpoint the cards on screen were built for.
+    eye: [f32; 3],
+    target: [f32; 3],
+    /// A re-skin is being built.
+    busy: bool,
+}
+
+/// Glyph sizes stop shrinking under this distance in landscapes (`View::near`).
+const SCENE_NEAR: f32 = 2.0;
 
 /// The ground the player walks on.
 enum GroundKind {
@@ -143,6 +201,11 @@ pub struct Session<E: JobExecutor> {
     animate: bool,
     time: f64,
     frozen: Option<f64>,
+    /// Where to put the viewer once the world is up (`show_world_at`).
+    restore: Option<Pose>,
+    /// Landscape asked for (preset, seed), then on screen.
+    scene_req: Option<(crate::input::Preset, u32)>,
+    scene_lod: Option<SceneLod>,
     last_now: Option<f64>,
     epoch: u64,
     // jobs
@@ -179,6 +242,9 @@ impl<E: JobExecutor> Session<E> {
             animate: false,
             time: 0.0,
             frozen: None,
+            restore: None,
+            scene_req: None,
+            scene_lod: None,
             last_now: None,
             epoch: 0,
             latest: 0,
@@ -268,7 +334,8 @@ impl<E: JobExecutor> Session<E> {
             }
             Command::Scene(p) => {
                 let aspect = glyph_aspect(GLYPH_HEIGHT);
-                self.start(format!("scene-{}", p.name()), JobKind::Scene { preset: p, seed: 1, aspect });
+                self.start(format!("scene-{}", p.name()), JobKind::Scene { preset: p, seed: 1, aspect, view: None });
+                self.scene_req = Some((p, 1));
             }
             Command::World => self.show_world(1, false),
             Command::TogglePlay => {
@@ -306,7 +373,8 @@ impl<E: JobExecutor> Session<E> {
 
     pub fn show_scene(&mut self, preset: crate::input::Preset, seed: u32) {
         let aspect = glyph_aspect(GLYPH_HEIGHT);
-        self.start(format!("scene-{}", preset.name()), JobKind::Scene { preset, seed, aspect });
+        self.start(format!("scene-{}", preset.name()), JobKind::Scene { preset, seed, aspect, view: None });
+        self.scene_req = Some((preset, seed));
     }
 
     pub fn show_gallery(&mut self, g: crate::input::Gallery, seed: u32) {
@@ -368,12 +436,31 @@ impl<E: JobExecutor> Session<E> {
             self.time += dt;
             self.dirty = true;
         }
+        self.refresh_scene();
+        if let (Some(pose), GroundKind::World(_)) = (self.restore, &self.ground) {
+            match pose.player {
+                None => self.restore = None,
+                Some([x, _, z, yaw, pitch]) if self.ground.height(x, z).is_finite() => {
+                    self.restore = None;
+                    if self.play() {
+                        if let Some(p) = &mut self.player {
+                            p.state.x = x;
+                            p.state.z = z;
+                            p.state.y = self.ground.height(x, z);
+                            p.state.yaw = yaw;
+                            p.state.pitch = pitch;
+                        }
+                    }
+                }
+                Some(_) => {}
+            }
+        }
         if let GroundKind::World(w) = &mut self.ground {
             let eye = self.player.as_ref().map_or(self.orbit.position, Player::eye);
             let epoch = self.epoch;
             let pending = &mut self.pending;
-            w.update(&mut self.exec, &mut self.next_id, &mut self.events, |id, cx, cz| {
-                pending.insert(id, Purpose::Chunk { epoch, cx, cz });
+            w.update(&mut self.exec, &mut self.next_id, &mut self.events, |id, cx, cz, far| {
+                pending.insert(id, if far { Purpose::Far { epoch, tx: cx, tz: cz } } else { Purpose::Chunk { epoch, cx, cz } });
             }, eye, now, false);
         }
     }
@@ -404,6 +491,47 @@ impl<E: JobExecutor> Session<E> {
                             self.stats.chunk_ms_max = self.stats.chunk_ms_max.max(d.elapsed_ms);
                         }
                         w.on_chunk(cx, cz, out, &mut self.events);
+                    }
+                }
+                Purpose::SceneView { token, eye, target } => {
+                    if let Some(sl) = &mut self.scene_lod {
+                        sl.busy = false;
+                    }
+                    if token != self.latest || self.scene_lod.is_none() {
+                        continue;
+                    }
+                    match d.output {
+                        Ok(Output::Scene(s)) => {
+                            if let Some(sl) = &mut self.scene_lod {
+                                sl.eye = eye;
+                                sl.target = target;
+                            }
+                            // Swapped in place: the renderer dissolves the old cards.
+                            self.stats.cards = s.cards.cards.len() as u64 / crate::CARD_STRIDE as u64;
+                            let lod = Some(CardLod { eye, near: SCENE_NEAR, far: 0.0, inner: 0.0 });
+                            self.events.push(RenderEvent::SetCards { key: MAIN_SET, cards: s.cards.cards, chunks: s.cards.chunks, lod });
+                            if !s.body.is_empty() {
+                                self.events.push(RenderEvent::SetBody { key: MAIN_SET, positions: s.body });
+                            }
+                        }
+                        Err(e) => eprintln!("[ascii] scene re-skin failed: {e}"),
+                        _ => {}
+                    }
+                }
+                Purpose::Far { epoch, tx, tz } => {
+                    if epoch != self.epoch {
+                        continue;
+                    }
+                    if let GroundKind::World(w) = &mut self.ground {
+                        let out = match d.output {
+                            Ok(Output::Far(f)) => Some(f),
+                            Err(e) => {
+                                eprintln!("[ascii] far tile failed: {e}");
+                                None
+                            }
+                            _ => None,
+                        };
+                        w.on_far(tx, tz, out, &mut self.events);
                     }
                 }
                 Purpose::Load { token, name } => {
@@ -456,6 +584,7 @@ impl<E: JobExecutor> Session<E> {
             w.dispose(&mut self.events);
         }
         self.ground = GroundKind::None;
+        self.scene_lod = None;
         self.events.push(RenderEvent::ClearBodies);
     }
 
@@ -479,7 +608,7 @@ impl<E: JobExecutor> Session<E> {
             }
             Output::Scene(s) => self.apply_scene(*s, name),
             Output::World(w) => self.apply_world(w),
-            Output::Chunk(_) | Output::Warmed => {}
+            Output::Chunk(_) | Output::Far(_) | Output::Warmed => {}
         }
     }
 
@@ -507,7 +636,16 @@ impl<E: JobExecutor> Session<E> {
         if has_body {
             self.events.push(RenderEvent::SetBody { key: MAIN_SET, positions: s.body });
         }
-        self.set_cards(s.cards);
+        if s.is_scene {
+            let (eye, target) = ([ex as f32, ey as f32, ez as f32], [tx as f32, ty as f32, tz as f32]);
+            self.scene_lod = self.scene_req.map(|(preset, seed)| SceneLod { preset, seed, eye, target, busy: false });
+            let lod = Some(CardLod { eye, near: SCENE_NEAR, far: 0.0, inner: 0.0 });
+            self.stats.cards = s.cards.cards.len() as u64 / crate::CARD_STRIDE as u64;
+            self.events.push(RenderEvent::ClearCards);
+            self.events.push(RenderEvent::SetCards { key: MAIN_SET, cards: s.cards.cards, chunks: s.cards.chunks, lod });
+        } else {
+            self.set_cards(s.cards);
+        }
         if let Some(w) = s.walk {
             self.ground = GroundKind::Grid(Box::new(GridGround::new(walk_world(w))));
         }
@@ -528,7 +666,9 @@ impl<E: JobExecutor> Session<E> {
         self.env.wind_dir = [0.89, -0.45];
         self.env.leaf_box = [0.0, 0.0, 90.0];
         self.env.rain_box = [36.0, 24.0, 36.0];
-        self.env.fog_dist = 140.0; // thick enough that the edge of the loaded area melts away
+        // Haze e-folding distance. The loaded area ends at 288 m, where
+        // streamed cards fade out (render: `CardLod::far`).
+        self.env.fog_dist = 240.0;
         self.env.fog = 1.0;
         self.env.haze_color = haze;
         self.set_atlas(&w.charset);
@@ -538,6 +678,10 @@ impl<E: JobExecutor> Session<E> {
         let [sx, sy, sz] = w.spawn.map(f64::from);
         self.free_scene(DVec3::new(sx, sy + 1.0, sz - 30.0), DVec3::new(sx, sy + 7.0, sz), 50.0, Some(3000.0), false);
         self.orbit.max_distance = 400.0;
+        if let Some(p) = &self.restore {
+            self.orbit.set_view(DVec3::from_array(p.eye), DVec3::from_array(p.target));
+            self.orbit.update();
+        }
         let seed = w.seed;
         let mut streamer = WorldStreamer::new(
             WorldInfo { chunk_size: f64::from(w.chunk_size), grid: w.grid as usize, water: f64::from(w.water) },
@@ -548,8 +692,8 @@ impl<E: JobExecutor> Session<E> {
         );
         let epoch = self.epoch;
         let pending = &mut self.pending;
-        streamer.update(&mut self.exec, &mut self.next_id, &mut self.events, |id, cx, cz| {
-            pending.insert(id, Purpose::Chunk { epoch, cx, cz });
+        streamer.update(&mut self.exec, &mut self.next_id, &mut self.events, |id, cx, cz, far| {
+            pending.insert(id, if far { Purpose::Far { epoch, tx: cx, tz: cz } } else { Purpose::Chunk { epoch, cx, cz } });
         }, self.orbit.position, 0.0, true);
         self.ground = GroundKind::World(Box::new(streamer));
         self.env.set(Some(0.3), Some(0.0), Some(0.5));
@@ -629,6 +773,52 @@ impl<E: JobExecutor> Session<E> {
         self.orbit.enabled = false;
         self.near = 0.05;
         true
+    }
+
+    /// The viewer's place in the infinite world (None elsewhere).
+    pub fn pose(&self) -> Option<Pose> {
+        let GroundKind::World(w) = &self.ground else { return None };
+        let o = &self.orbit;
+        Some(Pose {
+            seed: w.seed,
+            day: w.day,
+            eye: o.position.to_array(),
+            target: o.target.to_array(),
+            player: self.player.as_ref().map(|p| [p.state.x, p.state.y, p.state.z, p.state.yaw, p.state.pitch]),
+        })
+    }
+
+    /// Open the infinite world at `pose`: the camera goes there as soon as the
+    /// world is up, and walking resumes once the ground under it has loaded.
+    pub fn show_world_at(&mut self, pose: Pose) {
+        self.show_world(pose.seed, pose.day);
+        self.restore = Some(pose);
+    }
+
+    /// Re-skin the landscape in the background once the viewer has moved far
+    /// enough from where its cards were built (one re-skin at a time).
+    fn refresh_scene(&mut self) {
+        let Some(sl) = self.scene_lod else { return };
+        if sl.busy || !matches!(self.status, Status::Ready) {
+            return;
+        }
+        let eye = self.camera_position();
+        // Walking: sizes from the eye. Orbiting: from the eye and the focus.
+        let target = if self.player.is_some() { eye } else { self.orbit.target };
+        let (be, bt) = (DVec3::from_array(sl.eye.map(f64::from)), DVec3::from_array(sl.target.map(f64::from)));
+        let reach = (0.3 * be.distance(bt)).max(6.0);
+        if eye.distance(be) < reach && target.distance(bt) < reach {
+            return;
+        }
+        let (e, t) = (eye.as_vec3().to_array(), target.as_vec3().to_array());
+        let id = self.next_id;
+        self.next_id += 1;
+        self.pending.insert(id, Purpose::SceneView { token: self.latest, eye: e, target: t });
+        let aspect = glyph_aspect(GLYPH_HEIGHT);
+        self.exec.submit(Job { id, kind: JobKind::Scene { preset: sl.preset, seed: sl.seed, aspect, view: Some((e, t)) } });
+        if let Some(s) = &mut self.scene_lod {
+            s.busy = true;
+        }
     }
 
     /// Set the weather outright (tests); `None` keeps that part.

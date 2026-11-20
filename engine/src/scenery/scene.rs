@@ -111,13 +111,21 @@ fn default_camera(t: &Terrain, height: f32, focus_water: bool) -> (Vec3, Vec3) {
 }
 
 pub fn build_scene(preset: ScenePreset, seed: u32, glyph_aspect: f32) -> SceneOut {
+    build_scene_at(preset, seed, glyph_aspect, None)
+}
+
+/// The scene with glyphs sized and objects scattered for a viewer at `view`
+/// (eye, focus) instead of the preset's first view; the camera returned is
+/// still the preset's.
+pub fn build_scene_at(preset: ScenePreset, seed: u32, glyph_aspect: f32, view_at: Option<(Vec3, Vec3)>) -> SceneOut {
     let (tp, biome, day, cam_h, focus_water) = preset.spec();
     let t = Terrain::new(seed, tp);
-    let (eye, look) = default_camera(&t, cam_h, focus_water);
+    let (cam_eye, look) = default_camera(&t, cam_h, focus_water);
     // Orbit about a point ~35 m along the line of sight (same first view).
-    let dir = unit(look - eye);
-    let mut target = eye + dir * 35.0;
-    target.y = target.y.max(t.height(target.x, target.z) + 1.0);
+    let dir = unit(look - cam_eye);
+    let mut cam_target = cam_eye + dir * 35.0;
+    cam_target.y = cam_target.y.max(t.height(cam_target.x, cam_target.z) + 1.0);
+    let (eye, target) = view_at.unwrap_or((cam_eye, cam_target));
     let fov: f32 = 50.0;
     let view = View { eye, focus: target, focal: 500.0 / fm::tan(fov.to_radians() / 2.0), near: 2.0 };
     let sun = sun_for(day);
@@ -182,8 +190,8 @@ pub fn build_scene(preset: ScenePreset, seed: u32, glyph_aspect: f32) -> SceneOu
         variants: sc.library.assets.len(),
         cards: std::mem::take(&mut sk.cards),
         body,
-        eye,
-        target,
+        eye: cam_eye,
+        target: cam_target,
         fov,
         day,
         wind: wind_dir(),

@@ -4,7 +4,7 @@
 
 use crate::chunks::ChunkRec;
 use crate::input::{Gallery, Preset};
-use crate::jobs::{CardData, ChunkOut, Job, JobDone, JobKind, ModelOut, Output, SceneOut, WalkOut, WorldOut};
+use crate::jobs::{CardData, ChunkOut, FarOut, Job, JobDone, JobKind, ModelOut, Output, SceneOut, WalkOut, WorldOut};
 use crate::render_data::MaterialDef;
 use ascii_engine as eng;
 
@@ -147,11 +147,16 @@ pub fn encode_job(job: &Job) -> Vec<u8> {
             w.u32(*seed);
             w.f32(*aspect);
         }
-        JobKind::Scene { preset, seed, aspect } => {
+        JobKind::Scene { preset, seed, aspect, view } => {
             w.u8(2);
             w.u8(index(&PRESETS, preset));
             w.u32(*seed);
             w.f32(*aspect);
+            w.bool(view.is_some());
+            if let Some((e, t)) = view {
+                w.arr(e);
+                w.arr(t);
+            }
         }
         JobKind::WorldInit { seed, day, aspect } => {
             w.u8(3);
@@ -165,6 +170,16 @@ pub fn encode_job(job: &Job) -> Vec<u8> {
             w.bool(*day);
             w.i32(*cx);
             w.i32(*cz);
+            w.arr(eye);
+            w.f32(*aspect);
+        }
+        JobKind::FarTile { seed, day, tx, tz, size, eye, aspect } => {
+            w.u8(6);
+            w.u32(*seed);
+            w.bool(*day);
+            w.i32(*tx);
+            w.i32(*tz);
+            w.f32(*size);
             w.arr(eye);
             w.f32(*aspect);
         }
@@ -192,10 +207,11 @@ pub fn decode_job(b: &[u8]) -> Res<Job> {
             JobKind::Stl { bytes, z_up, settings, charset: r.str()? }
         }
         1 => JobKind::Gallery { category: pick(&GALLERIES, r.u8()?)?, seed: r.u32()?, aspect: r.f32()? },
-        2 => JobKind::Scene { preset: pick(&PRESETS, r.u8()?)?, seed: r.u32()?, aspect: r.f32()? },
+        2 => JobKind::Scene { preset: pick(&PRESETS, r.u8()?)?, seed: r.u32()?, aspect: r.f32()?, view: if r.bool()? { Some((r.arr()?, r.arr()?)) } else { None } },
         3 => JobKind::WorldInit { seed: r.u32()?, day: r.bool()?, aspect: r.f32()? },
         4 => JobKind::Chunk { seed: r.u32()?, day: r.bool()?, cx: r.i32()?, cz: r.i32()?, eye: r.arr()?, aspect: r.f32()? },
         5 => JobKind::WarmAssets { seed: r.u32()?, part: r.len()?, parts: r.len()? },
+        6 => JobKind::FarTile { seed: r.u32()?, day: r.bool()?, tx: r.i32()?, tz: r.i32()?, size: r.f32()?, eye: r.arr()?, aspect: r.f32()? },
         _ => return Err("wire: bad job kind".into()),
     };
     Ok(Job { id, kind })
@@ -305,6 +321,13 @@ pub fn encode_done(d: &JobDone) -> Vec<u8> {
             w.f32s(&c.colliders);
         }
         Ok(Output::Warmed) => w.u8(5),
+        Ok(Output::Far(f)) => {
+            w.u8(6);
+            w.i32(f.tx);
+            w.i32(f.tz);
+            w.arr(&f.eye);
+            put_cards(&mut w, &f.cards);
+        }
     }
     w.0
 }
@@ -352,6 +375,7 @@ pub fn decode_done(b: &[u8]) -> Res<JobDone> {
             colliders: r.f32s()?,
         }))),
         5 => Ok(Output::Warmed),
+        6 => Ok(Output::Far(Box::new(FarOut { tx: r.i32()?, tz: r.i32()?, eye: r.arr()?, cards: get_cards(&mut r)? }))),
         _ => return Err("wire: bad output kind".into()),
     };
     if !r.0.is_empty() {
@@ -372,10 +396,12 @@ mod tests {
         let kinds = vec![
             JobKind::Stl { bytes: stl, z_up: false, settings: eng::CardConfig::new(), charset: eng::default_charset() },
             JobKind::Gallery { category: Gallery::Plants, seed: 3, aspect: 0.6 },
-            JobKind::Scene { preset: Preset::Meadow, seed: 1, aspect: 0.6 },
+            JobKind::Scene { preset: Preset::Meadow, seed: 1, aspect: 0.6, view: None },
+            JobKind::Scene { preset: Preset::Lake, seed: 2, aspect: 0.6, view: Some(([1.0, 9.0, 2.0], [3.0, 4.0, 5.0])) },
             JobKind::WorldInit { seed: 1, day: true, aspect: 0.6 },
             JobKind::Chunk { seed: 1, day: true, cx: -1, cz: 2, eye: [3.0, 2.0, 70.0], aspect: 0.6 },
             JobKind::WarmAssets { seed: 1, part: 5, parts: 6 },
+            JobKind::FarTile { seed: 1, day: false, tx: 3, tz: -2, size: 128.0, eye: [1.0, 9.0, -4.0], aspect: 0.6 },
         ];
         let mut worker = Worker::new();
         for (i, kind) in kinds.into_iter().enumerate() {

@@ -218,12 +218,19 @@ pub fn warm_world_assets(seed: u32, part: usize, parts: usize) -> usize {
 }
 
 pub fn build_scene(preset: &str, seed: u32, glyph_aspect: f32) -> Result<SceneryScene, String> {
+    build_scene_at(preset, seed, glyph_aspect, None)
+}
+
+/// `build_scene` with glyphs sized and objects scattered for a viewer at
+/// `view` = (eye, focus) rather than the preset's first view.
+pub fn build_scene_at(preset: &str, seed: u32, glyph_aspect: f32, view: Option<([f32; 3], [f32; 3])>) -> Result<SceneryScene, String> {
     let p = scenery::scene::ScenePreset::parse(preset)
         .ok_or_else(|| format!("unknown scene {preset:?} (meadow, forest, lake, valley, alpine)"))?;
     if !(glyph_aspect > 0.0 && glyph_aspect.is_finite()) {
         return Err("glyph_aspect must be a positive number".to_string());
     }
-    let s = scenery::scene::build_scene(p, seed, glyph_aspect);
+    let v = |a: [f32; 3]| math::Vec3::new(a[0], a[1], a[2]);
+    let s = scenery::scene::build_scene_at(p, seed, glyph_aspect, view.map(|(e, t)| (v(e), v(t))));
     let (body, body_normals) = body_buffers(&s.body);
     let rb = scenery::landscape::RAIN_BOX;
     Ok(SceneryScene {
@@ -330,6 +337,11 @@ impl InfiniteWorld {
         let c = self.inner.build_chunk(cx, cz, math::Vec3::new(eye[0], eye[1], eye[2]), glyph_aspect);
         let (body, body_normals) = body_buffers(&c.body);
         WorldChunk { cards: c.cards, body, body_normals, heights: c.heights, colliders: c.colliders.iter().flatten().copied().collect() }
+    }
+
+    /// Far ground of the `size` m tile (tx, tz): cards only, glyphs sized for `eye`.
+    pub fn build_far_tile(&mut self, tx: i32, tz: i32, size: f32, eye: [f32; 3], glyph_aspect: f32) -> Vec<f32> {
+        self.inner.build_far_tile(tx, tz, size, math::Vec3::new(eye[0], eye[1], eye[2]), glyph_aspect)
     }
 }
 

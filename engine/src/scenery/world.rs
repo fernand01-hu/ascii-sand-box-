@@ -143,6 +143,8 @@ pub struct ChunkLand<'a> {
     pub w: &'a WorldGen,
     x0: f32,
     z0: f32,
+    /// Grid spacing, m (1 for chunks, coarser for far tiles).
+    step: f32,
     n: usize,
     h: Vec<f32>,
     trail: Vec<f32>,
@@ -165,11 +167,29 @@ impl<'a> ChunkLand<'a> {
                 stream[j * n + i] = s;
             }
         }
-        ChunkLand { w, x0, z0, n, h, trail, stream }
+        ChunkLand { w, x0, z0, step: 1.0, n, h, trail, stream }
+    }
+
+    /// The land of a `size` m square from (x0, z0), sampled every `step` m.
+    pub fn region(w: &'a WorldGen, x0: f32, z0: f32, size: f32, step: f32) -> ChunkLand<'a> {
+        let n = (size / step).ceil() as usize + 1;
+        let (mut h, mut trail, mut stream) = (vec![0.0; n * n], vec![0.0; n * n], vec![0.0; n * n]);
+        for j in 0..n {
+            for i in 0..n {
+                let (x, z) = (x0 + i as f32 * step, z0 + j as f32 * step);
+                let raw = w.raw_height(x, z);
+                let t = w.trail(x, z);
+                let s = w.stream(x, z, raw);
+                h[j * n + i] = raw - 0.12 * t - 0.6 * s;
+                trail[j * n + i] = t;
+                stream[j * n + i] = s;
+            }
+        }
+        ChunkLand { w, x0, z0, step, n, h, trail, stream }
     }
 
     fn sample(&self, g: &[f32], x: f32, z: f32) -> Option<f32> {
-        let (fx, fz) = (x - self.x0, z - self.z0);
+        let (fx, fz) = ((x - self.x0) / self.step, (z - self.z0) / self.step);
         let m = (self.n - 1) as f32;
         if !(0.0..m).contains(&fx) || !(0.0..m).contains(&fz) {
             return None;
@@ -197,7 +217,7 @@ impl Land for ChunkLand<'_> {
         self.sample(&self.h, x, z).unwrap_or_else(|| self.w.height(x, z))
     }
     fn normal(&self, x: f32, z: f32) -> Vec3 {
-        let e = 1.0;
+        let e = self.step;
         let hx = self.height(x + e, z) - self.height(x - e, z);
         let hz = self.height(x, z + e) - self.height(x, z - e);
         unit(Vec3::new(-hx, 2.0 * e, -hz))
@@ -410,6 +430,54 @@ impl World {
         sk.cards
     }
 
+    /// Far ground: the bare land of the `size` m tile (tx, tz), glyphs sized
+    /// from `eye` (so few and large), no plants, trees or rocks. Lit by the
+    /// sun and terrain shadows on a coarse grid; no physics.
+    pub fn build_far_tile(&mut self, tx: i32, tz: i32, size: f32, eye: Vec3, aspect: f32) -> Vec<f32> {
+        let w = &self.gen;
+        let (x0, z0) = (tx as f32 * size, tz as f32 * size);
+        let step = 4.0;
+        let land = ChunkLand::region(w, x0 - 2.0 * step, z0 - 2.0 * step, size + 4.0 * step, step);
+        let rect = [x0, z0, x0 + size, z0 + size];
+        let view = View { eye, focus: eye, focal: FOCAL, near: 5.0 };
+        let sun = sun_for(self.day);
+        let glint = if self.day { [1.0, 0.98, 0.92] } else { [1.0, 0.86, 0.62] };
+        let sky = self.sky();
+        let seed = w.seed as u64 ^ 0xfa7 ^ ((tx as u64) << 32) ^ (tz as u32 as u64);
+        let mut sk = Skinner::new(&self.glyphs, 0.1, aspect, seed);
+        let mut rng = Pcg32::new(seed, 0x960d);
+        let flow = |x: f32, z: f32| w.flow(x, z);
+        landscape::ground_region(&mut sk, &land, &|_, _| 0.0, &sky, &view, sun, glint, &mut rng, rect, Some(&flow));
+        let gs = 16.0;
+        let g = (size / gs) as usize + 1;
+        let mut tvis = vec![1.0f32; g * g];
+        for j in 0..g {
+            for i in 0..g {
+                let (x, z) = (x0 + i as f32 * gs, z0 + j as f32 * gs);
+                let p = Vec3::new(x, land.height(x, z) + 0.1, z);
+                let mut vis = 1.0f32;
+                for t in [8.0, 18.0, 40.0, 90.0, 200.0] {
+                    let q = p + sun * t;
+                    vis = vis.min(smoothstep(-0.2 - 0.02 * t, 0.2 + 0.02 * t, q.y - w.height(q.x, q.z)));
+                    if vis <= 0.0 {
+                        break;
+                    }
+                }
+                tvis[j * g + i] = vis;
+            }
+        }
+        let terrain_sun = |p: Vec3| {
+            let fx = ((p.x - x0) / gs).clamp(0.0, (g - 1) as f32 - 0.001);
+            let fz = ((p.z - z0) / gs).clamp(0.0, (g - 1) as f32 - 0.001);
+            let (i, j) = (fx as usize, fz as usize);
+            let (tx, tz) = (fx - i as f32, fz - j as f32);
+            (tvis[j * g + i] * (1.0 - tx) + tvis[j * g + i + 1] * tx) * (1.0 - tz) + (tvis[(j + 1) * g + i] * (1.0 - tx) + tvis[(j + 1) * g + i + 1] * tx) * tz
+        };
+        let occ = Occlusion::with_max_cells(&sk.occluders, 1.0e4);
+        sk.light(&occ, sun, &terrain_sun, Some(eye));
+        std::mem::take(&mut sk.cards)
+    }
+
     /// Build chunk (cx, cz) with glyphs sized from `eye`.
     pub fn build_chunk(&mut self, cx: i32, cz: i32, eye: Vec3, aspect: f32) -> ChunkOut {
         let w = &self.gen;
@@ -516,6 +584,23 @@ impl World {
 mod tests {
     use super::*;
     use crate::cards::{layout, STRIDE};
+
+    /// Far tiles: bare ground, few large glyphs, fewer the farther.
+    #[test]
+    fn far_tiles_are_light() {
+        let mut w = World::new(1, true);
+        let eye = Vec3::new(0.0, 10.0, 0.0);
+        let mut last = usize::MAX;
+        for d in [3, 5, 8] {
+            let t0 = std::time::Instant::now();
+            let cards = w.build_far_tile(d, 0, 128.0, eye, 0.6);
+            let n = cards.len() / STRIDE;
+            eprintln!("far tile at {} m: {n} cards in {:?}", d * 128, t0.elapsed());
+            assert!(n > 50 && n < 8000, "{n} cards");
+            assert!(n <= last);
+            last = n;
+        }
+    }
 
     #[test]
     fn terrain_is_seamless_varied_and_has_lakes() {

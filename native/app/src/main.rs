@@ -18,6 +18,9 @@ fn parse_window(argv: &[String]) -> Result<window::Options, String> {
         size: (1000, 800),
         fade_secs: std::env::var("ASCII_FADE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.8),
         present: std::env::var("ASCII_PRESENT").ok(),
+        pose: None,
+        pose_file: std::env::var("ASCII_POSE").ok(),
+        autowalk: std::env::var_os("ASCII_AUTOWALK").is_some(),
     };
     let (mut seed, mut day, mut world) = (1u32, false, false);
     let mut it = argv.iter();
@@ -46,6 +49,14 @@ fn parse_window(argv: &[String]) -> Result<window::Options, String> {
     }
     if world {
         o.world = Some((seed, day));
+    }
+    // Development: ASCII_POSE=FILE reopens the world where the last run left it.
+    if let Some(p) = o.pose_file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|l| ascii_core::session::Pose::from_line(&l)) {
+        eprintln!("[ascii] back in world {} at ({:.0}, {:.0})", p.seed, p.eye[0], p.eye[2]);
+        o.start.clear();
+        o.world = None;
+        o.pose = Some(p);
+        return Ok(o);
     }
     if o.start.is_empty() && o.world.is_none() {
         // Opening scene, like the webapp: the torus knot.
