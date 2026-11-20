@@ -24,6 +24,8 @@ pub struct Shot {
     pub size: (u32, u32),
     pub time: Option<f64>,
     pub walk_seconds: f64,
+    /// Wheel movement before the shot, browser pixels (positive: zoom out).
+    pub zoom: f64,
 }
 
 fn start(session: &mut Session<ThreadPool>, src: &SourceKind) -> Result<(), String> {
@@ -111,6 +113,17 @@ pub fn render_one(gpu: &Gpu, src: &SourceKind, shot: &Shot) -> Result<(Vec<u8>, 
     for c in &shot.commands {
         run.session.command(c.clone());
     }
+    if shot.zoom != 0.0 {
+        let mut t = run.now();
+        for _ in 0..20 {
+            run.session.pointer(ascii_core::input::Pointer::Zoom(shot.zoom / 20.0));
+            for _ in 0..30 {
+                t += 1.0 / 60.0;
+                run.session.update(t, &InputState::default());
+            }
+        }
+        run.wait_ready(src, Duration::from_secs(600))?;
+    }
     if shot.walk_seconds > 0.0 {
         run.session.command(Command::TogglePlay);
         let walk = InputState { forward: 1.0, ..Default::default() };
@@ -138,7 +151,7 @@ fn parse_size(s: &str) -> Result<(u32, u32), String> {
 /// `shot`: argv after the subcommand.
 pub fn shot_cmd(args: &[String]) -> Result<(), String> {
     let (mut src, mut out) = (None, std::path::PathBuf::from("shot.png"));
-    let mut shot = Shot { commands: Vec::new(), size: (1000, 800), time: None, walk_seconds: 0.0 };
+    let mut shot = Shot { commands: Vec::new(), size: (1000, 800), time: None, walk_seconds: 0.0, zoom: 0.0 };
     let mut it = args.iter();
     let mut seed = 1u32;
     let mut day = false;
@@ -163,6 +176,7 @@ pub fn shot_cmd(args: &[String]) -> Result<(), String> {
             "--rain" => shot.commands.push(Command::ToggleRain),
             "--leaves" => shot.commands.push(Command::ToggleLeaves),
             "--walk" => shot.walk_seconds = val()?.parse().map_err(|_| "bad seconds")?,
+            "--zoom" => shot.zoom = val()?.parse().map_err(|_| "bad zoom")?,
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -216,7 +230,7 @@ pub fn golden_cmd(args: &[String]) -> Result<(), String> {
         if only.is_some_and(|o| !name.contains(o.as_str())) {
             continue;
         }
-        let shot = Shot { commands: Vec::new(), size, time, walk_seconds: 0.0 };
+        let shot = Shot { commands: Vec::new(), size, time, walk_seconds: 0.0, zoom: 0.0 };
         let (rgba, _run, _stats) = render_one(&gpu, &src, &shot)?;
         write_png(&out.join(format!("{name}.png")), &rgba, size)?;
         let top_first = thumbnail(&rgba, size, 48, 36);

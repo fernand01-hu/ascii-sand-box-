@@ -3,7 +3,7 @@
 //! viewer has moved enough that its glyph sizes are off. Port of
 //! `web/src/app/world.ts`; the clock is injected.
 
-use crate::jobs::{ChunkOut, Job, JobExecutor, JobId, JobKind};
+use crate::jobs::{ChunkOut, FarOut, Job, JobExecutor, JobId, JobKind};
 use crate::physics::{ColliderGrid, Ground};
 use crate::render_data::{CardLod, RenderEvent};
 use glam::DVec3;
@@ -38,6 +38,18 @@ struct Want {
     cx: i32,
     cz: i32,
     prio: f64,
+    /// A far tile, not a chunk.
+    far: bool,
+}
+
+/// Far ground beyond the chunks: tiles of this size (m)...
+pub const FAR_TILE: f64 = 128.0;
+/// ...out to this distance from the viewer (m).
+pub const FAR_RADIUS: f64 = 1024.0;
+
+/// Set key of a far tile (never a chunk's: their cx would be beyond 2^30).
+pub fn far_key(tx: i32, tz: i32) -> u64 {
+    chunk_key(tx.wrapping_add(1 << 30), tz)
 }
 
 /// Set key of a streamed chunk: offset-binary packing of (cx, cz), so no real
@@ -58,6 +70,11 @@ pub struct WorldStreamer {
     pub aspect: f32,
     loaded: HashMap<(i32, i32), Loaded>,
     inflight: HashMap<(i32, i32), JobId>,
+    /// Far tiles: the eye each was built for.
+    far_loaded: HashMap<(i32, i32), [f32; 3]>,
+    far_inflight: HashMap<(i32, i32), JobId>,
+    /// Cards held by far tiles.
+    far_cards: u64,
     last_check: f64,
     want: Vec<Want>,
     drop_list: Vec<(i32, i32)>,
@@ -76,6 +93,9 @@ impl WorldStreamer {
             aspect,
             loaded: HashMap::new(),
             inflight: HashMap::new(),
+            far_loaded: HashMap::new(),
+            far_inflight: HashMap::new(),
+            far_cards: 0,
             last_check: f64::NEG_INFINITY,
             want: Vec::new(),
             drop_list: Vec::new(),
@@ -89,19 +109,29 @@ impl WorldStreamer {
 
     /// Cards held by the loaded chunks.
     pub fn cards(&self) -> u64 {
-        self.loaded.values().map(|l| l.cards).sum()
+        self.loaded.values().map(|l| l.cards).sum::<u64>() + self.far_cards
+    }
+
+    /// Far tiles loaded.
+    pub fn far_count(&self) -> usize {
+        self.far_loaded.len()
+    }
+
+    /// Radius (m) of the detailed ring: chunks fade out toward it, far tiles in.
+    pub fn near_reach(&self) -> f64 {
+        f64::from(self.radius) * self.info.chunk_size
     }
 
     pub fn pending(&self) -> usize {
-        self.inflight.len()
+        self.inflight.len() + self.far_inflight.len()
     }
 
     /// Call every frame with the viewer's position and the clock (seconds).
-    pub fn update<E: JobExecutor>(&mut self, exec: &mut E, next_id: &mut JobId, events: &mut Vec<RenderEvent>, mut note: impl FnMut(JobId, i32, i32), eye: DVec3, now: f64, force: bool) {
+    pub fn update<E: JobExecutor>(&mut self, exec: &mut E, next_id: &mut JobId, events: &mut Vec<RenderEvent>, mut note: impl FnMut(JobId, i32, i32, bool), eye: DVec3, now: f64, force: bool) {
         // Rescan at most every 150 ms, except when a worker slot is free: a
         // finished chunk is replaced at once, so the workers never sit idle
         // waiting for the next scan (the scan itself is a few microseconds).
-        if !force && now - self.last_check < 0.150 && self.inflight.len() >= self.max_inflight {
+        if !force && now - self.last_check < 0.150 && self.inflight.len() + self.far_inflight.len() >= self.max_inflight {
             return;
         }
         self.last_check = now;
@@ -122,7 +152,7 @@ impl WorldStreamer {
                 let centre = ((f64::from(cx) + 0.5) * s, (f64::from(cz) + 0.5) * s);
                 let d_now = (eye.x - centre.0).hypot(eye.z - centre.1);
                 match self.loaded.get(&(cx, cz)) {
-                    None => self.want.push(Want { cx, cz, prio: d_now }),
+                    None => self.want.push(Want { cx, cz, prio: d_now, far: false }),
                     Some(have) => {
                         // The renderer thins and grows cards that are farther than
                         // when built, but cannot refine them: rebuild once the part
@@ -137,14 +167,15 @@ impl WorldStreamer {
                             now / (bx - x).hypot(by - py).hypot(bz - z).max(LOD_NEAR)
                         };
                         if ratio(px, pz) < REFINE_BELOW {
-                            self.want.push(Want { cx, cz, prio: d_now + 1000.0 });
+                            self.want.push(Want { cx, cz, prio: d_now + 1000.0, far: false });
                         } else if ratio(centre.0, centre.1) > COARSEN_ABOVE {
-                            self.want.push(Want { cx, cz, prio: d_now + 2000.0 });
+                            self.want.push(Want { cx, cz, prio: d_now + 2000.0, far: false });
                         }
                     }
                 }
             }
         }
+        self.want_far(eye);
         // Drop chunks well out of range.
         self.drop_list.clear();
         for l in self.loaded.values() {
@@ -157,19 +188,78 @@ impl WorldStreamer {
             events.push(RenderEvent::RemoveCards { key: chunk_key(cx, cz) });
             events.push(RenderEvent::RemoveBody { key: chunk_key(cx, cz) });
         }
+        self.drop_list.clear();
+        for &(tx, tz) in self.far_loaded.keys() {
+            if far_dist(eye, tx, tz).0 > FAR_RADIUS + FAR_TILE {
+                self.drop_list.push((tx, tz));
+            }
+        }
+        for &(tx, tz) in &self.drop_list {
+            self.far_loaded.remove(&(tx, tz));
+            events.push(RenderEvent::RemoveCards { key: far_key(tx, tz) });
+        }
         // Stable sort: ties keep scan order, like the JS version.
         self.want.sort_by(|a, b| a.prio.total_cmp(&b.prio));
         let eye32 = [eye.x as f32, eye.y as f32, eye.z as f32];
         for i in 0..self.want.len() {
-            if self.inflight.len() >= self.max_inflight {
+            if self.inflight.len() + self.far_inflight.len() >= self.max_inflight {
                 break;
             }
             let w = self.want[i];
             let id = *next_id;
             *next_id += 1;
-            self.inflight.insert((w.cx, w.cz), id);
-            note(id, w.cx, w.cz);
-            exec.submit(Job { id, kind: JobKind::Chunk { seed: self.seed, day: self.day, cx: w.cx, cz: w.cz, eye: eye32, aspect: self.aspect } });
+            note(id, w.cx, w.cz, w.far);
+            if w.far {
+                self.far_inflight.insert((w.cx, w.cz), id);
+                exec.submit(Job { id, kind: JobKind::FarTile { seed: self.seed, day: self.day, tx: w.cx, tz: w.cz, size: FAR_TILE as f32, eye: eye32, aspect: self.aspect } });
+            } else {
+                self.inflight.insert((w.cx, w.cz), id);
+                exec.submit(Job { id, kind: JobKind::Chunk { seed: self.seed, day: self.day, cx: w.cx, cz: w.cz, eye: eye32, aspect: self.aspect } });
+            }
+        }
+    }
+
+    /// Far tiles to (re)build: those reaching past where the chunks fade out
+    /// and within `FAR_RADIUS`, after every chunk (their priority is lower).
+    fn want_far(&mut self, eye: DVec3) {
+        let inner = self.near_reach() * 0.85;
+        let n = (FAR_RADIUS / FAR_TILE).ceil() as i32 + 1;
+        let (ctx, ctz) = ((eye.x / FAR_TILE).floor() as i32, (eye.z / FAR_TILE).floor() as i32);
+        for dz in -n..=n {
+            for dx in -n..=n {
+                let (tx, tz) = (ctx + dx, ctz + dz);
+                if self.far_inflight.contains_key(&(tx, tz)) {
+                    continue;
+                }
+                let (near_d, far_d, (px, pz)) = far_dist(eye, tx, tz);
+                if near_d > FAR_RADIUS || far_d < inner {
+                    continue;
+                }
+                match self.far_loaded.get(&(tx, tz)) {
+                    None => self.want.push(Want { cx: tx, cz: tz, prio: 10_000.0 + near_d, far: true }),
+                    Some(built) => {
+                        let [bx, by, bz] = built.map(f64::from);
+                        let now = (eye.x - px).hypot(eye.z - pz).hypot(eye.y).max(LOD_NEAR);
+                        let then = (bx - px).hypot(bz - pz).hypot(by).max(LOD_NEAR);
+                        if now / then < REFINE_BELOW || now / then > 1.0 / REFINE_BELOW {
+                            self.want.push(Want { cx: tx, cz: tz, prio: 20_000.0 + near_d, far: true });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A far tile finished (or failed).
+    pub fn on_far(&mut self, tx: i32, tz: i32, out: Option<Box<FarOut>>, events: &mut Vec<RenderEvent>) {
+        self.far_inflight.remove(&(tx, tz));
+        let Some(f) = out else { return };
+        let n = (f.cards.cards.len() / crate::CARD_STRIDE) as u64;
+        let key = far_key(tx, tz);
+        let lod = Some(CardLod { eye: f.eye, near: LOD_NEAR as f32, far: FAR_RADIUS as f32, inner: self.near_reach() as f32 });
+        events.push(RenderEvent::SetCards { key, cards: f.cards.cards, chunks: f.cards.chunks, lod });
+        if self.far_loaded.insert((tx, tz), f.eye).is_none() {
+            self.far_cards += n;
         }
     }
 
@@ -182,7 +272,7 @@ impl WorldStreamer {
         let n_cards = (c.cards.cards.len() / crate::CARD_STRIDE) as u64;
         // Replace the old version only now, so nothing flickers out meanwhile.
         let far = (f64::from(self.radius) * self.info.chunk_size) as f32;
-        let lod = Some(CardLod { eye: c.eye, near: LOD_NEAR as f32, far });
+        let lod = Some(CardLod { eye: c.eye, near: LOD_NEAR as f32, far, inner: 0.0 });
         events.push(RenderEvent::SetCards { key, cards: c.cards.cards, chunks: c.cards.chunks, lod });
         if !c.body.is_empty() {
             events.push(RenderEvent::SetBody { key, positions: c.body });
@@ -202,12 +292,28 @@ impl WorldStreamer {
         }
         self.loaded.clear();
         self.inflight.clear();
+        for &(tx, tz) in self.far_loaded.keys() {
+            events.push(RenderEvent::RemoveCards { key: far_key(tx, tz) });
+        }
+        self.far_loaded.clear();
+        self.far_inflight.clear();
+        self.far_cards = 0;
     }
 
     fn chunk_at(&self, x: f64, z: f64) -> Option<&Loaded> {
         let s = self.info.chunk_size;
         self.loaded.get(&((x / s).floor() as i32, (z / s).floor() as i32))
     }
+}
+
+/// Horizontal distances from the eye to the nearest and farthest points of
+/// far tile (tx, tz), and that nearest point.
+fn far_dist(eye: DVec3, tx: i32, tz: i32) -> (f64, f64, (f64, f64)) {
+    let (x0, z0) = (f64::from(tx) * FAR_TILE, f64::from(tz) * FAR_TILE);
+    let (px, pz) = (eye.x.clamp(x0, x0 + FAR_TILE), eye.z.clamp(z0, z0 + FAR_TILE));
+    let fx = (eye.x - x0).abs().max((eye.x - x0 - FAR_TILE).abs());
+    let fz = (eye.z - z0).abs().max((eye.z - z0 - FAR_TILE).abs());
+    ((eye.x - px).hypot(eye.z - pz), fx.hypot(fz), (px, pz))
 }
 
 impl Ground for WorldStreamer {

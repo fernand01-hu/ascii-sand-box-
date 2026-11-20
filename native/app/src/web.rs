@@ -38,6 +38,9 @@ pub fn start(canvas: web_sys::HtmlCanvasElement, workers: Vec<web_sys::Worker>, 
         size: (canvas.client_width().max(1) as u32, canvas.client_height().max(1) as u32),
         fade_secs: 0.8,
         present: None,
+        pose: None,
+        pose_file: None,
+        autowalk: false,
         canvas: Some(canvas),
     };
     shell::run(opts, WebPool::new(workers)).map_err(|e| JsValue::from_str(&e))
