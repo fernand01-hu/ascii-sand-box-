@@ -1190,7 +1190,7 @@ const COMMANDS: Command[] = [
     },
   },
   {
-    name: 'gallery', group: 'scenes', usage: 'gallery <rocks|plants|bushes|trees>', help: 'a sheet of procedural assets',
+    name: 'gallery', group: 'scenes', usage: 'gallery <rocks|plants|bushes|trees|ruins>', help: 'a sheet of procedural assets',
     async run(app, [c], io) {
       if (!GALLERY_CATEGORIES.includes(c as GalleryCategory)) throw new CommandError(`gallery: one of ${GALLERY_CATEGORIES.join(', ')}`);
       await app.showGallery(c as GalleryCategory);

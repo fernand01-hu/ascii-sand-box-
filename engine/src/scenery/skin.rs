@@ -411,6 +411,7 @@ impl<'a> Skinner<'a> {
         self.skin_sprites(asset, pl);
         self.skin_surfels(asset, pl);
         self.skin_wood(asset, pl);
+        self.skin_faces(asset, pl);
         if self.solids_on {
             for t in &asset.solids {
                 self.solids.push(t.map(|p| pl.point(p)));
@@ -497,6 +498,159 @@ impl<'a> Skinner<'a> {
             let alpha = self.alpha(s.mat);
             let glyph = self.glyph(s.mat);
             self.push(c, ud * (sz * self.aspect), vd * sz, alb, alpha, glyph, s.mat, mode);
+        }
+    }
+
+    /// Built structures (ruins): each masonry unit (brick, stone) is drawn
+    /// as one unit in the asset's `FaceStyle`, so single bricks stay
+    /// readable; smooth surfaces (plain stone, glass, moss, vines) are
+    /// filled with their material's characters at glyph spacing. Units
+    /// smaller than a glyph (far away) thin out to one glyph per few units.
+    fn skin_faces(&mut self, asset: &Asset, pl: Placement) {
+        let style = FaceStyle::from(asset.face_style);
+        let (g, aspect) = (self.g, self.aspect);
+        let gw = g * aspect;
+        for (index, f) in asset.faces.iter().enumerate() {
+            if f.pts.len() < 3 {
+                continue;
+            }
+            self.seed_element(pl, 3, index);
+            let pts: Vec<Vec3> = f.pts.iter().map(|&p| pl.point(p)).collect();
+            let n = pl.dir(f.normal);
+            let k = pts.len() as f32;
+            let c = pts.iter().fold(Vec3::ZERO, |a, &p| a + p) * (1.0 / k);
+            // The face's own axes: along its longest edge, and across.
+            let mut u = Vec3::X;
+            let mut best = 0.0;
+            for i in 0..pts.len() {
+                let e = pts[(i + 1) % pts.len()] - pts[i];
+                // prefer level edges (brick courses) unless much shorter
+                let l = e.length() * (1.0 + 0.6 * (1.0 - (e.y.abs() / e.length().max(1e-6))));
+                if l > best {
+                    best = l;
+                    u = e;
+                }
+            }
+            let u = unit(u - n * u.dot(n));
+            if u == Vec3::ZERO {
+                continue;
+            }
+            let v = n.cross(u);
+            let (mut u0, mut u1, mut v0, mut v1) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+            for &p in &pts {
+                let d = p - c;
+                u0 = u0.min(d.dot(u));
+                u1 = u1.max(d.dot(u));
+                v0 = v0.min(d.dot(v));
+                v1 = v1.max(d.dot(v));
+            }
+            let (w, h) = (u1 - u0, v1 - v0);
+            if w < 1e-3 || h < 1e-3 {
+                continue;
+            }
+            let mid = c + u * (0.5 * (u0 + u1)) + v * (0.5 * (v0 + v1));
+            self.occluders.push((mid, w * h * 0.8));
+            // One tone per unit (a hash of its piece), so neighbours differ.
+            let pr = if f.piece > 0 { hash01(f.piece as u64 ^ (pl.pos.x.to_bits() as u64) << 20) } else { self.rng.next_f32() };
+            let tone = 0.84 + 0.3 * pr;
+            let alb = f.color.map(|x| (x * tone * pl.tint).clamp(0.005, 1.5));
+            let lift = n * (0.004 + 0.004 * pr);
+            let mode = if f.mat == Mat::Glass || f.mat == Mat::Twig || f.mat == Mat::Moss { CardMode::Fixed } else { CardMode::Solid };
+            let alpha = f.mat.def().alpha.0 + 0.05 * pr;
+
+            if !f.unit {
+                // Smooth surface: glyph cells over the polygon's box, kept where inside.
+                let (nu, nv) = ((w / gw).round().max(1.0) as usize, (h / g).round().max(1.0) as usize);
+                let far = w < 0.7 * gw || h < 0.7 * g;
+                if far && !self.rng.chance(((w * h) / (gw * g) * 1.4).min(1.0)) {
+                    continue;
+                }
+                let (cw, ch) = if far { (gw, g) } else { (w / nu as f32, h / nv as f32) };
+                let (nu, nv) = if far { (1, 1) } else { (nu.min(64), nv.min(64)) };
+                for j in 0..nv {
+                    for i in 0..nu {
+                        let q = if far { mid } else { c + u * (u0 + (i as f32 + 0.5) * cw) + v * (v0 + (j as f32 + 0.5) * ch) };
+                        if !far && !inside(&pts, n, q) {
+                            continue;
+                        }
+                        let glyph = self.glyph(f.mat);
+                        let jit = 0.9 + 0.2 * self.rng.next_f32();
+                        self.push(q + lift, u * (cw * 0.98 * jit), v * (ch * 0.98 * jit), alb, alpha, glyph, f.mat, mode);
+                    }
+                }
+                continue;
+            }
+
+            // A masonry unit.
+            let far = w < 0.65 * gw || h < 0.65 * g;
+            if far {
+                // smaller than a glyph: one glyph stands for a few units
+                if !self.rng.chance(((w * h) / (gw * g) * 1.3).min(1.0)) {
+                    continue;
+                }
+                let ch = match style {
+                    FaceStyle::Tiles => b"#%8&@H"[(pr * 5.99) as usize],
+                    FaceStyle::Brackets => b'=',
+                    FaceStyle::Mortar => b'_',
+                    FaceStyle::Ramp => ramp_char(tone),
+                };
+                let glyph = self.glyph_for_char(ch as char);
+                self.push(mid + lift, u * gw, v * g, alb, alpha, glyph, f.mat, mode);
+                continue;
+            }
+            let nu = ((w / gw).round().max(1.0) as usize).min(24);
+            let nv = ((h / g).round().max(1.0) as usize).min(12);
+            let (cw, chh) = (w / nu as f32, h / nv as f32);
+            let cell = |i: usize, j: usize| mid + u * (-0.5 * w + (i as f32 + 0.5) * cw) + v * (-0.5 * h + (j as f32 + 0.5) * chh);
+            match style {
+                FaceStyle::Tiles => {
+                    let ch = b"#%8&@H"[(pr * 5.99) as usize];
+                    let glyph = self.glyph_for_char(ch as char);
+                    for j in 0..nv {
+                        for i in 0..nu {
+                            self.push(cell(i, j) + lift, u * (cw * 0.9), v * (chh * 0.9), alb, alpha, glyph, f.mat, mode);
+                        }
+                    }
+                }
+                FaceStyle::Brackets => {
+                    for j in 0..nv {
+                        for i in 0..nu {
+                            let ch = if nu == 1 { '#' } else if i == 0 { '[' } else if i == nu - 1 { ']' } else { '=' };
+                            let glyph = self.glyph_for_char(ch);
+                            self.push(cell(i, j) + lift, u * (cw * 1.0), v * (chh * 0.95), alb, alpha, glyph, f.mat, mode);
+                        }
+                    }
+                }
+                FaceStyle::Mortar => {
+                    // The joints drawn bold in mortar colour ("|__|__|"), the face faint.
+                    let mortar = [0.80, 0.78, 0.72].map(|x: f32| x * pl.tint);
+                    let under = self.glyph_for_char('_');
+                    let bar = self.glyph_for_char('|');
+                    for i in 0..nu {
+                        let q = cell(i, 0) - v * (0.5 * chh - 0.5 * chh.min(g));
+                        self.push(q + lift, u * (cw * 1.02), v * chh.min(g), mortar, 0.95, under, f.mat, mode);
+                    }
+                    let edge = mid - u * (0.5 * w) + lift;
+                    self.push(edge, u * (gw * 0.6), v * (h * 1.02), mortar, 0.95, bar, f.mat, mode);
+                    let dot = self.glyph_for_char(if pr < 0.5 { '.' } else { ':' });
+                    for j in 0..nv {
+                        for i in 0..nu {
+                            if (i + j) % 2 == 0 {
+                                self.push(cell(i, j) + lift * 0.5, u * (cw * 0.8), v * (chh * 0.8), alb.map(|x| x * 0.8), 0.6, dot, f.mat, mode);
+                            }
+                        }
+                    }
+                }
+                FaceStyle::Ramp => {
+                    let ch = ramp_char(tone) as char;
+                    let glyph = self.glyph_for_char(ch);
+                    for j in 0..nv {
+                        for i in 0..nu {
+                            self.push(cell(i, j) + lift, u * (cw * 0.95), v * (chh * 0.95), alb, alpha, glyph, f.mat, mode);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -647,6 +801,54 @@ impl<'a> Skinner<'a> {
     }
 }
 
+/// How a built structure's masonry units look in ASCII (ruins `style`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaceStyle {
+    /// A: each brick filled with its own character and tone.
+    Tiles,
+    /// B: each brick written as "[==]".
+    Brackets,
+    /// C: the joints drawn bold ("|__|__|"), the faces faint.
+    Mortar,
+    /// D: each brick a density character from its tone (": = # @").
+    Ramp,
+}
+
+impl From<u8> for FaceStyle {
+    fn from(v: u8) -> FaceStyle {
+        match v {
+            1 => FaceStyle::Brackets,
+            2 => FaceStyle::Mortar,
+            3 => FaceStyle::Ramp,
+            _ => FaceStyle::Tiles,
+        }
+    }
+}
+
+/// Denser characters for darker units.
+fn ramp_char(tone: f32) -> u8 {
+    const RAMP: &[u8] = b"@%#*+=-:";
+    let t = ((tone - 0.84) / 0.3).clamp(0.0, 0.999);
+    RAMP[(t * RAMP.len() as f32) as usize]
+}
+
+/// A hash in [0, 1).
+fn hash01(x: u64) -> f32 {
+    let mut h = x.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    h ^= h >> 31;
+    h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h ^= h >> 29;
+    (h >> 40) as f32 / (1u64 << 24) as f32
+}
+
+/// Is `q` (on the plane) inside the convex polygon `pts` with normal `n`?
+fn inside(pts: &[Vec3], n: Vec3, q: Vec3) -> bool {
+    (0..pts.len()).all(|i| {
+        let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+        (b - a).cross(q - a).dot(n) >= -1e-5
+    })
+}
+
 /// A card's rank: a hash of its centre (to the millimetre).
 fn card_rank(card: &[f32]) -> u64 {
     let q = |v: f32| (v * 1000.0).round() as i64 as u64;
@@ -670,7 +872,10 @@ pub fn skin_placed(sk: &mut Skinner, a: &Asset, pl: Placement, view: &View) {
     let cells = (w * h * 0.75) / (sk.g * sk.g * sk.aspect);
     let d = (pl.pos - eye).length();
     let per_cell = 3.5 * (1.8 + 1.2 * smoothstep(90.0, 25.0, d));
-    sk.cap_since(start, (cells * per_cell).ceil() as usize + 8);
+    if a.faces.is_empty() {
+        // (built structures keep every unit: their styles need whole bricks)
+        sk.cap_since(start, (cells * per_cell).ceil() as usize + 8);
+    }
 }
 
 /// The material table for the shader: per material spec, shininess,

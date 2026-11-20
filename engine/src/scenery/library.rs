@@ -6,6 +6,7 @@ use super::asset::Asset;
 use super::bushes::{make_bush, BushKind};
 use super::plants::{make_plant, PlantKind};
 use super::rocks::{make_rock, RockKind};
+use super::ruins::{make_ruin, RuinKind};
 use super::trees::{make_tree, TreeKind};
 use std::collections::HashMap;
 
@@ -15,6 +16,7 @@ pub enum Kind {
     Bush(BushKind),
     Plant(PlantKind),
     Rock(RockKind),
+    Ruin(RuinKind),
 }
 
 impl Kind {
@@ -30,6 +32,7 @@ impl Kind {
         v.extend(BushKind::ALL.iter().map(|&k| Kind::Bush(k)));
         v.extend(PlantKind::ALL.iter().map(|&k| Kind::Plant(k)));
         v.extend(RockKind::ALL.iter().map(|&k| Kind::Rock(k)));
+        v.extend(RuinKind::ALL.iter().map(|&k| Kind::Ruin(k)));
         v
     }
 
@@ -44,6 +47,7 @@ impl Kind {
             Kind::Bush(k) => format!("bush:{}", k.name()),
             Kind::Plant(k) => format!("plant:{}", k.name()),
             Kind::Rock(k) => format!("rock:{}", k.name()),
+            Kind::Ruin(k) => format!("ruin:{}", k.name()),
         }
     }
 }
@@ -55,6 +59,7 @@ pub fn make_default(kind: Kind, seed: u32) -> Asset {
         Kind::Bush(b) => make_bush(seed, b),
         Kind::Plant(p) => make_plant(seed, p),
         Kind::Rock(r) => make_rock(seed, r),
+        Kind::Ruin(r) => make_ruin(seed, r),
     }
 }
 
@@ -108,6 +113,7 @@ impl Library {
                 Kind::Bush(b) => 10 + b as u32,
                 Kind::Plant(p) => 20 + p as u32,
                 Kind::Rock(r) => 30 + r as u32,
+                Kind::Ruin(r) => 40 + r as u32,
             };
             let s = self.seed * 1000 + k * 7 + variant;
             if defaults { make_default(kind, s) } else { super::params::make_asset(kind, s, params) }
@@ -129,7 +135,7 @@ mod tests {
     #[test]
     fn kind_codes_round_trip_and_names_are_unique() {
         let all = Kind::all();
-        assert_eq!(all.len(), 26);
+        assert_eq!(all.len(), 28);
         for (i, &k) in all.iter().enumerate() {
             assert_eq!(Kind::from_code(i as u32), Some(k));
         }

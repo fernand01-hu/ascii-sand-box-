@@ -18,6 +18,7 @@ pub mod light;
 pub mod perlin;
 pub mod plants;
 pub mod rocks;
+pub mod ruins;
 pub mod skin;
 pub mod sky;
 pub mod style;

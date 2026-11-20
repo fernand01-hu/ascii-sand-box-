@@ -11,6 +11,7 @@ use super::bushes::{bush_params, make_bush_with};
 use super::library::Kind;
 use super::plants::{make_plant_with, plant_params};
 use super::rocks::{make_rock_with, rock_params};
+use super::ruins::{make_ruin_with, ruin_params};
 use super::trees::{make_tree_with, tree_params};
 use super::asset::Asset;
 
@@ -65,6 +66,7 @@ pub fn param_descs(kind: Kind) -> Vec<ParamDesc> {
         Kind::Bush(k) => bush_params(k),
         Kind::Plant(k) => plant_params(k),
         Kind::Rock(k) => rock_params(k),
+        Kind::Ruin(k) => ruin_params(k),
     };
     debug_assert!(v.len() <= MAX_PARAMS);
     v
@@ -79,6 +81,7 @@ pub fn make_asset(kind: Kind, seed: u32, vals: &[f32]) -> Asset {
         Kind::Bush(k) => make_bush_with(seed, k, &v),
         Kind::Plant(k) => make_plant_with(seed, k, &v),
         Kind::Rock(k) => make_rock_with(seed, k, &v),
+        Kind::Ruin(k) => make_ruin_with(seed, k, &v),
     }
 }
 
@@ -114,7 +117,10 @@ mod tests {
             q(a.wood.iter().map(|w| w.r).sum()), q(a.sprites.iter().map(|s| s.size).sum()),
             q(a.surfels.iter().map(|s| s.spacing).sum()), q(pos),
             // which materials (moss, lichen, berries...)
-            a.surfels.iter().map(|s| s.mat as u64).chain(a.sprites.iter().map(|s| s.mat as u64)).fold(0, |h, m| h.wrapping_mul(31).wrapping_add(m)),
+            a.surfels.iter().map(|s| s.mat as u64).chain(a.sprites.iter().map(|s| s.mat as u64)).fold(0u64, |h, m| h.wrapping_mul(31).wrapping_add(m))
+                // built structures: their faces and style
+                ^ (a.faces.len() as u64).wrapping_mul(0x9E37_79B9) ^ ((a.face_style as u64) << 56)
+                ^ q(a.faces.iter().map(|f| f.pts[0].x + f.pts[0].y + f.pts[0].z).sum()) as u64,
         )
     }
 

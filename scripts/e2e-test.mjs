@@ -1205,6 +1205,41 @@ try {
     });
   }
 
+  await step('ruins: the ASCII styles side by side, a church on the canvas, its walls block the walker', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    await page.waitForFunction(() => { const w = window.__ascii.worldStats(); return !w || (w.dirty === 0 && w.pending === 0); }, { timeout: 300_000, polling: 500 });
+    await run('gallery ruins');
+    await waitSettled('gallery-ruins');
+    const s = await state();
+    assert.equal(s.status, 'ready', s.error ?? '');
+    assert.ok(s.cards > 20_000, `the four wall samples have glyphs (${s.cards})`);
+    await page.screenshot({ path: join(outDir, '10-gallery-ruins.png') });
+    await matchesGolden('10-gallery-ruins');
+    try {
+      await run('canvas 1');
+      await waitSettled('canvas');
+      await run('clearmap yes; place ruin:church 0 -40 1 3; cam 14 1.7 -36 0 1.7 -40');
+      const biggest = () => Math.max(0, ...window.__ascii.app.world.chunks().filter((c) => c.loaded).map((c) => c.loaded.cards));
+      await page.waitForFunction(`(${biggest})() > 20000`, { timeout: 300_000, polling: 500 }).catch(() => {});
+      const big = await page.evaluate(biggest);
+      assert.ok(big > 20_000, `the church is skinned (${big} glyphs in its chunk)`);
+      // Walk west at the south wall (x = 6): it stops the player.
+      const stop = await page.evaluate(() => {
+        window.__ascii.app.play();
+        const p = window.__ascii.app.player;
+        const st = p.state;
+        Object.assign(st, { x: 10, z: -37, yaw: Math.PI / 2, vx: 0, vz: 0 });
+        for (let t = 0; t < 4; t += 1 / 60) p.physics.update(st, { forward: 1, right: 0, run: false, jump: false }, 1 / 60);
+        return st.x;
+      });
+      assert.ok(stop > 6.3 && stop < 7.5, `the wall stops the walker (x ${stop.toFixed(2)})`);
+      console.log(`       church chunk ${big} glyphs; walker stopped at x ${stop.toFixed(2)}`);
+    } finally {
+      await page.evaluate(() => window.__ascii.app.stopPlaying());
+      await run('clearmap yes').catch(() => {});
+    }
+  });
+
   await step('the canvas stays visible from every viewing angle', async () => {
     await page.keyboard.press('c');
     await waitSettled('canvas');

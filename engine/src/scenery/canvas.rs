@@ -367,6 +367,13 @@ impl Canvas {
                 }
                 Kind::Rock(_) => colliders.push([x, z, r * 0.75, top]),
                 Kind::Bush(_) if hi.y * pl.scale > 0.9 => colliders.push([x, z, r * 0.6, top]),
+                Kind::Ruin(_) => {
+                    // walls and piers: circles along them, placed like the ruin
+                    for c in &self.lib.assets[asset].colliders {
+                        let q = pl.point(Vec3::new(c[0], 0.0, c[1]));
+                        colliders.push([q.x, q.z, c[2] * pl.scale, top]);
+                    }
+                }
                 _ => {}
             }
             objects.push((asset, kind, pl));

@@ -168,6 +168,11 @@ materials! {
     Sky = Material { alpha: (0.8, 0.8), ..m(".`,:;-~=+*o#%@", [1.0, 1.0, 1.0]) };
     Star = Material { alpha: (1.0, 1.0), ..m("*+.", [1.0, 1.0, 1.0]) };
     Rain = Material { alpha: (0.45, 0.6), ..m("|!/:'", [0.62, 0.68, 0.82]) };
+    // ruins: masonry units (the skinner picks the characters per style),
+    // cut stone and rubble, stained glass
+    Brick = rock(m("#=[]_|-%8:.H", [0.60, 0.56, 0.50]), 0.06, 0.08, 10.0, 0.15, (0.95, 1.0));
+    Masonry = rock(m("#%@&8$=H", [0.68, 0.65, 0.58]), 0.08, 0.1, 10.0, 0.15, (0.95, 1.0));
+    Glass = Material { spec: 0.9, shin: 60.0, trans: 0.6, alpha: (0.8, 0.9), ..m("#=+*%", [0.5, 0.5, 0.5]) };
 }
 
 impl Mat {
