@@ -998,19 +998,28 @@ try {
       await run('place tree:oak 0 -24 1.4 3');
       await page.keyboard.press('l');
       assert.ok(await page.evaluate(() => window.__ascii.lab.enabled), 'L turns the lab on');
-      await run('lab layout 4; lab all baked now now; lab pane 2 light shadows; lab pane 3 water all; lab pane 4 weather storm; lab time 10');
+      await run('lab layout 4; lab all classic classic classic; lab pane 2 light standard; lab pane 3 water standard; lab pane 4 weather storm; style time 10');
       const st = await page.evaluate(() => ({ panes: window.__ascii.app.viewer.panes?.length, labels: document.querySelectorAll('.tui-lab-label').length, panel: !document.querySelector('.tui-lab').hidden }));
       assert.deepEqual(st, { panes: 4, labels: 4, panel: true }, '4 panes, 4 labels, the lab panel');
       await new Promise((r) => setTimeout(r, 2500));
-      assert.ok(await page.evaluate(() => !!window.__ascii.lab.sun), 'the sun shadow map is drawn for the shadows pane');
-      assert.match((await run('lab list')).join('\n'), /shadows-glyphs/);
+      assert.ok(await page.evaluate(() => !!window.__ascii.lab.look.sun), 'the sun shadow map is drawn for the shadows pane');
+      assert.match((await run('lab list')).join('\n'), /classic/);
       assert.match((await run('lab pane 1 light nope')).join('\n'), /no light variant/);
       await page.screenshot({ path: join(outDir, '13l-look-lab.png') });
       await run('lab off');
+      // The next frame (slow in software rendering) applies the standard look.
+      await page.waitForFunction(() => window.__ascii.app.viewer.cards.material.uniforms.uFxA.value.x === 1, { timeout: 20_000 }).catch(() => {});
       const off = await page.evaluate(() => ({ panes: window.__ascii.app.viewer.panes, labels: document.querySelectorAll('.tui-lab-label').length, fx: window.__ascii.app.viewer.cards.material.uniforms.uFxA.value.toArray() }));
-      assert.deepEqual(off, { panes: null, labels: 0, fx: [0, 0, 0, 0] }, `off: one view, classic look (${JSON.stringify(off)})`);
+      assert.deepEqual(off, { panes: null, labels: 0, fx: [1, 0, 1, 1] }, `off: one view, the standard look (${JSON.stringify(off)})`);
+      // The look's settings: all off is the look before Phase 3.
+      await run('style classic');
+      await page.waitForFunction(() => window.__ascii.app.viewer.cards.material.uniforms.uFxA.value.x === 0, { timeout: 20_000 }).catch(() => {});
+      assert.deepEqual(await page.evaluate(() => window.__ascii.app.viewer.cards.material.uniforms.uFxA.value.toArray()), [0, 0, 0, 0], 'look classic turns it all off');
+      await run('style standard; style storm on');
+      assert.match((await run('style')).join('\n'), /storm on/);
+      await run('style storm off; style time scene');
     } finally {
-      for (const c of ['lab off', 'lab time off', 'lab layout 2', 'clearmap yes', 'canvas 1']) await run(c).catch(() => {});
+      for (const c of ['lab off', 'style time scene', 'style standard', 'lab layout 2', 'clearmap yes', 'canvas 1']) await run(c).catch(() => {});
     }
     await waitSettled('canvas');
   });
@@ -1125,11 +1134,14 @@ try {
       for (const t of [1, 2, 3, 4]) sum += diff(await at(t), await at(t + 0.75));
       return sum;
     };
+    // (Leaves come from trees by default; this blank canvas has none, so let them fly everywhere.)
+    await page.evaluate(() => window.__ascii.run('style treeLeaves off'));
     await page.evaluate(() => window.__ascii.setEnvironment({ wind: 0.85, leaves: 1, rain: 0 }));
     const windy = await change();
     await page.evaluate(() => window.__ascii.setEnvironment({ wind: 0, leaves: 0, rain: 0 }));
     const calm = await change();
     await page.evaluate(() => { window.__ascii.app.viewer.controls.enableDamping = true; });
+    await page.evaluate(() => window.__ascii.run('style treeLeaves on'));
     console.log(`       frame change: windy ${windy.toFixed(2)}, calm ${calm.toFixed(2)}`);
     assert.ok(windy > calm * 3 && windy > 0.08, 'wind should visibly carry the leaves');
   });

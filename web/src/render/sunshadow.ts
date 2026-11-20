@@ -97,9 +97,16 @@ export class SunShadow {
     meshes.forEach((m, i) => (m.material = saved[i] as ShaderMaterial));
     hide.forEach((o, i) => (o.visible = vis[i]!));
 
-    const mat = new Matrix4().multiplyMatrices(this.cam.projectionMatrix, this.cam.matrixWorldInverse);
-    cards.setShadowMap(this.rt.depthTexture, mat, new Vector2(1 / this.size, 1 / (this.depth - 1)));
+    this.mat.multiplyMatrices(this.cam.projectionMatrix, this.cam.matrixWorldInverse);
+    this.bind(cards);
   }
+
+  /** Hand the last map drawn to the cards (when nothing moved, it is reused). */
+  bind(cards: CardLayer): void {
+    cards.setShadowMap(this.rt.depthTexture, this.mat, new Vector2(1 / this.size, 1 / (this.depth - 1)));
+  }
+
+  private mat = new Matrix4();
 
   dispose(): void {
     this.rt.dispose();

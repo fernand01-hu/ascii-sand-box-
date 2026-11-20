@@ -27,7 +27,7 @@ export class LabPanel {
       if (!this.panel.el.hidden) this.panel.close();
       return;
     }
-    const key = JSON.stringify([this.lab.layout, this.lab.panes, this.lab.hour === null]);
+    const key = JSON.stringify([this.lab.layout, this.lab.panes, this.lab.look.hour === null]);
     if (key !== this.built || this.panel.el.hidden) this.rebuild(key);
     if (this.panel.el.hidden) this.panel.open();
   }
@@ -57,12 +57,12 @@ export class LabPanel {
       );
     }
     p.add(new Text('shared', 'tui-head'));
-    p.add(new Checkbox('scene light (untick: time of day)', lab.hour === null, (on) => lab.setHour(on ? null : 18)));
-    if (lab.hour !== null) {
+    p.add(new Checkbox('scene light (untick: time of day)', lab.look.hour === null, (on) => lab.look.setHour(on ? null : 18)));
+    if (lab.look.hour !== null) {
       p.add(new Slider({
-        label: 'time', min: 0, max: 24, step: 0.25, value: lab.hour, width: 16,
+        label: 'time', min: 0, max: 24, step: 0.25, value: lab.look.hour, width: 16,
         format: (v) => `${String(Math.floor(v)).padStart(2, '0')}:${String(Math.round((v % 1) * 60)).padStart(2, '0')}`,
-        onChange: (v) => lab.setHour(v),
+        onChange: (v) => lab.look.setHour(v),
       }));
     }
     const w = this.app.state.weather;
@@ -80,8 +80,8 @@ export class LabPanel {
     p.add(new List([
       { label: 'build the landscape (replaces the map)', run: () => void this.run('lab landscape') },
       { label: 'build the small test scene (replaces the map)', run: () => void this.run('lab scene') },
-      { label: 'lightning strike now (storm panes)', run: () => lab.strikeNow(true) },
-      { label: `water current arrows (${lab.arrows ? 'on' : 'off'})`, run: () => { lab.setArrows(!lab.arrows); this.built = ''; this.sync(); } },
+      { label: 'lightning strike now (storm panes)', run: () => lab.look.strikeNow(true) },
+      { label: `water current arrows (${lab.look.arrows ? 'on' : 'off'})`, run: () => { lab.look.setArrows(!lab.look.arrows); this.built = ''; this.sync(); } },
       { label: 'every pane like pane 1', run: () => {
         for (let i = 1; i < 4; i++) for (const k of ['light', 'weather', 'water'] as const) lab.setPane(i, k, lab.panes[0]![k]);
       } },

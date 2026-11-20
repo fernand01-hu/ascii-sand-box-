@@ -3,6 +3,7 @@
 // for `help`. Dev-only commands (the testbed pine) are added with
 // `registerCommand` from devtools.ts, so they never reach production.
 
+import { CLASSIC, STANDARD, SWITCHES } from './look';
 import { landscapeLines, LAB_SCENE, LAB_VIEWS, LAYOUTS, LIGHTS, WATERS, WEATHERS, type Lab, type LabLayout } from './lab';
 import { GALLERY_CATEGORIES, type GalleryCategory } from '../engine/protocol';
 import type { App } from './app';
@@ -1049,6 +1050,24 @@ const COMMANDS: Command[] = [
     },
   },
   {
+    name: 'style', group: 'world',
+    usage: 'style [standard|classic|<feature> on|off|time <hours>|scene]',
+    help: 'the canvas look: live sun shadows, time of day, gusts, clouds, wet rain, storm, flowing water (all on = standard)',
+    run(_app, [a, b], io, ctx) {
+      const look = ctx.lab.look;
+      if (a === 'standard') look.set({ ...STANDARD });
+      else if (a === 'classic') look.set({ ...CLASSIC });
+      else if (a === 'time') look.setHour(b === 'scene' || b === 'off' ? null : num(b, 'hours', 0, 24));
+      else if (a === 'scene') look.setHour(null);
+      else if (a !== undefined) {
+        const sw = SWITCHES.find(([k]) => k.toLowerCase() === a.toLowerCase());
+        if (!sw || (b !== 'on' && b !== 'off')) throw new CommandError(`style standard|classic|time <h>|${SWITCHES.map(([k]) => k).join('|')} on|off`);
+        look.set({ [sw[0]]: b === 'on' });
+      }
+      for (const l of look.describe()) io.print(l);
+    },
+  },
+  {
     name: 'lab', group: 'world',
     usage: 'lab [on|off|list|scene|landscape|flow [on|off]|strike [near|far]|view wide|lake|hill|oak|stream|layout 1|wipe|2|4|pane <n> light|weather|water <variant>|all <light> <weather> <water>|time <hours>|off]',
     help: 'look lab: compare lighting, weather and water variants side by side (Phase 3)',
@@ -1071,14 +1090,14 @@ const COMMANDS: Command[] = [
           if (d) lab.setPane(i, 'water', d);
         });
       } else if (a === 'time') {
-        if (b === 'off' || b === 'scene') lab.setHour(null);
-        else lab.setHour(num(b, 'hours', 0, 24));
+        if (b === 'off' || b === 'scene') lab.look.setHour(null);
+        else lab.look.setHour(num(b, 'hours', 0, 24));
       } else if (a === 'strike') {
-        lab.strikeNow(b !== 'far');
+        lab.look.strikeNow(b !== 'far');
         io.print(`lightning (${b === 'far' ? 'far' : 'near'}) in the panes with the storm look`);
       } else if (a === 'flow') {
-        lab.setArrows(b === undefined ? !lab.arrows : b === 'on');
-        io.print(`current arrows ${lab.arrows ? 'on: green slow -> red fast, blue dots still water' : 'off'}`);
+        lab.look.setArrows(b === undefined ? !lab.look.arrows : b === 'on');
+        io.print(`current arrows ${lab.look.arrows ? 'on: green slow -> red fast, blue dots still water' : 'off'}`);
       } else if (a === 'view') {
         const line = LAB_VIEWS[b ?? ''];
         if (!line) throw new CommandError(`view: ${Object.keys(LAB_VIEWS).join(', ')}`);
@@ -1169,6 +1188,7 @@ function argWords(app: App, cmd: string, ctx: CommandContext | null): string[] {
     case 'height': return ['on', 'off', ...HEIGHT_MODES, 'size', 'strength', 'stroke', 'at'];
     case 'objbrush': return ['on', 'off', 'mode', 'size', 'density', 'spacing', 'variation', 'stroke', ...KIND_MIXES, ...(m?.objectKinds ?? [])];
     case 'select': return ['none'];
+    case 'style': return ['standard', 'classic', 'time', 'scene', ...SWITCHES.map(([k]) => k), 'on', 'off'];
     case 'lab': return ['on', 'off', 'list', 'scene', 'landscape', 'flow', 'strike', 'near', 'far', 'view', ...Object.keys(LAB_VIEWS), 'layout', 'pane', 'all', 'time', ...LAYOUTS, 'light', 'weather', 'water', ...LIGHTS.map((v) => v.id), ...WEATHERS.map((v) => v.id), ...WATERS.map((v) => v.id)];
     case 'param': return ['reset', 'vary', ...(ctx?.objects.paramDescs().map((d) => d.name) ?? [])];
     case 'preset': return ['save', 'load', 'delete'];

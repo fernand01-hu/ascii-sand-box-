@@ -341,13 +341,28 @@ next one.
   - Once winners are picked, they become steps 13-15 and the rest is dropped.
   - Water waits on the user's reference video.
 
-- [ ] **13. (added) Weather on painted scenes.**
+- [x] **13. (added) Weather on painted scenes.** (Done on `phase3-lab`: the look engine, `web/src/app/look.ts`.)
+  - [x] Picked in the lab:
+    - gust waves through the grass (painted grass now bends a little too)
+    - faint, fast cloud shadows
+    - wet ground with a sheen and splashes in the rain
+    - storm: dark sky, strobing lightning, a glyph bolt for close strikes
+  - [x] Blown leaves come from the trees (a canopy map round the camera), not from everywhere.
+  - [x] Water reacts to wind (ripples) and rain (rings).
+  - [x] Controls in the settings panel (weather, light, look) and the terminal (`style`, `weather`, `wind`, `rain`, `leaves`).
+  - Mist parked for now (user's choice).
+- (original notes)
   - Make sure wind sways painted grass, trees and reeds, rain falls over the
     whole view distance, and leaves blow from painted trees.
   - Water tiles react to wind and rain.
   - Add weather controls in the TUI and the debug terminal.
 
-- [ ] **14. New lighting and shadow implementation (experiment).**
+- [x] **14. New lighting and shadow implementation.** (Done: the live sun shadow map won in the lab.)
+  - [x] A sun shadow map, redrawn only when the camera, the sun or the cards change. Shadows cross chunk borders, fall from hills, follow the sun and edits, and have glyph shapes.
+  - [x] Time of day (`daytime` setting, settings panel, `style time 16.5`): the sun's path, colours, sky tint, haze, night with moonlight.
+  - [x] Measured on this machine (Radeon iGPU, Chrome, lab landscape, 1600x900): **60 FPS (the vsync cap) for classic and standard alike**, still or turning, in a storm with rain. `npm run bench:fps` re-measures.
+  - [x] The rest was tried and dropped in the lab: glyph shading, retro 16 colours, amber terminal.
+- (original notes)
   - The current lighting is a baked occlusion voxel grid (`light.rs`). It
     must be re-baked whenever objects change, which clashes with live editing.
   - Try shadow maps in the shader, or a per-chunk bake that re-runs on dirty
@@ -377,7 +392,13 @@ next one.
   - Compare old and new in the look lab before merging.
   - **(found 2026-11-20) Steep slopes need more glyphs.** Mountain faces steeper than about 45 degrees get too few ground glyphs and read as black holes in the sky. The ground grid only has points every 0.5 m across the flat plan. Add glyphs in proportion to the real surface area, as the old `ground_region` did with its slope boost.
 
-- [ ] **15. Rework the water.**
+- [x] **15. Rework the water.** (Done on `phase3-lab`.)
+  - [x] Water follows the land: rivers run downhill along their bed and round bends, faster when narrow or steep. Lakes are still. A river's current fades into its lake (`shoremap.ts`, unit-tested).
+  - [x] Waves drawn with glyphs ride the current, with crests across the flow. Still water ripples in the wind. Near the shore the waves turn in and break into foam. There is white water in rapids.
+  - [x] Shallow / deep colours, sky reflection, sun glitter, rain rings.
+  - [x] `lab flow on` draws arrows for the current.
+  - A variant based on the user's reference video is still to come, once the link arrives.
+- (original notes)
   - Better flow, edge foam and shoreline glyphs, and reflections or a
     glyph-ripple animation.
   - The water tiles from the terrain brush (step 7) are the natural place to

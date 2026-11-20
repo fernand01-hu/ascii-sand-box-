@@ -1,23 +1,18 @@
-// The look lab (Phase 3: lighting, weather, water). The screen splits into
-// panes that all show the same camera; each pane picks one variant of the
-// lighting, the weather look and the water, so they can be compared live,
-// side by side, while the camera moves and the weather runs. Time of day is
-// shared by every pane (it shows which lighting holds up when the sun moves).
+// The look lab: the screen splits into panes that all show the same camera,
+// each with its own lighting, weather and water, to compare them live while
+// the camera moves and the weather runs. Phase 3 used it to pick the look
+// (see look.ts); now it compares that look ("standard") with the one before
+// it ("classic"), and will serve Phase 5 the same way. Time of day and the
+// other settings are shared by every pane.
 //
 // Layouts: 1 (one pane), wipe (the same view split by a draggable divider:
 // before / after), 2 (side by side, each the whole view), 4 (2 x 2).
 // Terminal: `lab`, menu: Look lab, settings remembered in this browser.
 
-import { Color, Vector3, Vector4 } from 'three';
-import { CARD_STRIDE, type Lighting } from '../render/cards';
-import { glyphAspect } from '../render/atlas';
-import { SunShadow } from '../render/sunshadow';
 import type { ViewPane } from '../render/viewer';
-import type { App } from './app';
-import { MAX_SPEED, ShoreMap } from './shoremap';
-import { DebugDraw, Lines } from '../render/debugdraw';
 import { addRootKeys } from '../ui/widgets';
-import type { MapData } from './map';
+import type { App } from './app';
+import type { Features, Look } from './look';
 
 export interface Variant {
   id: string;
@@ -25,53 +20,26 @@ export interface Variant {
   help: string;
 }
 
-interface LightVariant extends Variant {
-  /** Sun from the shadow map; shading 0 colour, 1 glyph ramp, 2 retro 16, 3 amber. */
-  shadows: boolean;
-  shade: number;
+interface Option<T> extends Variant {
+  f: T;
 }
 
-interface WeatherVariant extends Variant {
-  gusts?: boolean;
-  clouds?: boolean;
-  wet?: boolean;
-  mist?: boolean;
-  storm?: boolean;
-}
-
-interface WaterVariant extends Variant {
-  waves?: boolean;
-  shore?: boolean;
-  glints?: boolean;
-  rings?: boolean;
-}
-
-export const LIGHTS: LightVariant[] = [
-  { id: 'baked', name: 'A  baked (now)', help: 'shadows baked into each chunk from its own objects; the sun can\'t move', shadows: false, shade: 0 },
-  { id: 'shadows', name: 'B  sun shadows', help: 'live shadow map: shadows cross chunk borders, hills cast them, they follow the sun and edits', shadows: true, shade: 0 },
-  { id: 'glyphs', name: 'C  glyph shading', help: 'darkness drawn by the glyphs themselves, @ % # * + = - : . from lit to dark', shadows: false, shade: 1 },
-  { id: 'shadows-glyphs', name: 'D  shadows + glyphs', help: 'B and C together', shadows: true, shade: 1 },
-  { id: 'retro', name: 'E  retro 16 colours', help: 'colours snapped to a 16-colour text-mode palette, slight dither', shadows: true, shade: 2 },
-  { id: 'amber', name: 'F  amber terminal', help: 'one phosphor colour, brightness only (with sun shadows)', shadows: true, shade: 3 },
+/** Lighting, weather and water to compare: what Phase 3 picked ("standard") against the look before it ("classic"). */
+export const LIGHTS: Option<Pick2<'shadows'>>[] = [
+  { id: 'standard', name: 'sun shadows', help: 'live sun shadows: they cross chunk borders, fall from hills, follow the sun and edits', f: { shadows: true } },
+  { id: 'classic', name: 'baked (before)', help: 'shadows baked into each chunk from its own objects', f: { shadows: false } },
 ];
-
-export const WEATHERS: WeatherVariant[] = [
-  { id: 'now', name: 'A  now', help: 'today\'s rain streaks, sway and leaves' },
-  { id: 'gusts', name: 'B  gust waves', help: 'patches of strong wind roll across the grass, bending and brightening it', gusts: true },
-  { id: 'clouds', name: 'C  cloud shadows', help: 'faint soft shadows drifting quickly over the land with the wind', clouds: true },
-  { id: 'wet', name: 'D  wet rain', help: 'rain darkens the ground with a sheen; drops splash on it (. o O)', wet: true },
-  { id: 'storm', name: 'F  storm', help: 'dark sky, lightning flashes, gusts and wet ground', storm: true, gusts: true, wet: true },
-  { id: 'all', name: 'G  everything', help: 'gusts, clouds and wet rain together', gusts: true, clouds: true, wet: true },
+export const WEATHERS: Option<Pick2<'gusts' | 'clouds' | 'wet' | 'storm' | 'treeLeaves'>>[] = [
+  { id: 'standard', name: 'standard', help: 'gust waves, faint cloud shadows, wet rain, leaves from the trees', f: { gusts: true, clouds: true, wet: true, storm: false, treeLeaves: true } },
+  { id: 'storm', name: 'storm', help: 'standard plus a dark sky and lightning', f: { gusts: true, clouds: true, wet: true, storm: true, treeLeaves: true } },
+  { id: 'classic', name: 'classic (before)', help: 'rain streaks, sway and leaves as before Phase 3', f: { gusts: false, clouds: false, wet: false, storm: false, treeLeaves: false } },
 ];
-
-export const WATERS: WaterVariant[] = [
-  { id: 'now', name: 'A  now', help: 'today\'s leaning water glyphs and shimmer' },
-  { id: 'waves', name: 'B  flowing waves', help: 'waves drawn with glyphs (_ . - ~ ^) that follow the water: rivers run downhill along their bed, lakes ripple in the wind, waves turn in to the shore', waves: true },
-  { id: 'shore', name: 'C  shore + foam', help: 'light shallow water at the edge, dark deep water, foam where waves break on the shore and in fast rapids', shore: true },
-  { id: 'glints', name: 'D  glints + sky', help: 'the sky reflected at grazing angles, sun glitter sparkling on the water', glints: true },
-  { id: 'rings', name: 'E  rain rings', help: 'raindrops open rings on the water (. o O); turn the rain on', rings: true },
-  { id: 'all', name: 'F  everything', help: 'B to E together', waves: true, shore: true, glints: true, rings: true },
+export const WATERS: Option<Pick2<'waves' | 'shore' | 'glints' | 'rings'>>[] = [
+  { id: 'standard', name: 'flowing', help: 'waves follow the current (rivers downhill, still lakes), foam at the shore, sky and sun on the water, rain rings', f: { waves: true, shore: true, glints: true, rings: true } },
+  { id: 'classic', name: 'classic (before)', help: 'leaning water glyphs that shimmer', f: { waves: false, shore: false, glints: false, rings: false } },
 ];
+type Pick2<K extends keyof Features> = Pick3<Features, K>;
+type Pick3<T, K extends keyof T> = { [P in K]: T[P] };
 
 export type LabLayout = '1' | 'wipe' | '2' | '4';
 export const LAYOUTS: LabLayout[] = ['1', 'wipe', '2', '4'];
@@ -86,88 +54,34 @@ interface Saved {
   layout: LabLayout;
   panes: PaneLook[];
   wipe: number;
-  hour: number | null;
 }
 
-const KEY = 'ascii-sandbox.lab';
-/** Card set of the lightning bolt. */
-const BOLT = 'lab-bolt';
-
-/** Light at an hour of the day: sun (or moon) colour, sky, haze, background, sky-dome tint. */
-const DAY_KEYS: [number, number[], number[], number[], number[], number[]][] = [
-  // hour, sun, sky, haze, background, sky tint
-  [0, [0.16, 0.2, 0.36], [0.1, 0.12, 0.26], [0.07, 0.08, 0.14], [0.02, 0.025, 0.05], [0.22, 0.26, 0.45]],
-  [5.2, [0.2, 0.2, 0.38], [0.14, 0.15, 0.3], [0.12, 0.11, 0.18], [0.04, 0.04, 0.07], [0.35, 0.33, 0.5]],
-  [6.3, [1.0, 0.5, 0.38], [0.36, 0.34, 0.58], [0.3, 0.24, 0.32], [0.11, 0.08, 0.13], [0.85, 0.68, 0.78]],
-  [8, [1.25, 0.98, 0.74], [0.45, 0.55, 0.82], [0.2, 0.23, 0.31], [0.1, 0.11, 0.15], [1.05, 1.02, 1.08]],
-  [13, [1.35, 1.26, 1.1], [0.5, 0.6, 0.88], [0.24, 0.3, 0.4], [0.11, 0.14, 0.19], [1.25, 1.32, 1.45]],
-  [17.5, [1.32, 1.02, 0.7], [0.48, 0.55, 0.82], [0.24, 0.23, 0.33], [0.1, 0.1, 0.15], [1.08, 1.04, 1.06]],
-  [19, [1.3, 0.92, 0.58], [0.46, 0.52, 0.8], [0.29, 0.28, 0.41], [0.09, 0.09, 0.13], [1, 1, 1]],
-  [20.5, [0.75, 0.32, 0.36], [0.25, 0.25, 0.5], [0.18, 0.16, 0.28], [0.05, 0.05, 0.09], [0.55, 0.45, 0.65]],
-  [22, [0.16, 0.2, 0.36], [0.1, 0.12, 0.26], [0.07, 0.08, 0.14], [0.02, 0.025, 0.05], [0.22, 0.26, 0.45]],
-  [24, [0.16, 0.2, 0.36], [0.1, 0.12, 0.26], [0.07, 0.08, 0.14], [0.02, 0.025, 0.05], [0.22, 0.26, 0.45]],
-];
-
-function dayKey(hour: number): { sun: Vector3; sky: Vector3; haze: Vector3; bg: Vector3; tint: Vector3 } {
-  const h = ((hour % 24) + 24) % 24;
-  let i = 0;
-  while (i < DAY_KEYS.length - 2 && DAY_KEYS[i + 1]![0] <= h) i++;
-  const a = DAY_KEYS[i]!, b = DAY_KEYS[i + 1]!;
-  const t = (h - a[0]) / Math.max(1e-6, b[0] - a[0]);
-  const mix = (k: 1 | 2 | 3 | 4 | 5) => new Vector3(...(a[k] as [number, number, number])).lerp(new Vector3(...(b[k] as [number, number, number])), t);
-  return { sun: mix(1), sky: mix(2), haze: mix(3), bg: mix(4), tint: mix(5) };
-}
-
-/** Sun direction at an hour: rises in the east (+x) at 6, highest (60 degrees) at 13, sets in the west at 20; the moon at night. */
-export function sunAt(hour: number): Vector3 {
-  const h = ((hour % 24) + 24) % 24;
-  const day = h >= 6 && h <= 20;
-  const t = day ? (h - 6) / 14 : ((h + 4) % 24) / 10; // 0..1 across the sky
-  const az = Math.PI * t;
-  const el = Math.max(0.06, Math.sin(Math.PI * t)) * (day ? 1.05 : 0.8);
-  return new Vector3(Math.cos(az) * Math.cos(el), Math.sin(el), -0.35 - Math.sin(az) * Math.cos(el) * 0.6).normalize();
-}
+const KEY = 'ascii-sandbox.lab2';
 
 export class Lab {
   enabled = false;
-  layout: LabLayout = '2';
+  layout: LabLayout = 'wipe';
   panes: PaneLook[] = [
-    { light: 'baked', weather: 'now', water: 'now' },
-    { light: 'shadows', weather: 'gusts', water: 'all' },
-    { light: 'glyphs', weather: 'clouds', water: 'waves' },
-    { light: 'shadows-glyphs', weather: 'wet', water: 'shore' },
+    { light: 'classic', weather: 'classic', water: 'classic' },
+    { light: 'standard', weather: 'standard', water: 'standard' },
+    { light: 'standard', weather: 'storm', water: 'standard' },
+    { light: 'classic', weather: 'standard', water: 'standard' },
   ];
   /** Wipe divider position (0-1 across the screen). */
   wipe = 0.5;
-  /** Shared time of day (hours), or null for the scene's own light. */
-  hour: number | null = null;
-  private sun: SunShadow | null = null;
-  private shore = new ShoreMap();
-  private base: { light: Lighting; haze: Vector3; bg: Color } | null = null;
   private labels: HTMLDivElement[] = [];
   private divider: HTMLDivElement;
   private listeners = new Set<() => void>();
-  private flash = 0;
   /** Share of the screen width the panes may use from the left (the options sidebar takes the rest). */
   room: () => number = () => 1;
-  private watched: MapData | null = null;
-  /** Debug arrows showing the current (lab flow on). */
-  arrows = false;
-  private arrowDraw: DebugDraw | null = null;
-  private arrowRev = -1;
-  private dark = 0;
-  private nextStrike = 0;
-  /** The lightning strike under way: when, how close, its strobes (s after the start), whether it has a bolt. */
-  private strike: { t: number; near: boolean; pulses: number[]; bolt: boolean } | null = null;
 
-  constructor(private app: App) {
+  constructor(private app: App, readonly look: Look) {
     try {
       const s = JSON.parse(localStorage.getItem(KEY) ?? 'null') as Saved | null;
       if (s) {
         if (LAYOUTS.includes(s.layout)) this.layout = s.layout;
         if (Array.isArray(s.panes)) s.panes.slice(0, 4).forEach((p, i) => (this.panes[i] = { ...this.panes[i]!, ...p }));
         if (typeof s.wipe === 'number') this.wipe = Math.min(0.95, Math.max(0.05, s.wipe));
-        if (s.hour === null || typeof s.hour === 'number') this.hour = s.hour;
       }
     } catch {
       // nothing saved, or storage blocked
@@ -199,16 +113,11 @@ export class Lab {
       return true;
     });
     app.onSceneChange(() => {
-      const m = app.map;
-      if (m && m !== this.watched) {
-        this.watched = m;
-        m.onEdit((e) => {
-          if (e.tiles?.length || e.heights?.length) this.shore.invalidate();
-        });
-      }
-      this.base = null; // a new scene brings its own light
-      this.shore.invalidate();
-      if (this.enabled) this.refresh();
+      if (this.enabled && !app.world) this.enabled = false;
+      this.refresh();
+    });
+    look.onChange(() => {
+      for (const f of this.listeners) f();
     });
   }
 
@@ -228,18 +137,13 @@ export class Lab {
     this.changed();
   }
 
-  /** Set one pane's lighting, weather or water variant (by id). */
+  /** Set one pane's lighting, weather or water (by id). */
   setPane(i: number, what: keyof PaneLook, id: string): void {
     const list: Variant[] = what === 'light' ? LIGHTS : what === 'weather' ? WEATHERS : WATERS;
     if (!list.some((v) => v.id === id)) throw new Error(`no ${what} variant "${id}" (${list.map((v) => v.id).join(', ')})`);
     const p = this.panes[i];
     if (!p) throw new Error('pane 1-4');
     p[what] = id;
-    this.changed();
-  }
-
-  setHour(h: number | null): void {
-    this.hour = h === null ? null : ((h % 24) + 24) % 24;
     this.changed();
   }
 
@@ -250,7 +154,7 @@ export class Lab {
 
   private changed(): void {
     try {
-      localStorage.setItem(KEY, JSON.stringify({ layout: this.layout, panes: this.panes, wipe: this.wipe, hour: this.hour } satisfies Saved));
+      localStorage.setItem(KEY, JSON.stringify({ layout: this.layout, panes: this.panes, wipe: this.wipe } satisfies Saved));
     } catch {
       // storage blocked
     }
@@ -263,9 +167,11 @@ export class Lab {
     if (this.enabled) this.refresh();
   }
 
-  /** The map and paint changed (rebuild the shore map). */
-  paintChanged(): void {
-    this.shore.invalidate();
+  /** The features a pane shows. */
+  featuresOf(i: number): Features {
+    const p = this.panes[i]!;
+    const pick = <T>(list: Option<T>[], id: string) => (list.find((v) => v.id === id) ?? list[0]!).f;
+    return { ...this.look.features, ...pick(LIGHTS, p.light), ...pick(WEATHERS, p.weather), ...pick(WATERS, p.water) };
   }
 
   private refresh(): void {
@@ -276,14 +182,10 @@ export class Lab {
     this.divider.hidden = !(on && this.layout === 'wipe');
     if (!on) {
       v.panes = null;
-      v.beforeDraw = null;
-      this.arrowDraw?.set('tiles', null);
-      this.arrowRev = -1;
-      this.restore();
+      this.look.panes = null;
       v.requestRender();
       return;
     }
-    if (!this.base) this.capture();
     const n = this.paneCount;
     const rects: [number, number, number, number][] =
       this.layout === '1' ? [[0, 0, 1, 1]]
@@ -291,254 +193,33 @@ export class Lab {
           : this.layout === '2' ? [[0, 0, 0.5, 1], [0.5, 0, 0.5, 1]]
             : [[0, 0, 0.5, 0.5], [0.5, 0, 0.5, 0.5], [0, 0.5, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]];
     const panes: ViewPane[] = [];
+    const features: Features[] = [];
     const room = Math.min(1, Math.max(0.3, this.room()));
     for (let i = 0; i < n; i++) {
       const [rx, y, rw, h] = rects[i]!;
       const x = rx * room, w = rw * room;
-      panes.push({ x, y, w, h, view: this.layout === 'wipe' ? [0, 0, room, 1] : undefined, apply: () => this.applyPane(i) });
+      const f = this.featuresOf(i);
+      features.push(f);
+      panes.push({ x, y, w, h, view: this.layout === 'wipe' ? [0, 0, room, 1] : undefined, apply: () => this.look.apply(f) });
       const label = document.createElement('div');
       label.className = 'tui tui-lab-label';
       const look = this.panes[i]!;
-      const name = (list: Variant[], id: string) => list.find((q) => q.id === id)?.name.replace(/\s+/g, ' ') ?? id;
+      const name = (list: Variant[], id: string) => list.find((q) => q.id === id)?.name ?? id;
       label.innerHTML = `<b>${i + 1}</b> light ${name(LIGHTS, look.light)} · weather ${name(WEATHERS, look.weather)} · water ${name(WATERS, look.water)}`;
       Object.assign(label.style, { left: `calc(${x * 100}% + 8px)`, top: `calc(${y * 100}% + ${y === 0 ? 34 : 6}px)`, maxWidth: `calc(${w * 100}% - 16px)` });
       document.body.append(label);
       this.labels.push(label);
     }
     if (this.layout === 'wipe') this.divider.style.left = `${this.wipe * room * 100}%`;
+    this.look.panes = features;
     v.panes = panes;
-    v.beforeDraw = () => this.beforeDraw();
     v.animate = true;
     v.requestRender();
   }
 
-  /** Remember the scene's own light, to come back to it. */
-  private capture(): void {
-    const u = this.app.viewer.cards.material.uniforms;
-    const t = u.uTone!.value as Vector4;
-    this.base = {
-      light: {
-        sunDir: (u.uSunDir!.value as Vector3).clone(),
-        sunColor: (u.uSunColor!.value as Vector3).clone(),
-        skyColor: (u.uSkyColor!.value as Vector3).clone(),
-        glintColor: (u.uGlintColor!.value as Vector3).clone(),
-        exposure: t.x, skyGain: t.y, ambient: t.z, hemi: t.w,
-      },
-      haze: (u.uHazeColor!.value as Vector3).clone(),
-      bg: this.app.viewer.renderer.getClearColor(new Color()),
-    };
-  }
-
-  private restore(): void {
-    const c = this.app.viewer.cards;
-    c.setFx(new Vector4(0, 0, 0, 0), new Vector4(0, 0, 0, 0), new Vector4(0, 0, 0, 0)); // (Vector4() has w = 1)
-    c.setSkyTint(new Vector3(1, 1, 1), 0);
-    c.setShadowMap(null);
-    c.setShore(null);
-    if (this.base) {
-      c.setLighting(this.base.light);
-      (c.material.uniforms.uHazeColor!.value as Vector3).copy(this.base.haze);
-      this.app.viewer.setBackground(this.base.bg);
-    }
-  }
-
-  /** The lighting every pane starts from: the scene's, or the time of day's. */
-  private lightNow(): { light: Lighting; haze: Vector3; bg: Color; tint: Vector3 } {
-    const b = this.base!;
-    if (this.hour === null) return { light: b.light, haze: b.haze, bg: b.bg, tint: new Vector3(1, 1, 1) };
-    const k = dayKey(this.hour);
-    return {
-      light: { ...b.light, sunDir: sunAt(this.hour), sunColor: k.sun, skyColor: k.sky, glintColor: k.sun.clone().multiplyScalar(0.8) },
-      haze: k.haze,
-      bg: new Color().setRGB(k.bg.x, k.bg.y, k.bg.z, 'srgb'), // (the keys are screen colours, not linear)
-      tint: k.tint,
-    };
-  }
-
-  private uses(f: (p: PaneLook) => boolean): boolean {
-    return this.panes.slice(0, this.paneCount).some(f);
-  }
-
-  private beforeDraw(): void {
-    const app = this.app, v = app.viewer;
-    if (!this.base) this.capture();
-    const now = this.lightNow();
-    this.lightning(v.clock);
-    v.setBackground(now.bg);
-    (v.cards.material.uniforms.uHazeColor!.value as Vector3).copy(now.haze);
-    // Sun shadow map, once a frame, when a pane shows it.
-    if (this.uses((p) => !!LIGHTS.find((l) => l.id === p.light)?.shadows)) {
-      this.sun ??= new SunShadow(v.cards);
-      v.cards.setLighting(now.light);
-      this.sun.render(v.renderer, v.scene, v.camera, v.cards, now.light.sunDir, [v.overlay]);
-    }
-    // Water map (shore, current), when a pane shows waves or the shore, or the arrows are on.
-    const wv = (p: PaneLook) => { const w = WATERS.find((x) => x.id === p.water); return !!(w?.shore || w?.waves); };
-    if (app.map && (this.arrows || this.uses(wv))) {
-      this.shore.update(app.map, v.camera.position.x, v.camera.position.z);
-      v.cards.setShore(this.shore.texture, this.shore.box);
-      if (this.arrows && this.arrowRev !== this.shore.revision) this.drawArrows();
-    }
-  }
-
-  private applyPane(i: number): void {
-    const v = this.app.viewer, c = v.cards;
-    const look = this.panes[i]!;
-    const L = LIGHTS.find((x) => x.id === look.light) ?? LIGHTS[0]!;
-    const W = WEATHERS.find((x) => x.id === look.weather) ?? WEATHERS[0]!;
-    const R = WATERS.find((x) => x.id === look.water) ?? WATERS[0]!;
-    const now = this.lightNow();
-    const light = { ...now.light };
-    const tint = now.tint.clone();
-    if (W.storm) {
-      light.sunColor = light.sunColor.clone().multiplyScalar(0.35);
-      light.skyColor = light.skyColor.clone().multiplyScalar(0.7);
-      tint.multiplyScalar(0.45);
-    }
-    if (W.storm) {
-      // Just after a strike the storm seems darker still.
-      const k = 1 - 0.45 * this.dark;
-      light.sunColor = light.sunColor.clone().multiplyScalar(k);
-      light.skyColor = light.skyColor.clone().multiplyScalar(k);
-      tint.multiplyScalar(k);
-    }
-    c.setLighting(light);
-    c.setSkyTint(tint, W.storm ? this.flash : 0);
-    c.setSetVisible(BOLT, !!W.storm && this.flash > 0.25);
-    const ground = this.app.world?.info.ground ?? 0;
-    c.setFx(
-      new Vector4(L.shadows ? 1 : 0, L.shade, W.clouds ? 1 : 0, W.gusts ? 1 : 0),
-      new Vector4(W.wet ? 1 : 0, W.mist ? 1 : 0, W.storm ? 1 : 0, ground),
-      new Vector4(R.waves ? 1 : 0, R.shore ? 1 : 0, R.glints ? 1 : 0, R.rings ? 1 : 0),
-    );
-  }
-
-  /**
-   * Lightning for panes with the storm look. Strikes every 4-13 s; each one
-   * strobes 2-3 times within a quarter second, then glows out, then the
-   * storm seems darker for a moment. One in three is close: blinding, with
-   * a jagged bolt of glyphs across the sky; the rest are far, dim flashes.
-   */
-  private lightning(t: number): void {
-    const v = this.app.viewer;
-    if (!this.uses((p) => !!WEATHERS.find((w) => w.id === p.weather)?.storm)) {
-      this.flash = this.dark = 0;
-      if (this.strike?.bolt) v.cards.removeSet(BOLT);
-      this.strike = null;
-      return;
-    }
-    if (Math.abs(t - this.nextStrike) > 60) this.nextStrike = t + 2; // the clock jumped
-    if (t >= this.nextStrike) {
-      if (this.strike?.bolt) v.cards.removeSet(BOLT);
-      const near = Math.random() < 0.35;
-      const pulses = [0, 0.07 + Math.random() * 0.06];
-      if (Math.random() < 0.6) pulses.push(0.18 + Math.random() * 0.1);
-      this.strike = { t, near, pulses, bolt: near };
-      if (near) v.cards.addSet(BOLT, this.boltCards(), CARD_STRIDE);
-      this.nextStrike = t + 4 + Math.random() * 9;
-    }
-    const s = this.strike;
-    const dt = s ? t - s.t : Infinity;
-    let f = 0;
-    if (s && dt >= 0 && dt < 2) {
-      for (const p of s.pulses) if (dt >= p) f = Math.max(f, Math.exp(-(dt - p) / 0.045));
-      f = Math.max(f, 0.3 * Math.exp(-dt / 0.35));
-      f *= s.near ? 1.7 : 0.5;
-    }
-    this.flash = f;
-    this.dark = s && dt > 0.3 && dt < 2 ? Math.sin(Math.min(1, (dt - 0.3) / 1.5) * Math.PI) * (s.near ? 1 : 0.5) : 0;
-    if (s?.bolt && dt > 0.5) {
-      v.cards.removeSet(BOLT);
-      s.bolt = false;
-    }
-  }
-
-  /** Strike now (testing): `near` gives the blinding kind with a bolt. */
-  strikeNow(near = true): void {
-    const v = this.app.viewer, t = v.clock;
-    if (this.strike?.bolt) v.cards.removeSet(BOLT);
-    this.strike = { t, near, pulses: [0, 0.09, 0.22], bolt: near };
-    if (near) v.cards.addSet(BOLT, this.boltCards(), CARD_STRIDE);
-    this.nextStrike = t + 6;
-  }
-
-  /** A jagged bolt of / \\ | glyphs from the clouds to the ground, ahead of the camera, with a fork or two. */
-  private boltCards(): Float32Array {
-    const cam = this.app.viewer.camera, chars = this.app.charset;
-    const slot = (c: string) => Math.max(0, chars.indexOf(c)) + 1024 * (0 + 64 * 4); // material 0, mode 4: emissive, follows the camera
-    const fwd = cam.getWorldDirection(new Vector3()).setY(0).normalize();
-    const dir = fwd.clone().applyAxisAngle(new Vector3(0, 1, 0), (Math.random() - 0.5) * 0.7);
-    const dist = 170 + Math.random() * 110;
-    const ground = (this.app.world?.info.ground ?? 0) - cam.position.y;
-    const right = new Vector3().crossVectors(dir, new Vector3(0, 1, 0)).normalize();
-    const size = dist * 0.05, aspect = glyphAspect();
-    const out: number[] = [];
-    const push = (p: Vector3, ch: string, bright: number, scale = 1, depth = 0) => {
-      const s = size * scale, U = right.clone().multiplyScalar(s * aspect);
-      const q = p.clone().addScaledVector(dir, depth); // the halo sits just behind the bolt
-      out.push(q.x, q.y, q.z, U.x, U.y, U.z, 0, s, 0, 3.2 * bright, 3.3 * bright, 4 * bright, Math.min(1, bright), slot(ch), 1, 1);
-    };
-    const path = (start: Vector3, steps: number, bright: number, fork: boolean) => {
-      let p = start.clone();
-      for (let i = 0; i < steps && p.y > ground; i++) {
-        const side = (Math.random() - 0.5) * size * 2.4;
-        const next = p.clone().addScaledVector(right, side).add(new Vector3(0, -size * (0.9 + 0.6 * Math.random()), 0));
-        const ch = Math.abs(side) < size * 0.35 ? '|' : side > 0 ? '/' : '\\';
-        // Each glyph twice, side by side: a thicker stroke than the font's.
-        for (let k = 0; k < 3; k++) {
-          const q = p.clone().lerp(next, (k + 0.5) / 3);
-          push(q, ch, bright);
-          push(q.clone().addScaledVector(right, size * 0.12), ch, bright);
-        }
-        // A faint glow round it.
-        push(p.clone().lerp(next, 0.5), '*', bright * 0.22, 2.2, 3);
-        if (fork && i > 2 && Math.random() < 0.18) path(next, 3 + Math.floor(Math.random() * 4), bright * 0.6, false);
-        p = next;
-      }
-    };
-    path(dir.clone().multiplyScalar(dist).setY(dist * 0.4), 60, 1, true);
-    return new Float32Array(out);
-  }
-
-  /** Show or hide arrows for the current on the water (debug). */
-  setArrows(on: boolean): void {
-    this.arrows = on;
-    this.arrowRev = -1;
-    if (!on) this.arrowDraw?.set('tiles', null);
-    this.app.viewer.requestRender();
-    if (on && !this.enabled) this.setEnabled(true);
-  }
-
-  private drawArrows(): void {
-    const sm = this.shore, map = this.app.map, w = this.app.world;
-    if (!map || !w) return;
-    this.arrowRev = sm.revision;
-    this.arrowDraw ??= new DebugDraw(this.app.viewer.overlay);
-    const l = new Lines(), N = sm.size, g = w.info.ground, x0 = sm.box.x, z0 = sm.box.y;
-    for (let j = 1; j < N; j += 2) {
-      for (let i = 1; i < N; i += 2) {
-        const k = j * N + i;
-        if (!sm.water[k]) continue;
-        const x = x0 + i + 0.5, z = z0 + j + 0.5, y = g + map.heightAt(x, z) + 0.35;
-        const fx = sm.flow[k * 2]!, fz = sm.flow[k * 2 + 1]!, s = Math.hypot(fx, fz);
-        if (s < 0.08) {
-          l.seg(x - 0.1, y, z, x + 0.1, y, z, [0.35, 0.5, 0.9]); // still water: a dot
-          continue;
-        }
-        const t = Math.min(1, s / MAX_SPEED), c: [number, number, number] = [0.4 + 0.6 * t, 0.9 - 0.4 * t, 0.3];
-        const len = 0.6 + 1.0 * t, dx = (fx / s) * len, dz = (fz / s) * len;
-        const ex = x + dx, ez = z + dz;
-        l.seg(x, y, z, ex, y, ez, c);
-        l.seg(ex, y, ez, ex - dx * 0.4 - dz * 0.3, y, ez - dz * 0.4 + dx * 0.3, c);
-        l.seg(ex, y, ez, ex - dx * 0.4 + dz * 0.3, y, ez - dz * 0.4 - dx * 0.3, c);
-      }
-    }
-    this.arrowDraw.set('tiles', l);
-  }
-
   /** Lines of a terminal listing. */
   describe(): string[] {
-    const out = [`look lab ${this.enabled ? 'on' : 'off'} · layout ${this.layout} · time ${this.hour === null ? 'scene light' : `${this.hour.toFixed(1)} h`}`];
+    const out = [`look lab ${this.enabled ? 'on' : 'off'} · layout ${this.layout}`];
     this.panes.slice(0, this.paneCount).forEach((p, i) => out.push(`  pane ${i + 1}: light ${p.light} · weather ${p.weather} · water ${p.water}`));
     return out;
   }

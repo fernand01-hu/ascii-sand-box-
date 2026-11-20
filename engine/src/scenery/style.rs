@@ -143,7 +143,8 @@ materials! {
     Moss = rock(m(",.`*wm\"'", [0.20, 0.36, 0.10]), 0.12, 0.1, 12.0, 0.3, (0.85, 1.0));
     Lichen = rock(m("oc*.", [0.70, 0.64, 0.32]), 0.12, 0.1, 12.0, 0.2, (0.85, 1.0));
     // terrain
-    GroundGrass = ground(m(".,'`:;-~=", [0.20, 0.32, 0.10]));
+    // Painted grass bends a little in the wind, so gusts roll through it.
+    GroundGrass = Material { flex: 0.35, ..ground(m(".,'`:;-~=", [0.20, 0.32, 0.10])) };
     Soil = ground(m(".,_-~=:;o", [0.30, 0.22, 0.14]));
     Litter = ground(m(".,`'-~", [0.32, 0.21, 0.11]));
     Sand = ground(m(".,:'`-~", [0.75, 0.66, 0.45]));

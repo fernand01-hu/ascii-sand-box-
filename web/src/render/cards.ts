@@ -44,19 +44,11 @@ export const CARD_STRIDE = 16;
  */
 const MATERIAL_SHIFT = 1024;
 /** Glyphs the look lab draws with; the app adds them to every atlas. */
-export const RAMP_SHADE = '@%#&*+=-:.';
 export const RAMP_WAVE = "_.-~^'";
 export const RAMP_SPLASH = ".oO°";
 export const RAMP_FOAM = "~*o°";
 export const RAMP_BOLT = '/\\|';
-export const LAB_GLYPHS = RAMP_SHADE + RAMP_WAVE + RAMP_SPLASH + RAMP_FOAM + RAMP_BOLT;
-/** A 16-colour palette in the spirit of old PC text modes, toned for scenery. */
-const RETRO_PALETTE: [number, number, number][] = [
-  [0.05, 0.05, 0.08], [0.1, 0.15, 0.45], [0.12, 0.45, 0.15], [0.1, 0.5, 0.5],
-  [0.55, 0.12, 0.1], [0.45, 0.15, 0.5], [0.6, 0.38, 0.1], [0.68, 0.68, 0.7],
-  [0.35, 0.35, 0.4], [0.3, 0.4, 0.95], [0.35, 0.85, 0.3], [0.35, 0.9, 0.9],
-  [0.95, 0.35, 0.3], [0.9, 0.4, 0.9], [0.98, 0.9, 0.35], [0.98, 0.98, 1.0],
-];
+export const LAB_GLYPHS = RAMP_WAVE + RAMP_SPLASH + RAMP_FOAM + RAMP_BOLT;
 const BLANK = new DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
 BLANK.needsUpdate = true;
 
@@ -172,14 +164,12 @@ uniform vec3 uLeafBox;  // min x, min z, size
 uniform float uUnder;   // 1 in the underpaint pass (particles stay out of it)
 // ---- look lab (Phase 3): features each pane can switch on, all 0 = the classic look
 uniform float uDepthPass; // 1 in the sun shadow-map pass
-uniform vec4 uFxA;     // sun light (0 baked, 1 shadow map), shade (0 colour, 1 glyph ramp, 2 retro 16, 3 amber), cloud shadows, gusts
+uniform vec4 uFxA;     // sun light (0 baked, 1 shadow map), -, cloud shadows, gusts
 uniform vec4 uFxB;     // rain look (0 streaks, 1 splashes + wet ground), mist, storm, ground height
 uniform vec4 uWaterFx; // waves, shore + depth + foam, glints + sky, rain rings
-uniform float uRampShade[10]; // glyph slots, densest first (-1: missing)
 uniform float uRampWave[6];   // flat to crest
 uniform float uRampSplash[4]; // drop to ring
 uniform float uRampFoam[4];
-uniform vec3 uPalette[16];
 uniform sampler2D uShadowMap;
 uniform mat4 uShadowMat;
 uniform vec2 uShadowInfo; // texel size, depth units per metre
@@ -187,6 +177,9 @@ uniform sampler2D uShore;
 uniform vec3 uShoreBox;   // min x, min z, size (m); size 0 = no map
 uniform vec3 uSkyTint;
 uniform float uFlash;
+uniform sampler2D uTrees;  // tree canopy round the camera (look engine)
+uniform vec3 uTreeBox;     // min x, min z, size; size 0 = no map
+uniform float uTreeLeaves; // 1: blown leaves only downwind of trees
 
 attribute vec3 iCenter;
 attribute vec3 iU;
@@ -312,6 +305,12 @@ void main() {
     V = rotateAbout(iV, axis, spin);
     vec2 e = min(p.xz - boxMin, boxMin + uLeafBox.z - p.xz);
     alphaMul = step(fract(h * 5.7), uLeaves) * smoothstep(0.03, 0.15, ws) * smoothstep(0.0, 4.0, min(e.x, e.y));
+    if (uTreeLeaves > 0.5 && uTreeBox.z > 0.0) {
+      // Leaves come off the trees: only where there is canopy upwind (a few metres back).
+      vec2 tuv = (p.xz - wind3.xz * (4.0 + 10.0 * fract(h * 2.3)) - uTreeBox.xy) / uTreeBox.z;
+      float canopy = (tuv.x > 0.0 && tuv.x < 1.0 && tuv.y > 0.0 && tuv.y < 1.0) ? texture2D(uTrees, tuv).r : 0.0;
+      alphaMul *= smoothstep(0.04, 0.3, canopy);
+    }
   }
 
   vec3 toCam = normalize(cameraPosition - center);
@@ -543,31 +542,6 @@ void main() {
     float n = vnoise((center.xz - uWind.xy * uTime * 1.2) * 0.04) * 0.7 + vnoise(center.xz * 0.11 + uTime * 0.05) * 0.3;
     vColor = mix(vColor, uHazeColor * 1.08, clamp(low * smoothstep(0.25, 0.75, n) * smoothstep(3.0, 25.0, dist), 0.0, 0.8));
   }
-  if (uFxA.y > 0.5 && !emissive && !rain && !leaf && uDebugView < 0.5) {
-    float lum = dot(vColor, vec3(0.3, 0.59, 0.11));
-    if (uFxA.y < 1.5) {
-      // Glyph shading: brightness picks the glyph (@ % # * + = - : . from lit to dark),
-      // the colour keeps the hue.
-      float k = uRampShade[int(clamp(1.0 - lum * 1.5, 0.0, 0.999) * 10.0)];
-      if (k >= 0.0) glyph = k;
-      float mx = max(vColor.r, max(vColor.g, vColor.b));
-      vColor = mix(vColor, vColor / max(mx, 1e-3) * (0.35 + 0.6 * sqrt(lum)), 0.6);
-    } else if (uFxA.y < 2.5) {
-      // Retro 16 colours, with a little per-glyph dither so gradients still read.
-      vec3 c = vColor + (h - 0.5) * 0.08;
-      float best = 1e9;
-      vec3 pick = c;
-      for (int i = 0; i < 16; i++) {
-        vec3 d = c - uPalette[i];
-        float e = dot(d, d);
-        if (e < best) { best = e; pick = uPalette[i]; }
-      }
-      vColor = pick;
-    } else {
-      // Amber terminal: one phosphor colour, brightness only.
-      vColor = vec3(1.0, 0.68, 0.22) * pow(lum * 1.3, 0.85) + vec3(0.02, 0.01, 0.0);
-    }
-  }
   // Debug views (sky, rain and leaves keep their colour).
   if (uDebugView > 0.5 && !emissive && !rain && !leaf) {
     if (uDebugView > 2.5) {
@@ -681,11 +655,9 @@ export class CardLayer {
         uFxA: { value: new Vector4(0, 0, 0, 0) },
         uFxB: { value: new Vector4(0, 0, 0, 0) },
         uWaterFx: { value: new Vector4(0, 0, 0, 0) },
-        uRampShade: { value: new Array(10).fill(-1) },
         uRampWave: { value: new Array(6).fill(-1) },
         uRampSplash: { value: new Array(4).fill(-1) },
         uRampFoam: { value: new Array(4).fill(-1) },
-        uPalette: { value: RETRO_PALETTE.map((c) => new Vector3(...c)) },
         uShadowMap: { value: BLANK },
         uShadowMat: { value: new Mat4() },
         uShadowInfo: { value: new Vector2(1 / 2048, 1 / 800) },
@@ -693,6 +665,9 @@ export class CardLayer {
         uShoreBox: { value: new Vector3(0, 0, 0) },
         uSkyTint: { value: new Vector3(1, 1, 1) },
         uFlash: { value: 0 },
+        uTrees: { value: BLANK },
+        uTreeBox: { value: new Vector3(0, 0, 0) },
+        uTreeLeaves: { value: 0 },
       },
     });
     this.setRamps(atlas);
@@ -875,7 +850,6 @@ export class CardLayer {
   setRamps(atlas: GlyphAtlas): void {
     const u = this.material.uniforms;
     const slots = (chars: string) => Array.from(chars).map((c) => atlas.chars.indexOf(c));
-    u.uRampShade!.value = slots(RAMP_SHADE);
     u.uRampWave!.value = slots(RAMP_WAVE);
     u.uRampSplash!.value = slots(RAMP_SPLASH);
     u.uRampFoam!.value = slots(RAMP_FOAM);
@@ -901,6 +875,19 @@ export class CardLayer {
     u.uShore!.value = tex ?? BLANK;
     (u.uShoreBox!.value as Vector3).copy(tex && box ? box : new Vector3());
   }
+
+  setTrees(tex: Texture | null, box?: Vector3): void {
+    const u = this.material.uniforms;
+    u.uTrees!.value = tex ?? BLANK;
+    (u.uTreeBox!.value as Vector3).copy(tex && box ? box : new Vector3());
+  }
+
+  setTreeLeaves(on: boolean): void {
+    this.material.uniforms.uTreeLeaves!.value = on ? 1 : 0;
+  }
+
+  /** Changes whenever a card set is added or removed (e.g. to know when a shadow map is stale). */
+  revision = 0;
 
   setSkyTint(tint: Vector3, flash = 0): void {
     (this.material.uniforms.uSkyTint!.value as Vector3).copy(tint);
@@ -1038,6 +1025,7 @@ export class CardLayer {
     }
     this.sets.set(key, set);
     this.count += total;
+    this.revision++;
   }
 
   /** Remove a named set and free its GPU buffers. */
@@ -1051,6 +1039,7 @@ export class CardLayer {
     }
     this.chunks = this.chunks.filter((c) => !set.includes(c));
     this.sets.delete(key);
+    this.revision++;
   }
 
   private clear(): void {
