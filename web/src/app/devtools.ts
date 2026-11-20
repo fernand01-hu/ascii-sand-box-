@@ -48,6 +48,8 @@ export interface DebugHandle extends AppState {
   app: App;
   /** Fraction of pixels that differ from the background. */
   coverage(): number;
+  /** Glyphs per 16 px screen cell: mean, 95th percentile, max. */
+  stacking(): { cells: number; mean: number; p95: number; max: number };
   thumbnail(): number[];
 }
 
@@ -90,6 +92,7 @@ export function installDevtools(app: App): void {
     setViewRadius: (n: number) => app.setViewRadius(n),
     stopPlaying: () => app.stopPlaying(),
     coverage: () => app.viewer.coverage(),
+    stacking: () => app.viewer.stacking(),
     thumbnail: () => app.viewer.thumbnail(),
     run: (line: string) => terminal.run(line),
   }) as DebugHandle;

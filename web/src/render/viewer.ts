@@ -168,6 +168,8 @@ export class Viewer {
 
   /** Draw one frame: background (or underpaint wash), then the glyphs. */
   private draw(): void {
+    this.cards.cullSky(this.camera);
+    this.cards.applyBudget(this.camera);
     if (this.underpaint.enabled) {
       this.underpaint.render(this.renderer, this.scene, this.camera, this.cards, this.background);
     } else {
@@ -222,6 +224,12 @@ export class Viewer {
       if (Math.abs(px[i]! - br) + Math.abs(px[i + 1]! - bgc) + Math.abs(px[i + 2]! - bb) > 24) lit++;
     }
     return lit / (w * h);
+  }
+
+  /** Glyph stacking on screen right now (see CardLayer.stacking). */
+  stacking(cellPx = 16): ReturnType<CardLayer['stacking']> {
+    const el = this.renderer.domElement;
+    return this.cards.stacking(this.camera, el.clientWidth || 1, el.clientHeight || 1, cellPx);
   }
 
   /** CSS pixels per world unit at the orbit target's distance. */

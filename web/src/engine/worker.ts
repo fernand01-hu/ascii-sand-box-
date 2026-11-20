@@ -106,7 +106,8 @@ async function handle(req: WorkerRequest): Promise<void> {
           world: { chunkSize, grid, ground, spawn, tile, tiles, groundKinds: wasm.groundKinds().split(','), objectKinds: wasm.objectKinds().split(',') },
         },
         [cards.buffer, materials.buffer],
-        true,
+        // Sky, rain and leaves are global by their card mode; the sky dome is
+        // split into direction sectors so the renderer can skip those out of view.
       );
       return;
     }
