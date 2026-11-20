@@ -78,7 +78,8 @@ export class LabPanel {
       },
     }));
     p.add(new List([
-      { label: 'build the test scene (replaces the map)', run: () => void this.run('lab scene') },
+      { label: 'build the landscape (replaces the map)', run: () => void this.run('lab landscape') },
+      { label: 'build the small test scene (replaces the map)', run: () => void this.run('lab scene') },
       { label: 'every pane like pane 1', run: () => {
         for (let i = 1; i < 4; i++) for (const k of ['light', 'weather', 'water'] as const) lab.setPane(i, k, lab.panes[0]![k]);
       } },

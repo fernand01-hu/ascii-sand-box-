@@ -338,7 +338,7 @@ export class Lab {
     return {
       light: { ...b.light, sunDir: sunAt(this.hour), sunColor: k.sun, skyColor: k.sky, glintColor: k.sun.clone().multiplyScalar(0.8) },
       haze: k.haze,
-      bg: new Color(k.bg.x, k.bg.y, k.bg.z),
+      bg: new Color().setRGB(k.bg.x, k.bg.y, k.bg.z, 'srgb'), // (the keys are screen colours, not linear)
       tint: k.tint,
     };
   }
@@ -448,4 +448,74 @@ export const LAB_VIEWS: Record<string, string> = {
   hill: 'cam 24 7 -30 0 4 -46',
   oak: 'cam 19 2.5 -20 10 2 -28',
   stream: 'cam 40 2.5 -12 10 0 -18',
+  // the landscape (lab landscape)
+  landscape: 'cam 12 20 2 -14 10 -110',
+  valley: 'cam -46 14 -12 8 14 -120',
+  lakeside: 'cam -3 4 -36 -28 0 -50',
+  river: 'cam 18 8 -60 2 2 -100',
+  peaks: 'cam 6 26 -80 -20 30 -150',
 };
+
+/**
+ * The lab landscape: a whole valley to judge the looks in. A ridge of
+ * mountains with rocky peaks and conifer slopes at the back, a river
+ * winding down from them into a lake with a sand shore, reeds and an island,
+ * then on out of the lake; wooded hills on both sides, a meadow with
+ * flowers, bushes and a few lone trees in front. About 230 x 220 m, built
+ * from terminal commands (`lab landscape`), then saved as "lab-landscape"
+ * so `load lab-landscape` brings it back quickly.
+ */
+export function landscapeLines(): string[] {
+  const L: string[] = ['clearmap yes', 'fill grass -120 -180 120 50'];
+  // The river's course: from the mountains (z -118) down to the lake, then out toward the front left.
+  const river: [number, number][] = [];
+  for (let z = -118; z <= -62; z += 4) river.push([8 + 10 * Math.sin((z + 118) / 14) - (z + 118) * 0.35, z]);
+  for (let t = 0; t <= 1.0001; t += 0.06) river.push([-38 - 30 * t + 6 * Math.sin(t * 7), -30 + 70 * t]);
+  const lake = { x: -25, z: -45, r: 18 };
+  const f = (v: number) => v.toFixed(1);
+
+  // Mountains: a ridge, two peaks, smoothed.
+  // Wide and not too steep: steep faces get few ground glyphs and read as holes.
+  L.push('height raise; height size 44; height strength 2.2');
+  for (const [x0, z0, x1, z1] of [[-115, -150, -60, -140], [-60, -140, -10, -156], [-10, -156, 40, -138], [40, -138, 115, -152]]) {
+    L.push(`repeat 3 height stroke ${x0} ${z0} ${x1} ${z1}`);
+  }
+  L.push('height size 30; height strength 2.2', 'repeat 2 height stroke -50 -150 -42 -146', 'repeat 2 height stroke 26 -142 34 -138');
+  // Hills on both sides, and a knoll in the meadow.
+  L.push('height size 20; height strength 3', 'repeat 2 height stroke -88 -72 -64 -55', 'repeat 2 height stroke 64 -62 92 -44');
+  L.push('height size 14; height strength 2', 'repeat 2 height stroke 48 -8 60 2');
+  L.push('height smooth; height strength 1; height size 30', 'repeat 2 height stroke -110 -146 110 -146', 'height stroke -88 -64 92 -52');
+  // The lake basin, an island, and the river's bed.
+  L.push('height lower; height size 22; height strength 1.2', 'repeat 2 height stroke -30 -45 -20 -45');
+  L.push('height raise; height size 4; height strength 0.6', 'height stroke -21 -49 -19 -48');
+  L.push('height lower; height size 7; height strength 0.6');
+  for (let i = 0; i + 1 < river.length; i += 3) {
+    const a = river[i]!, b = river[Math.min(i + 3, river.length - 1)]!;
+    L.push(`height stroke ${f(a[0])} ${f(a[1])} ${f(b[0])} ${f(b[1])}`);
+  }
+  L.push('height off; height raise; height size 6; height strength 0.5');
+
+  // Paint: rocky peaks and ridge, sand banks, then the water.
+  L.push('paint rock -46 -148 18', 'paint rock 30 -140 15');
+  for (let x = -100; x <= 100; x += 25) L.push(`paint rock ${x} ${x < -10 ? -147 : -145} 9`);
+  L.push(`paint sand ${lake.x} ${lake.z} ${lake.r + 5}`);
+  for (const [x, z] of river) L.push(`paint sand ${f(x)} ${f(z)} 4.5`);
+  L.push(`paint water ${lake.x} ${lake.z} ${lake.r}`);
+  for (const [x, z] of river) L.push(`paint water ${f(x)} ${f(z)} 2.4`);
+  L.push('paint sand -20 -48.5 3.5', 'paint grass -20 -48.5 2');
+
+  // Plants and objects.
+  L.push(
+    'scatter tree:spruce 34 -75 -118 26', 'scatter tree:pine 34 62 -120 26', 'scatter tree:pine 14 -10 -114 18',
+    'scatter rock:outcrop 10 -46 -148 14', 'scatter rock:angular 10 30 -140 12', 'scatter rock:slab 8 -80 -140 20',
+    'scatter tree:oak 18 -76 -63 18', 'scatter tree:birch 14 -60 -78 14', 'scatter bushes 22 -76 -63 22',
+    'scatter tree:maple 14 78 -53 16', 'scatter tree:birch 10 58 -40 12', 'scatter bushes 16 78 -53 20',
+    'scatter plant:reeds 46 -25 -45 23', 'scatter plant:fern 20 -55 -55 12',
+    'scatter rock:pebbles 12 0 -88 14', 'scatter rock:boulder 6 -6 -70 10',
+    'scatter plant:wildflowers 50 12 -12 30', 'scatter plant:grass_tuft 60 -8 4 40', 'scatter bushes 18 26 -30 24',
+    'place tree:oak 22 -20 1.4 11', 'place tree:oak -52 -8 1.2 5', 'place tree:dead 36 -76 1 2', 'place tree:birch -20 -48.5 0.8 9',
+    'place rock:boulder 12 -4 1.8 4',
+  );
+  L.push('save lab-landscape', 'lab time 16.5', 'lab view landscape');
+  return L;
+}
