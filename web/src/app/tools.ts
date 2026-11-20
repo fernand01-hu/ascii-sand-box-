@@ -19,6 +19,13 @@ export class ToolSwitch {
     this.active = name;
   }
 
+  /** Turn whichever tool is on off. */
+  offAll(): void {
+    const off = this.active ? this.offs.get(this.active) : undefined;
+    this.active = null;
+    off?.();
+  }
+
   release(name: ToolName): void {
     if (this.active === name) this.active = null;
   }

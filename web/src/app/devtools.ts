@@ -119,7 +119,7 @@ export function installDevtools(app: App, terminal: Terminal): void {
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     // Keys meant for a panel (menu, settings, terminal) or a text field are not hotkeys.
-    if (panelOpen() || terminal.isOpen || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    if (panelOpen() || terminal.isOpen || app.player || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     if (e.key === '5') return void showPine(app);
     const k = e.key.toLowerCase();
     if (k === 'c') return void app.showCanvas();

@@ -412,14 +412,22 @@ next one.
   - The water tiles from the terrain brush (step 7) are the natural place to
     do this.
 
-## Phase 4: Play mode (later)
+## Phase 4: Play mode (done on `phase4-play`)
 
-- [ ] Turn the `P` walk mode back on, with an Edit / Play toggle so editor
-      keys and WASD don't clash.
-- [ ] Physics reads ground height and type from the painted map instead of
-      the old procedural terrain.
-- [ ] Decide what happens in painted water (swim, wade, or blocked).
-- [ ] Collisions with placed trees, rocks and big bushes.
+- [x] Walk mode is back, on **F** (first person) or the toolbar's play button. **P** is now the paint brush.
+  - While playing: the editing tools are off, their keys stay quiet (dev hotkeys too), the options sidebar steps aside, and the status bar shows the controls.
+  - F or Esc goes back to editing (Esc first releases the mouse if it is captured).
+  - `web/src/app/playmode.ts`.
+- [x] Physics reads the painted map:
+  - heights (from the chunks)
+  - the kind of ground: sand a little slower, rock slightly
+  - water from the paint
+- [x] **Water: wade** (decided for now; easy to change). Painted water is walked through at half speed, knee deep, with no running or jumping. The old worlds still block at the shore.
+- [x] Collisions with placed objects: the engine gives each chunk colliders for tree trunks (the trunk's own radius), rocks, and bushes taller than 0.9 m. Plants are walked through.
+- Tests:
+  - unit (`physics.test.ts`: walking speed, wading, sand, a trunk stops you, old water still blocks)
+  - Rust (colliders for trees, rocks, not plants)
+  - e2e (F, boulder, water, quiet editor keys, F back)
 
 ## Phase 5: Smooth detail, then the GPU
 

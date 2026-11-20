@@ -263,8 +263,15 @@ export class WorldStreamer implements Ground {
     return (at(ix, iz) * (1 - tx) + at(ix + 1, iz) * tx) * (1 - tz) + (at(ix, iz + 1) * (1 - tx) + at(ix + 1, iz + 1) * tx) * tz;
   }
 
-  isWater(_x: number, _z: number): boolean {
-    return false; // a blank canvas has no water yet
+  isWater(x: number, z: number): boolean {
+    return this.map.groundAt(x, z) === 'water';
+  }
+
+  /** Painted water is waded through (Phase 4: slowly, no running or jumping). */
+  readonly wade = true;
+
+  surface(x: number, z: number): string {
+    return this.map.groundAt(x, z);
   }
 
   inBounds(x: number, z: number): boolean {

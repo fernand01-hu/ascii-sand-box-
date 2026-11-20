@@ -236,6 +236,7 @@ export class Hud {
       ['Ctrl+S', 'save the scene (menu: Save / load)'],
       ['Esc', 'menu / close a panel'],
       ['Tab', 'show / hide the options sidebar'],
+      ['F', 'play: walk the canvas in first person (F / Esc: back)'],
       ['drag a title', 'move a window (double-click: put it back)'],
       ['Up / Down', 'move in a panel'],
       ['Left / Right', 'change a slider'],
@@ -340,7 +341,9 @@ export class Hud {
     const edit = a.world
       ? `${ed.mode === 'top' ? ' · TOP' : ''}${ed.grid ? ' · grid' : ''}${ed.snap ? ` · snap ${ed.snap} m` : ''}${br.active ? ` · BRUSH ${br.kind} ${br.radius} m` : ''}${this.toolText()}`
       : '';
-    const where = a.world ? `canvas ${a.canvasOptions.seed} · ${a.canvasOptions.day ? 'day' : 'dusk'}${edit}` : s.model || '…';
+    const where = a.player
+      ? 'PLAY · WASD walk · Shift run · Space jump · click: mouse look · F / Esc: back to editing'
+      : a.world ? `canvas ${a.canvasOptions.seed} · ${a.canvasOptions.day ? 'day' : 'dusk'}${edit}` : s.model || '…';
     const status = s.status === 'loading' ? ' · loading' : s.status === 'error' ? ' · error' : '';
     this.info.textContent = this.flashText
       ? `${where} │ ${this.flashText}`
