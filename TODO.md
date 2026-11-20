@@ -280,17 +280,56 @@ next one.
   - [x] Unit tests for the spray maths. e2e: real drags, spacing across a
     chunk border, single, erase, select, move, turn, delete, undo.
 
-- [ ] **11. Generator parameters in the brush.**
-  - Expose *every* generator parameter for every object type: tree height,
-    crown size, leaf amount, branch count, rock roughness, and so on.
-  - Generate the panel from one param description per generator (name,
-    range, default), so new params show up automatically.
-  - **(added)** A live preview of the object before you paint it.
-  - **(added)** Save named presets (for example "my tall birch").
+- [x] **11. Generator parameters in the brush.** (Done on
+      `step-11-generator-params`.)
+  - [x] Each family exposes its settings (`engine/src/scenery/params.rs`):
+    - **conifers:** height, crown start, whorl spacing, branches per whorl,
+      branch length, sag, needle density and size, dead branches, trunk,
+      sway
+    - **broadleaf trees:** height, trunk height, crown width and height,
+      lobes, branch density, twig length, leaves per twig, leaf size,
+      droop, trunk, lean, gnarl
+    - **bushes:** size, width, height, stems, density, twig, leaves, leaf
+      size, upward growth, berries / blossoms
+    - **rocks:** size, width, height, lumpiness, facets, moss (not on
+      pebbles, which are always bare)
+    - **plants:** size
 
-- [ ] **12. (added) Height brush.**
-  - Raise, lower and smooth the ground.
-  - Only start this once flat 2D editing works well.
+    A Rust test proves each setting changes the object and that defaults
+    give the usual one exactly.
+  - [x] The panel, the terminal (`param`) and saved scenes are all
+    generated from one description per setting (name, label, range,
+    default). Objects store their values (only when off the defaults);
+    scene files store them by name, so new settings never break old files.
+    For a mix ("any tree"), the panel offers the settings the family shares.
+  - [x] **(added)** A live preview: a small viewer of its own (drag to turn
+    it), rebuilt a moment after a change, with "another variant".
+  - [x] **(added)** Named presets (`preset save|load|delete`, or the panel's
+    picker and "save as").
+  - [x] The engine caches assets per parameter set and starts the cache over
+    past 600 assets.
+
+- [x] **12. (added) Height brush.** (Done on `step-12-height-brush`.
+      Milestone 2, "I can fill a scene with objects", is complete.)
+  - [x] Height brush (`H`): raise (`1`), lower (`2`), smooth (`3`), flatten
+    (`4`, to the height where the stroke starts), size and strength,
+    smooth cosine falloff (`app/heightbrush.ts`). One stroke is one undo.
+  - [x] Heights per chunk on a 1 m grid (33 × 33). Border points are shared
+    and written into every chunk that holds them, so the ground is
+    seamless. Flat chunks store nothing.
+  - [x] The engine follows the heights. Ground glyphs sit on the surface and
+    tilt with the slope. Objects stand on the ground. The opaque ground is
+    a 1 m mesh, and physics heights come from it too. The glyph-stacking
+    spread measures the view angle to the real surface, so a hillside
+    facing you keeps its rows.
+  - [x] The cursor finds the real ground under the mouse (it steps along
+    the view ray). The grid, chunk borders, tile grid, brush outlines and
+    markers drape over the terrain.
+  - [x] Scene files version 2 store heights (centimetres). Version 1 files
+    still load.
+  - [x] Unit tests (falloff, modes, shared borders, undo, file round trip,
+    version 1). Rust test on a sloped plane. e2e: drag, undo, every mode,
+    cursor on a hilltop, an object on a hill, save / load.
 
 ## Phase 3: Visual quality
 

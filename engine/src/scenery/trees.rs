@@ -9,6 +9,7 @@
 
 use super::asset::{dir, polyline, unit, Asset, RngExt, UP};
 use super::colonize::{colonize, envelope_points, pipe_radii, smooth};
+use super::params::{p as param, ParamDesc, Values};
 use super::perlin::Perlin;
 use super::style::{Bark, Mat};
 use crate::math::Vec3;
@@ -35,8 +36,122 @@ impl TreeKind {
 
 pub fn make_tree(seed: u32, kind: TreeKind) -> Asset {
     match kind {
-        TreeKind::Pine | TreeKind::Spruce => Conifer::grow(seed, kind),
-        _ => broadleaf(seed, kind),
+        TreeKind::Pine | TreeKind::Spruce => Conifer::grow(seed, kind, conifer_params(kind)),
+        _ => broadleaf(seed, kind, broad_params(kind)),
+    }
+}
+
+fn mid(r: (f32, f32)) -> f32 {
+    (r.0 + r.1) / 2.0
+}
+
+fn mid_u(r: (u32, u32)) -> f32 {
+    ((r.0 + r.1) as f32 / 2.0).round()
+}
+
+/// A setting moved away from its default (ranges stay random until then).
+fn moved(v: &Values, name: &str, default: f32) -> Option<f32> {
+    let x = v.get(name);
+    ((x - default).abs() > 1e-4).then_some(x)
+}
+
+/// What can be changed on a tree (see `params`).
+pub fn tree_params(kind: TreeKind) -> Vec<ParamDesc> {
+    match kind {
+        TreeKind::Pine | TreeKind::Spruce => {
+            let c = conifer_params(kind);
+            vec![
+                param("height", "height", 0.3, 2.5, 0.05, 1.0),
+                param("crown_start", "crown starts at (share of height)", 0.0, 0.8, 0.01, mid(c.base)),
+                param("whorl_gap", "whorl spacing", 0.4, 2.5, 0.05, 1.0),
+                param("branches", "branches per whorl", 1.0, 14.0, 1.0, mid_u(c.per)),
+                param("branch_length", "branch length", 0.3, 2.0, 0.05, 1.0),
+                param("sag", "branch sag", 0.0, 2.5, 0.05, 1.0),
+                param("needles", "needle density", 0.1, 2.5, 0.05, 1.0),
+                param("needle_size", "needle size", 0.4, 2.5, 0.05, 1.0),
+                param("dead", "dead lower branches", 0.0, 1.0, 0.01, c.dead),
+                param("trunk", "trunk thickness", 0.4, 2.5, 0.05, 1.0),
+                param("sway", "trunk sway", 0.0, 0.8, 0.01, c.sway),
+            ]
+        }
+        _ => {
+            let b = broad_params(kind);
+            let mut v = vec![
+                param("height", "height", 0.3, 2.5, 0.05, 1.0),
+                param("trunk_height", "trunk height", 0.4, 2.0, 0.05, 1.0),
+                param("crown_width", "crown width", 0.3, 2.5, 0.05, 1.0),
+                param("crown_height", "crown height", 0.3, 2.5, 0.05, 1.0),
+                param("lobes", "crown lobes", 1.0, 12.0, 1.0, mid_u(b.blobs)),
+                param("branches", "branch density", 0.2, 2.5, 0.05, 1.0),
+                param("twig", "twig length", 0.5, 2.0, 0.05, 1.0),
+            ];
+            if b.leaf.is_some() {
+                v.push(param("leaves", "leaves per twig", 0.0, 12.0, 1.0, b.per as f32));
+                v.push(param("leaf_size", "leaf size", 0.4, 2.5, 0.05, 1.0));
+                v.push(param("droop", "leaf droop", 0.0, 1.5, 0.05, b.droop));
+            }
+            v.extend([
+                param("trunk", "trunk thickness", 0.4, 2.5, 0.05, 1.0),
+                param("lean", "lean", 0.0, 0.5, 0.01, b.lean),
+                param("gnarl", "gnarl", 0.0, 0.8, 0.01, b.gnarl),
+            ]);
+            v
+        }
+    }
+}
+
+/// A tree grown with parameter values (`params`).
+pub fn make_tree_with(seed: u32, kind: TreeKind, v: &Values) -> Asset {
+    match kind {
+        TreeKind::Pine | TreeKind::Spruce => {
+            let mut c = conifer_params(kind);
+            let m = v.get("height");
+            c.h = (c.h.0 * m, c.h.1 * m);
+            if let Some(x) = moved(v, "crown_start", mid(c.base)) {
+                c.base = (x, x);
+            }
+            let g = v.get("whorl_gap");
+            c.gap = (c.gap.0 * g, c.gap.1 * g);
+            if let Some(x) = moved(v, "branches", mid_u(c.per)) {
+                c.per = (x.round().max(1.0) as u32, x.round().max(1.0) as u32);
+            }
+            c.lmax *= v.get("branch_length");
+            let sag = v.get("sag");
+            c.sag0 *= sag;
+            c.sag1 *= sag;
+            c.dens *= v.get("needles");
+            let ns = v.get("needle_size");
+            c.nsize = (c.nsize.0 * ns, c.nsize.1 * ns);
+            c.dead = v.get("dead");
+            c.r0 *= v.get("trunk");
+            c.sway = v.get("sway");
+            Conifer::grow(seed, kind, c)
+        }
+        _ => {
+            let mut b = broad_params(kind);
+            let m = v.get("height");
+            b.h = (b.h.0 * m, b.h.1 * m);
+            let t = v.get("trunk_height");
+            b.trunk = ((b.trunk.0 * t).min(0.9), (b.trunk.1 * t).min(0.95));
+            let (cw, ch) = (v.get("crown_width"), v.get("crown_height"));
+            b.crown = [b.crown[0] * cw, b.crown[1] * ch, b.crown[2] * cw];
+            if let Some(x) = moved(v, "lobes", mid_u(b.blobs)) {
+                b.blobs = (x.round().max(1.0) as u32, x.round().max(1.0) as u32);
+            }
+            b.att = ((b.att as f32 * v.get("branches")) as usize).max(50);
+            b.d *= v.get("twig");
+            if b.leaf.is_some() {
+                b.per = v.int("leaves") as usize;
+                let ls = v.get("leaf_size");
+                b.lsize = (b.lsize.0 * ls, b.lsize.1 * ls);
+                b.droop = v.get("droop");
+            }
+            let r = v.get("trunk");
+            b.r_trunk = (b.r_trunk.0 * r, b.r_trunk.1 * r);
+            b.lean = v.get("lean");
+            b.gnarl = v.get("gnarl");
+            broadleaf(seed, kind, b)
+        }
     }
 }
 
@@ -98,8 +213,7 @@ struct Conifer {
 }
 
 impl Conifer {
-    fn grow(seed: u32, kind: TreeKind) -> Asset {
-        let p = conifer_params(kind);
+    fn grow(seed: u32, kind: TreeKind, p: ConiferParams) -> Asset {
         let mut rng = Pcg32::new(seed as u64, 0xc0f1);
         let h = rng.uniform(p.h.0, p.h.1);
         let ph = [rng.uniform(0.0, TAU), rng.uniform(0.0, TAU), rng.uniform(0.0, TAU)];
@@ -365,8 +479,7 @@ fn broad_params(kind: TreeKind) -> BroadParams {
     }
 }
 
-fn broadleaf(seed: u32, kind: TreeKind) -> Asset {
-    let p = broad_params(kind);
+fn broadleaf(seed: u32, kind: TreeKind, p: BroadParams) -> Asset {
     let mut rng = Pcg32::new(seed as u64, 0xb40a);
     let noise = Perlin::new(seed as u64 + 9);
     let h = rng.uniform(p.h.0, p.h.1);

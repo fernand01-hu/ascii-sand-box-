@@ -55,12 +55,26 @@ export class Editor {
   private lastGridKey = '';
   /** While true the left mouse button paints; the camera uses the other buttons. */
   private leftPaints = false;
+  /** Bumped when heights change, so the draped grid is rebuilt. */
+  private heightsRev = 0;
+  private watchedMap: unknown = null;
 
   constructor(private app: App, readonly cursor: Cursor, settings: Settings) {
     this.draw = new DebugDraw(app.viewer.overlay);
     const v = app.viewer;
     v.controls.addEventListener('change', () => this.queueGrid());
     v.renderer.domElement.addEventListener('pointermove', () => this.updateMarker());
+    app.onSceneChange(() => {
+      const m = app.map;
+      if (m && m !== this.watchedMap) {
+        this.watchedMap = m;
+        m.onEdit((e) => {
+          if (!e.heights?.length) return;
+          this.heightsRev++;
+          this.queueGrid();
+        });
+      }
+    });
     app.onSceneChange((name) => {
       if (this.mode !== 'top') return;
       // A new scene resets the camera: keep the top view on the canvas, drop it elsewhere.
@@ -282,13 +296,15 @@ export class Editor {
     const half = Math.min(400, this.mode === 'top' ? dist * 1.2 + step * 4 : dist * 2.5 + 20);
     const x0 = Math.floor((t.x - half) / step) * step, x1 = Math.ceil((t.x + half) / step) * step;
     const z0 = Math.floor((t.z - half) / step) * step, z1 = Math.ceil((t.z + half) / step) * step;
-    const key = `${x0},${z0},${x1},${z1},${step}`;
+    const key = `${x0},${z0},${x1},${z1},${step},${this.heightsRev}`;
     if (key === this.lastGridKey) return;
     this.lastGridKey = key;
-    const l = new Lines(), y = g + 0.03;
+    const l = new Lines(), map = this.app.map;
+    // On hills the lines are draped over the ground, a piece per grid step.
+    const yAt = (x: number, z: number) => g + (map ? map.heightAt(x, z) : 0), piece = map?.hasHeights ? Math.max(1, step) : Infinity;
     const major = (n: number) => Math.abs(n / S - Math.round(n / S)) < 1e-6;
-    for (let x = x0; x <= x1 + 1e-6; x += step) l.seg(x, y, z0, x, y, z1, major(x) ? COLORS.gridMajor : COLORS.grid);
-    for (let z = z0; z <= z1 + 1e-6; z += step) l.seg(x0, y, z, x1, y, z, major(z) ? COLORS.gridMajor : COLORS.grid);
+    for (let x = x0; x <= x1 + 1e-6; x += step) l.drape(x, z0, x, z1, major(x) ? COLORS.gridMajor : COLORS.grid, yAt, 0.03, piece);
+    for (let z = z0; z <= z1 + 1e-6; z += step) l.drape(x0, z, x1, z, major(z) ? COLORS.gridMajor : COLORS.grid, yAt, 0.03, piece);
     this.draw.set('grid', l);
     v.requestRender();
   }
@@ -304,11 +320,12 @@ export class Editor {
       }
       return;
     }
-    const y = this.app.world.info.ground + 0.08, r = Math.max(0.25, this.snap / 2 || 0.25);
+    const map = this.app.map, g = this.app.world.info.ground, r = Math.max(0.25, this.snap / 2 || 0.25);
+    const yAt = (x: number, z: number) => g + (map ? map.heightAt(x, z) : 0), piece = map?.hasHeights ? 0.25 : Infinity;
     const l = new Lines();
-    l.seg(p.x - r, y, p.z, p.x + r, y, p.z, COLORS.marker);
-    l.seg(p.x, y, p.z - r, p.x, y, p.z + r, COLORS.marker);
-    if (this.snap > 0) l.box(p.x - this.snap / 2, y, p.z - this.snap / 2, p.x + this.snap / 2, y, p.z + this.snap / 2, COLORS.marker);
+    l.drape(p.x - r, p.z, p.x + r, p.z, COLORS.marker, yAt, 0.08, piece);
+    l.drape(p.x, p.z - r, p.x, p.z + r, COLORS.marker, yAt, 0.08, piece);
+    if (this.snap > 0) l.squareOn(p.x, p.z, this.snap / 2, COLORS.marker, yAt, 0.08, piece);
     this.draw.set('marker', l);
     this.app.viewer.requestRender();
   }

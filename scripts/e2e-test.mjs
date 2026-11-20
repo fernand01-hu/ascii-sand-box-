@@ -685,7 +685,7 @@ try {
       const file = await waitFile(/\.scene\.json$/);
       const saved = JSON.parse(readFileSync(file, 'utf8'));
       assert.equal(saved.format, 'ascii-sandbox-scene');
-      assert.equal(saved.version, 1);
+      assert.equal(saved.version, 2);
       assert.equal(saved.objects.length, 1);
       // fill -10..10 x -40..-30 crosses chunk borders both ways: 4 painted chunks, nothing else.
       assert.equal(saved.chunks.length, 4, 'only the painted chunks are stored');
@@ -752,7 +752,9 @@ try {
       // Single: one click, one object; Ctrl+Z takes it back.
       await page.keyboard.press('2');
       const n0 = await count();
-      const empty = await screenOf(10, -40); // in view, clear of the panels
+      // In view and clear of the panels (objects bottom-left, parameters right).
+      const empty = await screenOf(-6, -40);
+      assert.ok(empty.x > 0 && empty.x < 600 && empty.y > 40 && empty.y < 400, `the click spot is in view (${empty.x.toFixed(0)}, ${empty.y.toFixed(0)})`);
       await page.mouse.click(empty.x, empty.y);
       assert.equal(await count(), n0 + 1, 'single places exactly one');
       await ctrlZ();
@@ -799,6 +801,133 @@ try {
       await page.screenshot({ path: join(outDir, '13h-objects.png') });
     } finally {
       for (const c of ['tool off', 'objbrush mode spray', 'clearmap yes', 'camera orbit', 'canvas 1']) await run(c);
+    }
+    await waitSettled('canvas');
+    await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+  });
+
+  await step('generator parameters: sliders from the engine, objects grow with them, live preview, presets, saved in scenes', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    const settled = () => page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+    /** Top of an object's box, from the chunk the engine built. */
+    const topOf = (id) => page.evaluate((id) => {
+      const a = window.__ascii.app, o = a.map.object(id);
+      const [cx, cz] = a.map.chunkOf(o.x, o.z);
+      const b = a.world.chunk(cx, cz)?.data.bounds, i = a.map.objectsIn(cx, cz).indexOf(o);
+      for (let k = 0; b && k + 7 <= b.length; k += 7) if (b[k] === i) return b[k + 5];
+      return null;
+    }, id);
+    try {
+      await run('clearmap yes; objbrush on; objbrush tree:oak; objbrush mode single; objbrush variation 0; param reset');
+      assert.ok(await page.evaluate(() => !document.querySelector('.tui-params').hidden), 'the parameter panel opens with the object brush');
+      const sliders = await page.evaluate(() => [...document.querySelectorAll('.tui-params .tui-slider .tui-label')].map((l) => l.textContent.trim()));
+      assert.ok(sliders.includes('height') && sliders.includes('leaves per twig') && sliders.length >= 10, `one slider per oak parameter (${sliders.length})`);
+      // A usual oak and a height-2 oak.
+      await run('objbrush stroke -10 -30 -10 -30');
+      await run('param height 2');
+      await run('objbrush stroke 10 -30 10 -30');
+      const [usual, tall] = await page.evaluate(() => window.__ascii.app.map.allObjects().sort((a, b) => a.x - b.x).map((o) => o.id));
+      assert.deepEqual(await page.evaluate((id) => window.__ascii.app.map.object(id).params?.[0], tall), 2, 'the tall oak carries height 2');
+      assert.equal(await page.evaluate((id) => window.__ascii.app.map.object(id).params, usual), undefined, 'the usual oak carries no parameters');
+      await settled();
+      const [a, b] = [await topOf(usual), await topOf(tall)];
+      assert.ok(a && b && b > a * 1.6, `the engine grew it taller (${a?.toFixed(1)} m -> ${b?.toFixed(1)} m)`);
+      // The live preview builds.
+      await page.waitForFunction(() => /tree:oak · seed \d+ · \d+ glyphs/.test(document.querySelector('.tui-preview-info').textContent), { timeout: 120_000 });
+      assert.ok(await page.evaluate(() => !!document.querySelector('.tui-preview canvas')), 'the preview has its own view');
+      // A slider works with the mouse: click near the left end of "trunk thickness".
+      const bar = await page.evaluateHandle(() => [...document.querySelectorAll('.tui-params .tui-slider')].find((r) => /trunk thickness/.test(r.textContent)).querySelector('.tui-bar'));
+      const box = await bar.boundingBox();
+      await page.mouse.click(box.x + box.width * 0.12, box.y + box.height / 2);
+      const trunk = Number((await run('param')).find((l) => l.startsWith('trunk ')).split(/\s+/)[1]);
+      assert.ok(trunk < 0.8, `clicking the slider lowers trunk thickness (${trunk})`);
+      // Typing a preset name does not trigger the tools' keys (o would close the object brush).
+      await page.click('.tui-params .tui-input input');
+      await page.keyboard.type('tall oak');
+      await page.keyboard.press('Enter');
+      assert.ok(await page.evaluate(() => !document.querySelector('.tui-params').hidden), 'typing "o" in the field kept the brush open');
+      assert.match((await run('preset')).join('\n'), /tall oak\s+tree:oak .*height=2/);
+      await run('param reset');
+      assert.equal(Number((await run('param')).find((l) => l.startsWith('height')).split(/\s+/)[1]), 1);
+      await run('preset load tall oak');
+      assert.equal(Number((await run('param')).find((l) => l.startsWith('height')).split(/\s+/)[1]), 2, 'the preset brings height 2 back');
+      // Saved scenes keep each object's parameters.
+      await run('save params test; clearmap yes; load params test');
+      const back = await page.evaluate(() => window.__ascii.app.map.allObjects().map((o) => o.params?.[0] ?? null).sort());
+      assert.deepEqual(back, [2, null], 'the tall oak is still tall after save and load');
+      await page.screenshot({ path: join(outDir, '13i-parameters.png') });
+    } finally {
+      for (const c of ['preset delete tall oak', 'delete params test', 'param reset', 'objbrush mode spray', 'objbrush tree:*', 'objbrush variation 0.2', 'tool off', 'clearmap yes', 'canvas 1']) await run(c).catch(() => {});
+    }
+    await waitSettled('canvas');
+    await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+  });
+
+  await step('height brush: raise by dragging, undo, smooth / lower / flatten, the cursor finds hills, objects stand on them, saved', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    const hAt = (x, z) => page.evaluate((x, z) => window.__ascii.app.map.heightAt(x, z), x, z);
+    const settled = () => page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+    const ctrl = async (key) => { await page.keyboard.down('Control'); await page.keyboard.press(key); await page.keyboard.up('Control'); };
+    try {
+      await run('clearmap yes');
+      await page.keyboard.press('t');
+      await new Promise((r) => setTimeout(r, 900));
+      await page.keyboard.press('h');
+      assert.ok(await page.evaluate(() => !document.querySelector('.tui-height').hidden), 'H shows the height panel');
+      await run('height raise; height size 6; height strength 1');
+      assert.match(await page.evaluate(() => document.querySelector('.tui-status').textContent), /HEIGHT raise 6 m/);
+      // Raise by dragging across the middle of the view.
+      await page.mouse.move(440, 330);
+      const a = await page.evaluate(() => window.__ascii.cursorPoint());
+      await page.mouse.down();
+      await page.mouse.move(560, 330, { steps: 10 });
+      await page.mouse.up();
+      const mid = { x: a.x + 3, z: a.z };
+      const raised = await hAt(mid.x, mid.z);
+      assert.ok(raised > 0.5, `dragging raised the ground (${raised.toFixed(2)} m)`);
+      await ctrl('z');
+      assert.equal(await hAt(mid.x, mid.z), 0, 'Ctrl+Z flattens it again');
+      await ctrl('y');
+      assert.ok(Math.abs((await hAt(mid.x, mid.z)) - raised) < 1e-6, 'Ctrl+Y brings the hill back');
+      await run('height off; camera orbit');
+      // A tall hill straight ahead; the other modes.
+      await run('height size 10; height strength 4; repeat 2 height stroke -2 -40 2 -40');
+      const top = await hAt(0, -40);
+      assert.ok(top > 5, `a tall hill (${top.toFixed(1)} m)`);
+      await run('height smooth; height strength 1; repeat 3 height stroke -1 -40 1 -40');
+      assert.ok((await hAt(0, -40)) < top, 'smoothing lowers the peak');
+      await run('height lower; height size 4; height strength 1; height stroke 20 -40 20 -40');
+      assert.ok((await hAt(20, -40)) < -0.5, 'lower digs below the canvas');
+      await run('height flatten; height size 4; height strength 1; height stroke 20 -36 20 -40');
+      assert.ok(Math.abs(await hAt(20, -40)) < 0.6, 'flatten levels toward where the stroke started');
+      // Objects stand on the hill.
+      const id = Number((await run('place rock:boulder 0 -40 1.5 2'))[0].match(/#(\d+)/)[1]);
+      await settled();
+      const bottom = await page.evaluate((id) => {
+        const a = window.__ascii.app, o = a.map.object(id);
+        const [cx, cz] = a.map.chunkOf(o.x, o.z);
+        const b = a.world.chunk(cx, cz).data.bounds, i = a.map.objectsIn(cx, cz).indexOf(o);
+        for (let k = 0; k + 7 <= b.length; k += 7) if (b[k] === i) return b[k + 2];
+        return null;
+      }, id);
+      const ground = await hAt(0, -40);
+      assert.ok(bottom !== null && bottom > ground - 1 && bottom < ground + 0.5, `the rock sits on the hill (bottom ${bottom?.toFixed(2)}, ground ${ground.toFixed(2)})`);
+      // The cursor finds the hill's face, not the flat ground behind it.
+      const screen = await page.evaluate(() => {
+        const a = window.__ascii.app, v = a.viewer, h = a.map.heightAt(0, -35);
+        const p = v.camera.position.clone().set(0, h, -35).project(v.camera);
+        return { x: ((p.x + 1) / 2) * window.innerWidth, y: ((1 - p.y) / 2) * window.innerHeight };
+      });
+      const hit = await page.evaluate((s) => window.__ascii.groundAt(s.x, s.y), screen);
+      assert.ok(hit && Math.hypot(hit.x, hit.z + 35) < 1.5, `the ground under that point of the hill on screen is that point (${hit && `${hit.x.toFixed(1)}, ${hit.z.toFixed(1)}`})`);
+      await page.screenshot({ path: join(outDir, '13j-height.png') });
+      // Heights are saved (scene file version 2).
+      await run('save hills; clearmap yes');
+      assert.equal(await hAt(0, -40), 0);
+      await run('load hills');
+      assert.ok(Math.abs((await hAt(0, -40)) - ground) < 0.01, 'loading brings the hill back');
+    } finally {
+      for (const c of ['delete hills', 'height off', 'height raise', 'height size 6', 'height strength 0.5', 'camera orbit', 'clearmap yes', 'canvas 1']) await run(c).catch(() => {});
     }
     await waitSettled('canvas');
     await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });

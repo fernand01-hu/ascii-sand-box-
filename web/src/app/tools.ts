@@ -1,7 +1,8 @@
-// One editing tool at a time: the terrain brush (P), the object brush (O) or
-// the select tool (V). Turning one on turns whichever was on off.
+// One editing tool at a time: the terrain brush (P), the object brush (O),
+// the select tool (V) or the height brush (H). Turning one on turns
+// whichever was on off.
 
-export type ToolName = 'paint' | 'objects' | 'select';
+export type ToolName = 'paint' | 'objects' | 'select' | 'height';
 
 export class ToolSwitch {
   active: ToolName | null = null;

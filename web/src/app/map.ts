@@ -25,6 +25,18 @@ export interface MapInfo {
   groundKinds: string[];
   /** Object kind names ("tree:oak"); the index is the kind code. */
   objectKinds: string[];
+  /** Generator parameters per kind (from the engine), for defaults and names. */
+  objectParams?: Record<string, ParamInfo[]>;
+}
+
+/** One generator parameter of a kind (see engine scenery/params.rs). */
+export interface ParamInfo {
+  name: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  default: number;
 }
 
 export interface PlacedObject {
@@ -38,32 +50,65 @@ export interface PlacedObject {
   /** Rotation round the vertical axis, radians. */
   yaw: number;
   scale: number;
+  /**
+   * Generator parameter values in the kind's order (see MapInfo.objectParams);
+   * missing = all defaults. Never changed in place: replaced as a whole.
+   */
+  params?: number[];
 }
 
-export type NewObject = Omit<PlacedObject, 'id' | 'yaw' | 'scale' | 'seed'> & Partial<Pick<PlacedObject, 'yaw' | 'scale' | 'seed'>>;
+export type NewObject = Omit<PlacedObject, 'id' | 'yaw' | 'scale' | 'seed'> & Partial<Pick<PlacedObject, 'yaw' | 'scale' | 'seed' | 'params'>>;
 
 interface ChunkEdits {
   /** tiles x tiles ground codes, row-major (z rows), or null for all canvas. */
   tiles: Uint8Array | null;
   objects: PlacedObject[];
+  /**
+   * Ground heights at the (chunkSize + 1)^2 points of a 1 m grid from the
+   * chunk corner, or null for flat. Border points are shared: written into
+   * every chunk that holds them.
+   */
+  heights?: Float32Array | null;
 }
 
 /** What the engine needs to build one chunk. */
 export interface ChunkPayload {
   tiles: Uint8Array | null;
+  /** (chunkSize + 1)^2 heights or null (flat). */
+  heights: Float32Array | null;
   /** kind code, seed, x, z, yaw, scale per object. */
   objects: Float32Array;
   /** Changes every time the chunk's data changes. */
   rev: number;
 }
 
-export const OBJECT_FLOATS = 6;
+/** Parameter value slots per object in a chunk request (engine MAX_PARAMS). */
+export const MAX_PARAMS = 16;
+/** Floats per object in a chunk request: kind, seed, x, z, yaw, scale, parameters. */
+export const OBJECT_FLOATS = 6 + MAX_PARAMS;
+
+/** One chunk's saved ground: paint (or null) and heights (or null). */
+export interface ChunkData {
+  cx: number;
+  cz: number;
+  tiles: Uint8Array | null;
+  heights: Float32Array | null;
+}
 
 /** One change to the map, as the undo history records it. */
 export interface MapEdit {
   tiles?: TileChange[];
+  heights?: HeightChange[];
   added?: PlacedObject[];
   removed?: PlacedObject[];
+}
+
+/** One ground height point moved: global point index (1 m grid), old and new height (m). */
+export interface HeightChange {
+  vi: number;
+  vj: number;
+  from: number;
+  to: number;
 }
 
 /** One tile repainted: global tile index, old and new ground code. */
@@ -87,9 +132,78 @@ export class MapData {
   private listeners = new Set<(keys: string[]) => void>();
   private editListeners = new Set<(edit: MapEdit) => void>();
   readonly info: MapInfo;
+  /** Height points per chunk side (1 m apart, borders shared). */
+  readonly hv: number;
+  /** Chunks holding heights (so a flat map answers height questions fast). */
+  private hilly = 0;
 
   constructor(info: MapInfo) {
     this.info = info;
+    this.hv = Math.round(info.chunkSize) + 1;
+  }
+
+  // ---- heights -------------------------------------------------------------------
+
+  /** Height (m) of global point (vi, vj) on the 1 m grid. */
+  pointHeight(vi: number, vj: number): number {
+    if (!this.hilly) return 0;
+    const S = this.hv - 1, cx = Math.floor(vi / S), cz = Math.floor(vj / S);
+    return this.chunks.get(chunkKey(cx, cz))?.heights?.[(vj - cz * S) * this.hv + (vi - cx * S)] ?? 0;
+  }
+
+  /** Ground height (m) at (x, z), bilinear between the 1 m points. */
+  heightAt(x: number, z: number): number {
+    if (!this.hilly) return 0;
+    const i = Math.floor(x), j = Math.floor(z), tx = x - i, tz = z - j;
+    const a = this.pointHeight(i, j) * (1 - tx) + this.pointHeight(i + 1, j) * tx;
+    const b = this.pointHeight(i, j + 1) * (1 - tx) + this.pointHeight(i + 1, j + 1) * tx;
+    return a * (1 - tz) + b * tz;
+  }
+
+  /** Whether any chunk holds heights. */
+  get hasHeights(): boolean {
+    return this.hilly > 0;
+  }
+
+  /** Whether chunk (cx, cz) holds heights. */
+  hasHeightsIn(cx: number, cz: number): boolean {
+    return !!this.chunks.get(chunkKey(cx, cz))?.heights;
+  }
+
+  /**
+   * Set ground heights at global points. A border point goes into every
+   * chunk that holds it, so neighbours always agree. Reported as one edit.
+   */
+  setHeights(list: readonly { vi: number; vj: number; h: number }[]): { keys: string[]; changes: HeightChange[] } {
+    const S = this.hv - 1, n = this.hv;
+    const changed = new Set<string>();
+    const changes: HeightChange[] = [];
+    for (const { vi, vj, h } of list) {
+      if (!Number.isFinite(h)) throw new Error('heights must be finite');
+      const v = Math.max(-300, Math.min(300, h));
+      const old = this.pointHeight(vi, vj);
+      if (Math.abs(old - v) < 1e-6) continue;
+      const cxs = [Math.floor(vi / S)], czs = [Math.floor(vj / S)];
+      if (vi % S === 0) cxs.push(vi / S - 1);
+      if (vj % S === 0) czs.push(vj / S - 1);
+      for (const cx of cxs) {
+        for (const cz of czs) {
+          const key = chunkKey(cx, cz);
+          let c = this.chunks.get(key);
+          if (!c) this.chunks.set(key, (c = { tiles: null, objects: [] }));
+          if (!c.heights) {
+            c.heights = new Float32Array(n * n);
+            this.hilly++;
+          }
+          c.heights[(vj - cz * S) * n + (vi - cx * S)] = v;
+          changed.add(key);
+        }
+      }
+      changes.push({ vi, vj, from: old, to: v });
+    }
+    for (const key of changed) this.tidy(key);
+    if (changes.length) this.edited({ heights: changes });
+    return { keys: this.changed([...changed]), changes };
   }
 
   /** Called with every edit (for the undo history). */
@@ -211,9 +325,11 @@ export class MapData {
   addObject(o: NewObject): PlacedObject {
     if (!this.info.objectKinds.includes(o.kind)) throw new Error(`unknown object ${JSON.stringify(o.kind)}`);
     if (!Number.isFinite(o.x) || !Number.isFinite(o.z)) throw new Error('object position must be finite');
+    if (o.params && (o.params.length > MAX_PARAMS || !o.params.every(Number.isFinite))) throw new Error('object parameters must be at most 16 finite numbers');
     const obj: PlacedObject = {
       id: this.nextId++, kind: o.kind, x: o.x, z: o.z,
       seed: (o.seed ?? Math.floor(Math.random() * 0xffff)) >>> 0, yaw: o.yaw ?? 0, scale: o.scale ?? 1,
+      ...(o.params?.length ? { params: [...o.params] } : {}),
     };
     this.insert(obj);
     return obj;
@@ -249,12 +365,12 @@ export class MapData {
   }
 
   /** Everything the map holds, for saving: painted chunks (tile codes, copied) and objects. */
-  exportData(): { chunks: { cx: number; cz: number; tiles: Uint8Array }[]; objects: PlacedObject[] } {
-    const chunks: { cx: number; cz: number; tiles: Uint8Array }[] = [];
+  exportData(): { chunks: ChunkData[]; objects: PlacedObject[] } {
+    const chunks: ChunkData[] = [];
     const objects: PlacedObject[] = [];
     for (const [key, c] of this.chunks) {
       const m = /^w(-?\d+),(-?\d+)$/.exec(key);
-      if (c.tiles && m) chunks.push({ cx: Number(m[1]), cz: Number(m[2]), tiles: c.tiles.slice() });
+      if ((c.tiles || c.heights) && m) chunks.push({ cx: Number(m[1]), cz: Number(m[2]), tiles: c.tiles ? c.tiles.slice() : null, heights: c.heights ? c.heights.slice() : null });
       objects.push(...c.objects.map((o) => ({ ...o })));
     }
     return { chunks, objects };
@@ -264,17 +380,23 @@ export class MapData {
    * Replace everything with saved content (tile codes already in this map's
    * ground list). Reported as edits like any change, so it can be undone.
    */
-  replaceWith(chunks: readonly { cx: number; cz: number; tiles: Uint8Array }[], objects: readonly PlacedObject[]): void {
+  replaceWith(chunks: readonly ChunkData[], objects: readonly PlacedObject[]): void {
     this.clear();
-    const n = this.info.tiles;
+    const n = this.info.tiles, hv = this.hv, S = hv - 1;
     const list: { gi: number; gj: number; code: number }[] = [];
+    const hs: { vi: number; vj: number; h: number }[] = [];
     for (const k of chunks) {
-      if (k.tiles.length !== n * n) throw new Error(`chunk ${k.cx},${k.cz}: ${k.tiles.length} tiles, expected ${n * n}`);
-      k.tiles.forEach((code, at) => {
+      if (k.tiles && k.tiles.length !== n * n) throw new Error(`chunk ${k.cx},${k.cz}: ${k.tiles.length} tiles, expected ${n * n}`);
+      if (k.heights && k.heights.length !== hv * hv) throw new Error(`chunk ${k.cx},${k.cz}: ${k.heights.length} heights, expected ${hv * hv}`);
+      k.tiles?.forEach((code, at) => {
         if (code) list.push({ gi: k.cx * n + (at % n), gj: k.cz * n + Math.floor(at / n), code });
+      });
+      k.heights?.forEach((h, at) => {
+        if (h) hs.push({ vi: k.cx * S + (at % hv), vj: k.cz * S + Math.floor(at / hv), h });
       });
     }
     if (list.length) this.setTiles(list);
+    if (hs.length) this.setHeights(hs);
     for (const o of objects) {
       if (!this.info.objectKinds.includes(o.kind)) throw new Error(`unknown object ${JSON.stringify(o.kind)}`);
       this.restoreObject(o);
@@ -316,19 +438,25 @@ export class MapData {
   clear(): string[] {
     const keys = [...this.chunks.keys()];
     // Report what goes, so clearing can be undone.
-    const n = this.info.tiles, tiles: TileChange[] = [], removed: PlacedObject[] = [];
+    const n = this.info.tiles, tiles: TileChange[] = [], removed: PlacedObject[] = [], heights: HeightChange[] = [];
+    const hv = this.hv, S = hv - 1;
     for (const [key, c] of this.chunks) {
       const m = /^w(-?\d+),(-?\d+)$/.exec(key);
-      if (c.tiles && m) {
-        const cx = Number(m[1]), cz = Number(m[2]);
-        c.tiles.forEach((code, at) => {
-          if (code) tiles.push({ gi: cx * n + (at % n), gj: cz * n + Math.floor(at / n), from: code, to: 0 });
-        });
-      }
+      if (!m) continue;
+      const cx = Number(m[1]), cz = Number(m[2]);
+      c.tiles?.forEach((code, at) => {
+        if (code) tiles.push({ gi: cx * n + (at % n), gj: cz * n + Math.floor(at / n), from: code, to: 0 });
+      });
+      // Each point once: from the chunk it belongs to (local index below the far border).
+      c.heights?.forEach((h, at) => {
+        const i = at % hv, j = Math.floor(at / hv);
+        if (h && i < S && j < S) heights.push({ vi: cx * S + i, vj: cz * S + j, from: h, to: 0 });
+      });
       removed.push(...c.objects.map((o) => ({ ...o })));
     }
     this.chunks.clear();
-    if (tiles.length || removed.length) this.edited({ tiles, removed });
+    this.hilly = 0;
+    if (tiles.length || removed.length || heights.length) this.edited({ tiles, removed, ...(heights.length ? { heights } : {}) });
     return this.changed(keys);
   }
 
@@ -347,7 +475,7 @@ export class MapData {
    * Move / turn / resize an object, keeping its id (it may change chunk).
    * One edit (removed old + added new), so it undoes in one go.
    */
-  updateObject(id: number, change: Partial<Pick<PlacedObject, 'x' | 'z' | 'yaw' | 'scale'>>): PlacedObject | null {
+  updateObject(id: number, change: Partial<Pick<PlacedObject, 'x' | 'z' | 'yaw' | 'scale' | 'params'>>): PlacedObject | null {
     const old = this.object(id);
     if (!old) return null;
     const next: PlacedObject = { ...old, ...change };
@@ -376,8 +504,13 @@ export class MapData {
     const c = this.chunks.get(key);
     const objs = c?.objects ?? [];
     const objects = new Float32Array(objs.length * OBJECT_FLOATS);
-    objs.forEach((o, i) => objects.set([this.info.objectKinds.indexOf(o.kind), o.seed % 0x1000000, o.x, o.z, o.yaw, o.scale], i * OBJECT_FLOATS));
-    return { tiles: c?.tiles ? c.tiles.slice() : null, objects, rev: this.revision(key) };
+    objs.forEach((o, i) => {
+      const at = i * OBJECT_FLOATS;
+      objects.set([this.info.objectKinds.indexOf(o.kind), o.seed % 0x1000000, o.x, o.z, o.yaw, o.scale], at);
+      // Parameters, or NaN: "the default" for the engine.
+      for (let k = 0; k < MAX_PARAMS; k++) objects[at + 6 + k] = o.params?.[k] ?? NaN;
+    });
+    return { tiles: c?.tiles ? c.tiles.slice() : null, heights: c?.heights ? c.heights.slice() : null, objects, rev: this.revision(key) };
   }
 
   /** Forget a chunk's storage once it holds nothing (all canvas, no objects). */
@@ -385,7 +518,11 @@ export class MapData {
     const c = this.chunks.get(key);
     if (!c) return;
     if (c.tiles && c.tiles.every((v) => v === 0)) c.tiles = null;
-    if (!c.tiles && c.objects.length === 0) this.chunks.delete(key);
+    if (c.heights && c.heights.every((v) => v === 0)) {
+      c.heights = null;
+      this.hilly--;
+    }
+    if (!c.tiles && !c.heights && c.objects.length === 0) this.chunks.delete(key);
   }
 
   private changed(keys: string[]): string[] {

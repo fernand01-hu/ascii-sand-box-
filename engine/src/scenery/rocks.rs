@@ -10,6 +10,7 @@
 //! The cut mesh also becomes a solid body that hides what is behind it.
 
 use super::asset::{unit, Asset, RngExt};
+use super::params::{p as param, ParamDesc, Values};
 use super::perlin::Perlin;
 use super::style::Mat;
 use crate::math::Vec3;
@@ -185,9 +186,49 @@ fn paint(pos: Vec3, nrm: Vec3, noise: &Perlin, base: Mat, moss: f32, size: f32) 
 const ROCK_TYPES: [Mat; 4] = [Mat::Rock, Mat::Rock, Mat::RockSand, Mat::RockDark];
 
 pub fn make_rock(seed: u32, kind: RockKind) -> Asset {
+    grow(seed, kind, preset(kind))
+}
+
+/// What can be changed on a rock (see `params`).
+pub fn rock_params(kind: RockKind) -> Vec<ParamDesc> {
+    let r = preset(kind);
+    let mut v = vec![
+        param("size", "size", 0.3, 3.0, 0.05, 1.0),
+        param("width", "width", 0.3, 2.5, 0.05, 1.0),
+        param("height", "height", 0.2, 2.5, 0.05, 1.0),
+        param("lumps", "lumpiness", 0.0, 0.5, 0.01, r.lump),
+        param("facets", "flat facets", 0.0, 14.0, 1.0, ((r.cuts.0 + r.cuts.1) as f32 / 2.0).round()),
+    ];
+    // Pebbles are always grown bare (no moss on stones that small).
+    if kind != RockKind::Pebbles {
+        v.push(param("moss", "moss", 0.0, 1.0, 0.01, (r.moss.0 + r.moss.1) / 2.0));
+    }
+    v
+}
+
+/// A rock grown with parameter values (`params`).
+pub fn make_rock_with(seed: u32, kind: RockKind, v: &Values) -> Asset {
+    let mut p = preset(kind);
+    let m = v.get("size");
+    p.r = (p.r.0 * m, p.r.1 * m);
+    let (w, h) = (v.get("width"), v.get("height"));
+    p.scale = [p.scale[0] * w, p.scale[1] * h, p.scale[2] * w];
+    p.lump = v.get("lumps");
+    let f = v.get("facets");
+    if (f - ((p.cuts.0 + p.cuts.1) as f32 / 2.0).round()).abs() > 1e-4 {
+        let n = f.round().max(0.0) as u32;
+        p.cuts = (n, n);
+    }
+    let mo = v.get("moss");
+    if (mo - (p.moss.0 + p.moss.1) / 2.0).abs() > 1e-4 {
+        p.moss = (mo, mo);
+    }
+    grow(seed, kind, p)
+}
+
+fn grow(seed: u32, kind: RockKind, p: Preset) -> Asset {
     let mut rng = Pcg32::new(seed as u64, 0x50c4);
     let noise = Perlin::new(seed as u64 + 77);
-    let p = preset(kind);
     let base = ROCK_TYPES[rng.int(0, 4) as usize];
     let mut asset = Asset::new(format!("rock_{}", kind.name()));
 

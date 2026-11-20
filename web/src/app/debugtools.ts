@@ -109,7 +109,7 @@ export class DebugTools {
     if (this.on('cursor')) {
       const g = this.cursor.ground();
       if (g && a.map) {
-        lines.push(`cursor  ${f1(g.x)}, ${f1(g.z)}  chunk ${Math.floor(g.x / S)},${Math.floor(g.z / S)}  tile ${Math.floor(g.x / tile)},${Math.floor(g.z / tile)} · ${a.map.groundAt(g.x, g.z)}`);
+        lines.push(`cursor  ${f1(g.x)}, ${f1(g.z)}  chunk ${Math.floor(g.x / S)},${Math.floor(g.z / S)}  tile ${Math.floor(g.x / tile)},${Math.floor(g.z / tile)} · ${a.map.groundAt(g.x, g.z)} · ${a.map.heightAt(g.x, g.z).toFixed(1)} m`);
         const p = this.editor?.snap ? this.editor.point() : null;
         if (p) lines.push(`snapped ${f1(p.x)}, ${f1(p.z)}  (${this.editor!.snap} m)`);
       } else lines.push(['cursor  (point at the ground)', 'tui-dim']);
@@ -123,15 +123,18 @@ export class DebugTools {
     const a = this.app, w = a.world, cam = a.viewer.camera.position;
     const S = w?.info.chunkSize ?? 32, g = w?.info.ground ?? 0;
     // Chunk borders, coloured by state.
+    // Lines lie on the ground: draped over hills (one piece per metre), straight when flat.
+    const map = a.map, hilly = !!map?.hasHeights;
+    const yAt = (x: number, z: number) => g + (map ? map.heightAt(x, z) : 0);
     if (this.on('chunks') && w) {
-      const l = new Lines();
+      const l = new Lines(), step = hilly ? 1 : Infinity;
       for (const c of w.chunks()) {
         const col = c.state === 'building' ? COLORS.building : c.state === 'dirty' ? COLORS.dirty : c.edited ? COLORS.edited : COLORS.loaded;
-        const x0 = c.cx * S, z0 = c.cz * S, y = g + 0.04;
-        l.seg(x0, y, z0, x0 + S, y, z0, col);
-        l.seg(x0 + S, y, z0, x0 + S, y, z0 + S, col);
-        l.seg(x0 + S, y, z0 + S, x0, y, z0 + S, col);
-        l.seg(x0, y, z0 + S, x0, y, z0, col);
+        const x0 = c.cx * S, z0 = c.cz * S;
+        l.drape(x0, z0, x0 + S, z0, col, yAt, 0.04, step);
+        l.drape(x0 + S, z0, x0 + S, z0 + S, col, yAt, 0.04, step);
+        l.drape(x0 + S, z0 + S, x0, z0 + S, col, yAt, 0.04, step);
+        l.drape(x0, z0 + S, x0, z0, col, yAt, 0.04, step);
       }
       this.draw.set('chunks', l);
     } else if (this.draw.has('chunks')) this.draw.set('chunks', null);
@@ -154,7 +157,7 @@ export class DebugTools {
         for (let i = 0; i + 7 <= b.length && n < 600; i += 7, n++) {
           const [, lx, ly, lz, hx, hy, hz] = b.subarray(i, i + 7) as unknown as number[];
           l.box(lx!, ly!, lz!, hx!, hy!, hz!, COLORS.outline);
-          l.circle((lx! + hx!) / 2, g + 0.05, (lz! + hz!) / 2, (hx! - lx!) / 2, COLORS.outline);
+          l.circleOn((lx! + hx!) / 2, (lz! + hz!) / 2, (hx! - lx!) / 2, COLORS.outline, yAt, 0.05, 24);
         }
       }
       this.draw.set('outlines', l);
@@ -163,12 +166,12 @@ export class DebugTools {
     const gp = this.on('tiles') ? this.cursor.ground() : null;
     if (gp && w) {
       const t = w.info.tile, l = new Lines(), n = 8;
-      const cx = Math.floor(gp.x / t) * t, cz = Math.floor(gp.z / t) * t, y = g + 0.06;
+      const cx = Math.floor(gp.x / t) * t, cz = Math.floor(gp.z / t) * t, step = hilly ? t : Infinity;
       for (let k = -n; k <= n + 1; k++) {
-        l.seg(cx - n * t, y, cz + k * t, cx + (n + 1) * t, y, cz + k * t, COLORS.tiles);
-        l.seg(cx + k * t, y, cz - n * t, cx + k * t, y, cz + (n + 1) * t, COLORS.tiles);
+        l.drape(cx - n * t, cz + k * t, cx + (n + 1) * t, cz + k * t, COLORS.tiles, yAt, 0.06, step);
+        l.drape(cx + k * t, cz - n * t, cx + k * t, cz + (n + 1) * t, COLORS.tiles, yAt, 0.06, step);
       }
-      l.box(cx, y, cz, cx + t, y + 0.05, cz + t, COLORS.building); // the tile under the cursor
+      l.squareOn(cx + t / 2, cz + t / 2, t / 2, COLORS.building, yAt, 0.1, step); // the tile under the cursor
       this.draw.set('tiles', l);
     } else if (this.draw.has('tiles')) this.draw.set('tiles', null);
     // Origin and axes.

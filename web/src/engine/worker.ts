@@ -70,11 +70,13 @@ async function pump(): Promise<void> {
  *  else is pointless as soon as any newer request exists. */
 function isSuperseded(req: WorkerRequest, newer: WorkerRequest[]): boolean {
   if (newer.length === 0) return false;
-  const replacesScene = (r: WorkerRequest) => r.kind !== 'generate' && r.kind !== 'worldChunk';
+  // A preview never replaces the scene; only a newer preview makes one pointless.
+  const replacesScene = (r: WorkerRequest) => r.kind !== 'generate' && r.kind !== 'worldChunk' && r.kind !== 'preview';
+  if (req.kind === 'preview') return newer.some((r) => r.kind === 'preview');
   if (req.kind === 'load' || req.kind === 'worldInit' || req.kind === 'worldSetup') return newer.some(replacesScene);
   // Streamed chunks: only a new scene or world makes them pointless.
   if (req.kind === 'worldChunk') return newer.some(replacesScene);
-  return true;
+  return newer.some((r) => r.kind !== 'preview');
 }
 
 let world: wasm.CanvasWorld | null = null;
@@ -93,7 +95,7 @@ async function handle(req: WorkerRequest): Promise<void> {
       world = new wasm.CanvasWorld(req.seed >>> 0, req.day);
       const t0 = performance.now();
       const cards = world.skyCards(req.glyphAspect);
-      const [chunkSize = 32, grid = 32, ground = 0, tile = 0.5, tiles = 64] = wasm.worldConsts();
+      const [chunkSize = 32, grid = 32, ground = 0, tile = 0.5, tiles = 64, objectFloats = 22] = wasm.worldConsts();
       const spawn: [number, number, number] = [0, ground, 0];
       const stride = wasm.cardStride();
       const materials = wasm.sceneryMaterials();
@@ -103,7 +105,8 @@ async function handle(req: WorkerRequest): Promise<void> {
           kind: 'result', id: req.id, mesh: null, cards, stride, count: cards.length / stride, charset: wasm.sceneryCharset(),
           timings: { loadMs: 0, generateMs: performance.now() - t0 }, sunDir: [sx, sy, sz], materials, materialFloats: wasm.materialFloats(),
           env: { day: req.day, windDir: [0.89, -0.45], leafBox: [0, 0, 90], rainBox: [36, 24, 36] },
-          world: { chunkSize, grid, ground, spawn, tile, tiles, groundKinds: wasm.groundKinds().split(','), objectKinds: wasm.objectKinds().split(','), materialNames: wasm.materialNames().split(',') },
+          world: { chunkSize, grid, ground, spawn, tile, tiles, groundKinds: wasm.groundKinds().split(','), objectKinds: wasm.objectKinds().split(','), materialNames: wasm.materialNames().split(','),
+            objectParams: JSON.parse(wasm.objectParams()), objectFloats },
         },
         [cards.buffer, materials.buffer],
         // Sky, rain and leaves are global by their card mode; the sky dome is
@@ -115,7 +118,7 @@ async function handle(req: WorkerRequest): Promise<void> {
       if (!world) throw new Error('no world: call worldInit first');
       const t0 = performance.now();
       const [ex, ey, ez] = req.eye;
-      const c = world.buildChunk(req.cx, req.cz, ex, ey, ez, req.glyphAspect, req.tiles ?? new Uint8Array(0), req.objects);
+      const c = world.buildChunk(req.cx, req.cz, ex, ey, ez, req.glyphAspect, req.tiles ?? new Uint8Array(0), req.objects, req.heights ?? new Float32Array(0));
       try {
         const cards = c.takeCards();
         const positions = c.takeBody();
@@ -138,9 +141,11 @@ async function handle(req: WorkerRequest): Promise<void> {
       }
       return;
     }
-    if (req.kind === 'gallery') {
+    if (req.kind === 'gallery' || req.kind === 'preview') {
       const t0 = performance.now();
-      const scene = wasm.buildGallery(req.category, req.seed >>> 0, req.glyphAspect);
+      const scene = req.kind === 'gallery'
+        ? wasm.buildGallery(req.category, req.seed >>> 0, req.glyphAspect)
+        : wasm.buildObjectPreview(req.kindCode, req.seed >>> 0, req.params, req.glyphAspect, req.framePx);
       try {
         const cards = scene.takeCards();
         const positions = scene.takeBody();

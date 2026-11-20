@@ -320,8 +320,22 @@ fn wildflowers(rng: &mut Pcg32, size: f32) -> Asset {
 }
 
 pub fn make_plant(seed: u32, kind: PlantKind) -> Asset {
+    grow(seed, kind, 1.0)
+}
+
+/// What can be changed on a plant (see `params`).
+pub fn plant_params(_kind: PlantKind) -> Vec<super::params::ParamDesc> {
+    vec![super::params::p("size", "size", 0.3, 3.0, 0.05, 1.0)]
+}
+
+/// A plant grown with parameter values (`params`).
+pub fn make_plant_with(seed: u32, kind: PlantKind, v: &super::params::Values) -> Asset {
+    grow(seed, kind, v.get("size"))
+}
+
+fn grow(seed: u32, kind: PlantKind, size: f32) -> Asset {
     let mut rng = Pcg32::new(seed as u64, 0x91a7);
-    let s = rng.uniform(0.85, 1.15);
+    let s = rng.uniform(0.85, 1.15) * size;
     match kind {
         PlantKind::Fern => fern(&mut rng, s),
         PlantKind::Hosta | PlantKind::HostaVariegated | PlantKind::ElephantEar | PlantKind::Rhubarb => rosette(&mut rng, kind, s),

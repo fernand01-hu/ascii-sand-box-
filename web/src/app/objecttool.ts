@@ -14,6 +14,8 @@ import { addRootKeys } from '../ui/widgets';
 import type { App } from './app';
 import { BRUSH_SIZES } from './brush';
 import type { Editor } from './editor';
+import type { ParamInfo } from './map';
+import type { Preset } from './presets';
 import type { Settings } from './settings';
 import { pickKind, spacingFor, sprayDab, type SprayShape } from './spray';
 import type { ToolSwitch } from './tools';
@@ -36,6 +38,8 @@ export class ObjectTool {
   spacing = 1;
   /** Random size spread: scale in 1 +- variation. */
   variation = 0.2;
+  /** Generator parameter values per kind or mix ("tree:*"), by parameter name. */
+  values: Record<string, Record<string, number>> = {};
   private stroke: { last: { x: number; z: number } } | null = null;
   private listeners = new Set<() => void>();
   private draw: DebugDraw;
@@ -87,6 +91,16 @@ export class ObjectTool {
       { name: 'objdensity', help: 'objects per 100 m^2 per dab', persist: true, get: () => String(this.density), set: (v) => this.set({ density: num(v, 'objdensity', 0.1, 200) }) },
       { name: 'objspacing', help: 'spacing factor (1 = each family\'s room)', persist: true, get: () => String(this.spacing), set: (v) => this.set({ spacing: num(v, 'objspacing', 0.2, 5) }) },
       { name: 'objvariation', help: 'random size spread (0-0.8)', persist: true, get: () => String(this.variation), set: (v) => this.set({ variation: num(v, 'objvariation', 0, 0.8) }) },
+      {
+        name: 'objparams', help: 'generator parameters per kind (JSON; use the panel or `param`)', persist: true,
+        get: () => JSON.stringify(this.values),
+        set: (v) => {
+          const x = JSON.parse(v) as unknown;
+          if (!x || typeof x !== 'object') throw new Error('objparams: a JSON object');
+          this.values = x as Record<string, Record<string, number>>;
+          this.changed();
+        },
+      },
     );
   }
 
@@ -98,6 +112,63 @@ export class ObjectTool {
   private changed(): void {
     for (const f of this.listeners) f();
     this.outline(this.active ? this.editor.point() : null);
+  }
+
+  /**
+   * The parameters the brush offers for a kind, or for a mix the ones its
+   * family's kinds share by name (each family kind uses what it has).
+   */
+  paramDescs(kind = this.kind): ParamInfo[] {
+    const all = this.app.map?.info.objectParams ?? {};
+    if (!kind.endsWith(':*')) return all[kind] ?? [];
+    const fam = kind.split(':')[0];
+    const seen = new Map<string, ParamInfo>();
+    for (const [k, list] of Object.entries(all)) if (k.split(':')[0] === fam) for (const d of list) if (!seen.has(d.name)) seen.set(d.name, d);
+    return [...seen.values()];
+  }
+
+  /** The brush's value for a parameter (its default if not set). */
+  param(name: string): number {
+    const d = this.paramDescs().find((x) => x.name === name);
+    return this.values[this.kind]?.[name] ?? d?.default ?? NaN;
+  }
+
+  setParam(name: string, v: number): void {
+    const d = this.paramDescs().find((x) => x.name === name);
+    if (!d) throw new Error(`${this.kind} has no parameter "${name}" (see: param)`);
+    if (!Number.isFinite(v)) throw new Error(`${name}: a number`);
+    const clamped = Math.min(d.max, Math.max(d.min, v));
+    (this.values[this.kind] ??= {})[name] = clamped;
+    this.changed();
+  }
+
+  resetParams(): void {
+    delete this.values[this.kind];
+    this.changed();
+  }
+
+  /** The brush's parameter values that differ from the defaults, by name (for presets). */
+  changedParams(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const d of this.paramDescs()) {
+      const v = this.values[this.kind]?.[d.name];
+      if (v !== undefined && Math.abs(v - d.default) > 1e-6) out[d.name] = v;
+    }
+    return out;
+  }
+
+  applyPreset(p: Preset): void {
+    this.setKind(p.kind);
+    this.values[p.kind] = { ...p.values };
+    this.changed();
+  }
+
+  /** Parameter values for an object of kind `k` placed now (undefined = all defaults). */
+  paramsFor(k: string): number[] | undefined {
+    const descs = this.app.map?.info.objectParams?.[k] ?? [];
+    const set = this.values[this.kind] ?? {};
+    const vals = descs.map((d) => (Number.isFinite(set[d.name]) ? Math.min(d.max, Math.max(d.min, set[d.name]!)) : d.default));
+    return vals.some((v, i) => Math.abs(v - descs[i]!.default) > 1e-6) ? vals : undefined;
   }
 
   /** The kinds the picker offers: the mixes, then every single kind. */
@@ -182,7 +253,7 @@ export class ObjectTool {
     const map = this.app.map;
     if (!map) return;
     const kind = pickKind(this.kind, map.info.objectKinds, Math.random);
-    map.addObject({ kind, x: p.x, z: p.z, yaw: Math.random() * Math.PI * 2, scale: this.randomScale(), seed: (Math.random() * 0xffff) | 0 });
+    map.addObject({ kind, x: p.x, z: p.z, yaw: Math.random() * Math.PI * 2, scale: this.randomScale(), seed: (Math.random() * 0xffff) | 0, params: this.paramsFor(kind) });
   }
 
   private randomScale(): number {
@@ -202,7 +273,8 @@ export class ObjectTool {
     const own = spacingFor(this.kind, this.spacing);
     const near = map.objectsNear(p.x, p.z, this.radius + 4 * Math.max(1, this.spacing)).map((o) => ({ x: o.x, z: o.z, spacing: spacingFor(o.kind, this.spacing) }));
     for (const q of sprayDab(p.x, p.z, { radius: this.radius, shape: this.shape, density: this.density, spacing: own }, near, Math.random)) {
-      map.addObject({ kind: pickKind(this.kind, map.info.objectKinds, Math.random), x: q.x, z: q.z, yaw: Math.random() * Math.PI * 2, scale: this.randomScale(), seed: (Math.random() * 0xffff) | 0 });
+      const kind = pickKind(this.kind, map.info.objectKinds, Math.random);
+      map.addObject({ kind, x: q.x, z: q.z, yaw: Math.random() * Math.PI * 2, scale: this.randomScale(), seed: (Math.random() * 0xffff) | 0, params: this.paramsFor(kind) });
     }
   }
 
@@ -215,14 +287,15 @@ export class ObjectTool {
       }
       return;
     }
-    const y = this.app.world.info.ground + 0.1, l = new Lines();
+    const map = this.app.map, g = this.app.world.info.ground, l = new Lines();
+    const yAt = (x: number, z: number) => g + (map ? map.heightAt(x, z) : 0), piece = map?.hasHeights ? 0.5 : Infinity;
     const col = this.mode === 'erase' ? COLORS.dirty : COLORS.edited;
     if (this.mode === 'single') {
-      l.seg(p.x - 0.6, y, p.z, p.x + 0.6, y, p.z, col);
-      l.seg(p.x, y, p.z - 0.6, p.x, y, p.z + 0.6, col);
-      l.circle(p.x, y, p.z, spacingFor(this.kind, this.spacing) / 2, col, 24);
-    } else if (this.shape === 'square') l.box(p.x - this.radius, y, p.z - this.radius, p.x + this.radius, y, p.z + this.radius, col);
-    else l.circle(p.x, y, p.z, this.radius, col, 48);
+      l.drape(p.x - 0.6, p.z, p.x + 0.6, p.z, col, yAt, 0.1, piece);
+      l.drape(p.x, p.z - 0.6, p.x, p.z + 0.6, col, yAt, 0.1, piece);
+      l.circleOn(p.x, p.z, spacingFor(this.kind, this.spacing) / 2, col, yAt, 0.1, 24);
+    } else if (this.shape === 'square') l.squareOn(p.x, p.z, this.radius, col, yAt, 0.1, piece);
+    else l.circleOn(p.x, p.z, this.radius, col, yAt, 0.1, 48);
     this.draw.set('tiles', l);
     this.app.viewer.requestRender();
   }

@@ -15,6 +15,9 @@ import type { Undo } from './undo';
 import { AUTOSAVE, type SceneStore } from './scenes';
 import { KIND_MIXES, OBJECT_MODES, type ObjectMode, type ObjectTool } from './objecttool';
 import type { SelectTool } from './selecttool';
+import type { PresetStore } from './presets';
+import type { HeightTool } from './heighttool';
+import { HEIGHT_MODES, type HeightMode } from './heightbrush';
 import { statLines, statNames, statValue } from './stats';
 import { TEST_MODELS } from './models';
 import { parseCards, type Settings } from './settings';
@@ -40,6 +43,8 @@ export interface CommandContext {
   scenes: SceneStore;
   objects: ObjectTool;
   select: SelectTool;
+  presets: PresetStore;
+  height: HeightTool;
   term: {
     aliases: Map<string, string>;
     binds: Map<string, string>;
@@ -209,7 +214,7 @@ const COMMANDS: Command[] = [
       const g = ctx.cursor.ground() ?? { x: c.x, z: c.z };
       const S = w.info.chunkSize, t = w.info.tile;
       io.print(`(${g.x.toFixed(2)}, ${g.z.toFixed(2)})  ${ctx.cursor.ground() ? 'under the cursor' : 'below the camera'}`, 'info');
-      io.print(`chunk ${Math.floor(g.x / S)},${Math.floor(g.z / S)}  tile ${Math.floor(g.x / t)},${Math.floor(g.z / t)}  ground ${m.groundAt(g.x, g.z)}`);
+      io.print(`chunk ${Math.floor(g.x / S)},${Math.floor(g.z / S)}  tile ${Math.floor(g.x / t)},${Math.floor(g.z / t)}  ground ${m.groundAt(g.x, g.z)}  height ${m.heightAt(g.x, g.z).toFixed(2)} m`);
       const near = m.allObjects().map((o) => ({ o, d: Math.hypot(o.x - g.x, o.z - g.z) })).filter((p) => p.d < 4).sort((p, q) => p.d - q.d);
       io.print(near.length ? `nearby: ${near.slice(0, 6).map((p) => `#${p.o.id} ${p.o.kind} (${f1(p.d)} m)`).join(', ')}` : 'no objects within 4 m');
     },
@@ -512,18 +517,20 @@ const COMMANDS: Command[] = [
     },
   },
   {
-    name: 'tool', group: 'map', usage: 'tool [paint|objects|select|off]', help: 'the editing tool: terrain brush (P), object brush (O), select (V)',
+    name: 'tool', group: 'map', usage: 'tool [paint|objects|select|height|off]', help: 'the editing tool: terrain brush (P), object brush (O), select (V), height (H)',
     run(app, [t], io, ctx) {
       needWorld(app);
       if (t === 'paint') ctx.brush.setActive(true);
       else if (t === 'objects') ctx.objects.setActive(true);
       else if (t === 'select') ctx.select.setActive(true);
+      else if (t === 'height') ctx.height.setActive(true);
       else if (t === 'off') {
         ctx.brush.setActive(false);
         ctx.objects.setActive(false);
         ctx.select.setActive(false);
-      } else if (t !== undefined) throw new CommandError('tool paint | objects | select | off');
-      io.print(`tool: ${ctx.brush.active ? 'paint' : ctx.objects.active ? 'objects' : ctx.select.active ? 'select' : 'none'}`);
+        ctx.height.setActive(false);
+      } else if (t !== undefined) throw new CommandError('tool paint | objects | select | height | off');
+      io.print(`tool: ${ctx.brush.active ? 'paint' : ctx.objects.active ? 'objects' : ctx.select.active ? 'select' : ctx.height.active ? 'height' : 'none'}`);
     },
   },
   {
@@ -549,6 +556,69 @@ const COMMANDS: Command[] = [
         } else t.setKind(a);
       });
       io.print(`object brush ${t.active ? 'on' : 'off'}: ${t.mode} ${t.kind}, ${t.radius} m, density ${t.density}/100 m², spacing x${t.spacing}, size ±${Math.round(t.variation * 100)}%`);
+    },
+  },
+  {
+    name: 'param', group: 'map', usage: 'param [<name> <value> | reset]', help: 'generator parameters of the object brush\'s kind: list, set one, or reset',
+    run(_app, [name, value], io, ctx) {
+      const t = ctx.objects;
+      if (name === 'reset') t.resetParams();
+      else if (name !== undefined) wrap(() => t.setParam(name, num(value, name)));
+      const descs = t.paramDescs();
+      if (!descs.length) return io.print(`${t.kind} has no parameters`);
+      io.print(`${t.kind}:`, 'info');
+      for (const d of descs) {
+        const v = t.param(d.name);
+        io.print(`${d.name.padEnd(14)} ${(d.step >= 1 ? String(Math.round(v)) : v.toFixed(2)).padStart(6)}   ${d.min}..${d.max}${Math.abs(v - d.default) > 1e-6 ? `   (default ${d.default})` : ''}   ${d.label}`);
+      }
+    },
+  },
+  {
+    name: 'preset', group: 'map', usage: 'preset [save|load|delete] <name>', help: 'object brush presets: list, save the current kind and parameters, load, delete',
+    run(_app, [verb, ...rest], io, ctx) {
+      const name = rest.join(' ');
+      if (verb === 'save') {
+        const p = wrap(() => ctx.presets.save(name, ctx.objects.kind, ctx.objects.changedParams()));
+        io.print(`saved preset "${p.name}" (${p.kind}, ${Object.keys(p.values).length} changed parameters)`);
+      } else if (verb === 'load') {
+        const p = ctx.presets.get(name);
+        if (!p) throw new CommandError(`no preset "${name}"`);
+        wrap(() => ctx.objects.applyPreset(p));
+        io.print(`loaded preset "${p.name}": ${p.kind}`);
+      } else if (verb === 'delete') {
+        if (!ctx.presets.delete(name)) throw new CommandError(`no preset "${name}"`);
+        io.print(`deleted preset "${name}"`);
+      } else if (verb === undefined) {
+        const all = ctx.presets.list();
+        if (!all.length) return io.print('no presets yet (preset save <name>)');
+        for (const p of all) io.print(`${p.name.padEnd(24)} ${p.kind.padEnd(18)} ${Object.entries(p.values).map(([k, v]) => `${k}=${v}`).join(' ')}`);
+      } else throw new CommandError('preset save|load|delete <name>');
+    },
+  },
+  {
+    name: 'height', group: 'map', usage: 'height [on|off|raise|lower|smooth|flatten|size <m>|strength <s>|stroke x0 z0 x1 z1|at <x> <z>]',
+    help: 'the height brush (also H): switch it, pick a mode, set an option, shape a stroke, or read the height at a point',
+    run(app, args, io, ctx) {
+      const t = ctx.height, [a, b] = args;
+      if (a === 'at') {
+        const { map } = needWorld(app);
+        const x = num(b, 'x'), z = num(args[2], 'z');
+        return io.print(`ground at (${x}, ${z}): ${map.heightAt(x, z).toFixed(2)} m`);
+      }
+      wrap(() => {
+        if (a === undefined) t.setActive(!t.active);
+        else if (a === 'on' || a === 'off') t.setActive(a === 'on');
+        else if (HEIGHT_MODES.includes(a as HeightMode)) t.setMode(a as HeightMode);
+        else if (a === 'size') t.set({ radius: num(b, 'size', 0.5, 64) });
+        else if (a === 'strength') t.set({ strength: num(b, 'strength', 0.01, 10) });
+        else if (a === 'stroke') {
+          needWorld(app);
+          const [x0, z0, x1, z1] = args.slice(1).map((v, i) => num(v, ['x0', 'z0', 'x1', 'z1'][i]!));
+          const n = t.strokeLine({ x: x0!, z: z0! }, { x: x1!, z: z1! });
+          io.print(`${t.mode}: ${n} height points moved`);
+        } else throw new CommandError(`height on|off|${HEIGHT_MODES.join('|')}|size|strength|stroke|at`);
+      });
+      io.print(`height brush ${t.active ? 'on' : 'off'}: ${t.mode}, ${t.radius} m, strength ${t.strength}`);
     },
   },
   {
@@ -1034,9 +1104,12 @@ function argWords(app: App, cmd: string, ctx: CommandContext | null): string[] {
     case 'help': return [...commandNames(), ...GROUPS];
     case 'paint': case 'fill': return m?.groundKinds ?? [];
     case 'brush': return ['on', 'off', 'size', 'shape', 'strength', 'soft', ...(m?.groundKinds ?? [])];
-    case 'tool': return ['paint', 'objects', 'select', 'off'];
+    case 'tool': return ['paint', 'objects', 'select', 'height', 'off'];
+    case 'height': return ['on', 'off', ...HEIGHT_MODES, 'size', 'strength', 'stroke', 'at'];
     case 'objbrush': return ['on', 'off', 'mode', 'size', 'density', 'spacing', 'variation', 'stroke', ...KIND_MIXES, ...(m?.objectKinds ?? [])];
     case 'select': return ['none'];
+    case 'param': return ['reset', ...(ctx?.objects.paramDescs().map((d) => d.name) ?? [])];
+    case 'preset': return ['save', 'load', 'delete'];
     case 'place': return m?.objectKinds ?? [];
     case 'scatter': return [...Object.keys(KIND_GROUPS), ...(m?.objectKinds ?? [])];
     case 'gallery': return GALLERY_CATEGORIES;

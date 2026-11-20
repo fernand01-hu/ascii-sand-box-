@@ -13,6 +13,7 @@ import type { Undo } from '../app/undo';
 import type { SceneStore } from '../app/scenes';
 import type { ObjectTool } from '../app/objecttool';
 import type { SelectTool } from '../app/selecttool';
+import type { HeightTool } from '../app/heighttool';
 import type { Settings } from '../app/settings';
 import type { Terminal } from './terminal';
 import { addRootKeys, Checkbox, List, Panel, Slider, Text, TextInput } from './widgets';
@@ -27,6 +28,7 @@ export interface HudDeps {
   scenes: SceneStore;
   objects: ObjectTool;
   select: SelectTool;
+  height: HeightTool;
 }
 
 /** Card budget steps: 0 = no budget. */
@@ -45,13 +47,16 @@ export class Hud {
   private brush: BrushTool;
   private objectTool!: ObjectTool;
   private selectTool!: SelectTool;
+  private heightTool!: HeightTool;
   private flashText = '';
   private flashTimer = 0;
   private info: HTMLSpanElement;
   private fps: HTMLSpanElement;
 
   constructor(private app: App, deps: HudDeps, root: HTMLElement = document.body) {
-    const { debug, settings, terminal, editor, brush, undo, scenes, objects, select } = deps;
+    const { debug, settings, terminal, editor, brush, undo, scenes, objects, select, height } = deps;
+    this.heightTool = height;
+    height.onChange(() => this.refresh());
     this.objectTool = objects;
     this.selectTool = select;
     objects.onChange(() => this.refresh());
@@ -86,6 +91,7 @@ export class Hud {
       { label: 'Brush (paint the ground)', key: 'b', run: () => { this.menu.close(); brush.setActive(!brush.active); } },
       { label: 'Object brush (trees, rocks...)', key: 'o', run: () => { this.menu.close(); objects.setActive(!objects.active); } },
       { label: 'Select objects', key: 'v', run: () => { this.menu.close(); select.setActive(!select.active); } },
+      { label: 'Height brush (hills, valleys)', key: 'e', run: () => { this.menu.close(); height.setActive(!height.active); } },
       { label: 'Save / load scenes', key: 'f', run: () => this.filePanel.open() },
       { label: 'Undo (Ctrl+Z)', key: 'u', run: () => undo.undo() },
       { label: 'Redo (Ctrl+Y)', key: 'r', run: () => undo.redo() },
@@ -209,6 +215,7 @@ export class Hud {
       ['[ / ]', 'smaller / bigger brush'],
       ['O', 'object brush: 1 spray 2 single 3 erase'],
       ['V', 'select: drag moves, R turns, Delete removes'],
+      ['H', 'height: 1 raise 2 lower 3 smooth 4 flatten'],
       ['Ctrl+Z / Ctrl+Y', 'undo / redo (also Ctrl+Shift+Z)'],
       ['Ctrl+S', 'save the scene (menu: Save / load)'],
       ['Esc', 'menu / close a panel'],
@@ -286,7 +293,8 @@ export class Hud {
   }
 
   private toolText(): string {
-    const o = this.objectTool, s = this.selectTool;
+    const o = this.objectTool, s = this.selectTool, h = this.heightTool;
+    if (h?.active) return ` · HEIGHT ${h.mode} ${h.radius} m`;
     if (o?.active) return ` · OBJECTS ${o.mode} ${o.kind.endsWith(':*') ? `any ${o.kind.split(':')[0]}` : o.kind} ${o.radius} m`;
     if (s?.active) {
       const sel = s.object();

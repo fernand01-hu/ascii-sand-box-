@@ -16,7 +16,7 @@ import { Vector3 } from 'three';
 import type { App } from './app';
 import { download } from './download';
 import type { MapData } from './map';
-import { buildScene, parseScene, remapGrounds, SceneError, type SceneContent, type SceneFile } from './scenefile';
+import { buildScene, paramsByName, paramsFromNames, parseScene, remapGrounds, SceneError, type SceneContent, type SceneFile } from './scenefile';
 import type { Settings } from './settings';
 import type { Undo } from './undo';
 
@@ -120,8 +120,12 @@ export class SceneStore {
       canvas: { ...a.canvasOptions },
       weather: { ...a.canvasWeather },
       camera: { position: v.camera.position.toArray() as [number, number, number], target: v.controls.target.toArray() as [number, number, number] },
-      chunkSize: m.info.chunkSize, tiles: m.info.tiles, grounds: m.info.groundKinds,
-      chunks: d.chunks, objects: d.objects,
+      chunkSize: m.info.chunkSize, tiles: m.info.tiles, grounds: m.info.groundKinds, heightPoints: m.hv,
+      chunks: d.chunks,
+      objects: d.objects.map(({ params, ...o }) => {
+        const named = paramsByName(params, m.info.objectParams?.[o.kind] ?? []);
+        return named ? { ...o, params: named } : o;
+      }),
     });
   }
 
@@ -216,13 +220,17 @@ export class SceneStore {
     if (!a.world || a.canvasOptions.seed !== c.canvas.seed || a.canvasOptions.day !== c.canvas.day) await a.showCanvas(c.canvas.seed, c.canvas.day);
     const m = a.map;
     if (!m) throw new SceneError('the canvas did not start');
-    if (c.tiles !== m.info.tiles || c.chunkSize !== m.info.chunkSize) throw new SceneError(`the scene uses ${c.chunkSize} m chunks of ${c.tiles} tiles; this version uses ${m.info.chunkSize} m / ${m.info.tiles}`);
+    if (c.tiles !== m.info.tiles || c.chunkSize !== m.info.chunkSize || c.heightPoints !== m.hv) throw new SceneError(`the scene uses ${c.chunkSize} m chunks of ${c.tiles} tiles; this version uses ${m.info.chunkSize} m / ${m.info.tiles}`);
     const unknown = [...new Set(c.objects.map((o) => o.kind).filter((k) => !m.info.objectKinds.includes(k)))];
     if (unknown.length) throw new SceneError(`the scene uses objects this version doesn't have: ${unknown.join(', ')}`);
     const chunks = remapGrounds(c.chunks, c.grounds, m.info.groundKinds);
     if (undoable) this.undo.begin(label);
+    const objects = c.objects.map(({ params, ...o }) => {
+      const vals = paramsFromNames(params, m.info.objectParams?.[o.kind] ?? []);
+      return vals ? { ...o, params: vals } : o;
+    });
     try {
-      m.replaceWith(chunks, c.objects);
+      m.replaceWith(chunks, objects);
     } finally {
       if (undoable) this.undo.end();
     }

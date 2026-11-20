@@ -8,7 +8,7 @@ import { createGlyphAtlas, glyphAspect, type GlyphAtlas } from '../render/atlas'
 import { CALM, DEFAULT_LIGHTING, SURFACE_MATERIAL, type Environment, type Lighting, type MaterialDef } from '../render/cards';
 import { BACKGROUND } from '../render/viewer';
 import { Player } from './player';
-import { MapData } from './map';
+import { MapData, OBJECT_FLOATS } from './map';
 import { WorldStreamer } from './world';
 
 /** Lighting of the scenery `dusk` preset (light.py): stronger sky, no hemisphere falloff. */
@@ -334,7 +334,9 @@ export class App {
       v.setFreeScene(new Vector3(sx, sy + 1, sz - 30), new Vector3(sx, sy + 7, sz), { fov: 50, far: 3000 });
       v.controls.maxDistance = 400;
       const w = res.world;
-      this.map ??= new MapData({ chunkSize: w.chunkSize, tile: w.tile, tiles: w.tiles, groundKinds: w.groundKinds, objectKinds: w.objectKinds });
+      if (w.objectFloats !== OBJECT_FLOATS) console.error(`[ascii] engine and web disagree on object records (${w.objectFloats} vs ${OBJECT_FLOATS} floats)`);
+      const objectParams = Object.fromEntries(w.objectKinds.map((k, i) => [k, w.objectParams[i] ?? []]));
+      this.map ??= new MapData({ chunkSize: w.chunkSize, tile: w.tile, tiles: w.tiles, groundKinds: w.groundKinds, objectKinds: w.objectKinds, objectParams });
       this.world = new WorldStreamer(this.engine, v, res.world, this.map, (e) => console.warn(`[ascii] canvas chunk failed: ${e instanceof Error ? e.message : String(e)}`));
       this.world.radius = this.viewRadius;
       this.world.update(v.camera.position, true);

@@ -64,7 +64,9 @@ function listen(): void {
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const top = stack[stack.length - 1];
-    const used = globalKeys.some((f) => f(e)) || (top ? top.key(e) : rootKeys.some((f) => f(e)));
+    // Typing into a text field outside any modal panel (a tool panel's field) is not a hotkey.
+    const typing = !top && (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement);
+    const used = globalKeys.some((f) => f(e)) || (top ? top.key(e) : !typing && rootKeys.some((f) => f(e)));
     if (used) {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -432,6 +434,8 @@ export interface TextInputOptions {
   keys?: (e: KeyboardEvent, input: HTMLInputElement) => boolean;
   /** Clear the field after a successful submit. */
   clearOnSubmit?: boolean;
+  /** Handle its own keys (for fields in non-modal tool panels, which get no keys from the stack). */
+  ownKeys?: boolean;
 }
 
 /** A text field: type, Enter submits. Arrow keys inside it move the caret. */
@@ -458,6 +462,12 @@ export class TextInput implements Widget {
     this.err = document.createElement('span');
     this.err.className = 'tui-err';
     this.el.append(l, this.input, this.err);
+    if (o.ownKeys) {
+      this.input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') return this.input.blur();
+        if (this.key(e)) e.preventDefault();
+      });
+    }
   }
 
   get value(): string {

@@ -23,7 +23,7 @@
 //! * The sky dome, rain and blowing leaves don't depend on the ground: they
 //!   come from `sky`.
 
-use super::asset::{Asset, Placement};
+use super::asset::{unit, Asset, Placement};
 use super::library::{Kind, Library};
 use super::light::Occlusion;
 use super::sky::{self, Sky, DAY, DUSK};
@@ -41,12 +41,17 @@ pub const GROUND: f32 = 0.0;
 pub const FINE: f32 = 0.25;
 /// Row spacing (m) is never coarser than this.
 pub const COARSE: f32 = 4.0;
+/// Height points per chunk side: (GRID + 1)^2, 1 m apart, shared with the
+/// neighbours along the borders (`ChunkData::heights`).
+pub const HEIGHTS: usize = GRID + 1;
 /// Ground tile side (m): what one brush dab paints at least.
 pub const TILE: f32 = 0.5;
 /// Ground tiles per chunk side.
 pub const TILES: usize = (CHUNK / TILE) as usize;
-/// Floats per placed object: kind code, seed, x, z, yaw (radians), scale.
-pub const OBJECT_FLOATS: usize = 6;
+/// Floats per placed object: kind code, seed, x, z, yaw (radians), scale,
+/// then `MAX_PARAMS` generator parameter values (see `params`; a missing or
+/// non-finite value means the default).
+pub const OBJECT_FLOATS: usize = 6 + super::params::MAX_PARAMS;
 /// Generated variants per kind; an object's seed picks one of them.
 pub const VARIANTS: u32 = 8;
 /// Ground glyphs allowed to overlap on one spot of the screen.
@@ -113,14 +118,22 @@ pub fn spacing(view: &View, p: Vec3) -> f32 {
 /// that footprint stretches away from the eye by 1 / sin(angle), so the
 /// step that points more away from the eye is the one that grows.
 pub fn steps(eye: Vec3, c: Vec3, s: f32, aspect: f32) -> (f32, f32) {
+    steps_on(eye, c, Vec3::Y, s, aspect)
+}
+
+/// `steps` for ground whose surface normal is `n` (a slope): the footprint
+/// stretches by 1 / sin of the angle between the view and the surface, so a
+/// hillside facing the eye keeps its rows close, and ground seen edge-on
+/// spreads them.
+pub fn steps_on(eye: Vec3, c: Vec3, n: Vec3, s: f32, aspect: f32) -> (f32, f32) {
     let (dx, dz) = (c.x - eye.x, c.z - eye.z);
     let d = dx.hypot(dz);
     let (mut sx, mut sz) = (s * aspect, s);
     if d < 1.0 {
         return (sx, sz);
     }
-    let h = (eye.y - GROUND).max(0.05);
-    let graze = h / h.hypot(d); // sin of the angle down to the ground
+    let to_eye = eye - c;
+    let graze = (n.dot(to_eye) / to_eye.length().max(1e-4)).abs().max(0.01); // sin of the view angle to the surface
     let footprint = s * s * aspect / graze; // ground area under one glyph, m^2
     let x_first = dx.abs() >= dz.abs(); // x points more away from the eye
     for _ in 0..24 {
@@ -198,6 +211,53 @@ fn hash2(i: i64, j: i64) -> f32 {
 pub struct ChunkData<'a> {
     pub tiles: &'a [u8],
     pub objects: &'a [f32],
+    /// Ground heights: empty (flat at GROUND) or HEIGHTS x HEIGHTS values,
+    /// 1 m apart from the chunk corner, row-major (z rows).
+    pub heights: &'a [f32],
+}
+
+/// A chunk's ground height field (flat when there are no heights).
+#[derive(Clone, Copy)]
+struct Field<'a> {
+    h: &'a [f32],
+    x0: f32,
+    z0: f32,
+}
+
+impl Field<'_> {
+    fn at_vertex(&self, i: usize, j: usize) -> f32 {
+        GROUND + self.h[j.min(HEIGHTS - 1) * HEIGHTS + i.min(HEIGHTS - 1)]
+    }
+
+    /// Height at (x, z), bilinear between the 1 m points (clamped to the chunk).
+    fn at(&self, x: f32, z: f32) -> f32 {
+        if self.h.is_empty() {
+            return GROUND;
+        }
+        let m = (HEIGHTS - 1) as f32;
+        let fx = (x - self.x0).clamp(0.0, m - 1e-4);
+        let fz = (z - self.z0).clamp(0.0, m - 1e-4);
+        let (i, j) = (fx as usize, fz as usize);
+        let (tx, tz) = (fx - i as f32, fz - j as f32);
+        let a = self.at_vertex(i, j) * (1.0 - tx) + self.at_vertex(i + 1, j) * tx;
+        let b = self.at_vertex(i, j + 1) * (1.0 - tx) + self.at_vertex(i + 1, j + 1) * tx;
+        a * (1.0 - tz) + b * tz
+    }
+
+    /// Slope (dh/dx, dh/dz) at (x, z).
+    fn slope(&self, x: f32, z: f32) -> (f32, f32) {
+        if self.h.is_empty() {
+            return (0.0, 0.0);
+        }
+        // Sample half a metre each way, but never outside the chunk: divide by
+        // the distance really covered, or slopes halve near the border.
+        let m = (HEIGHTS - 1) as f32;
+        let (xa, xb) = ((x - 0.5).max(self.x0), (x + 0.5).min(self.x0 + m));
+        let (za, zb) = ((z - 0.5).max(self.z0), (z + 0.5).min(self.z0 + m));
+        let dx = if xb > xa { (self.at(xb, z) - self.at(xa, z)) / (xb - xa) } else { 0.0 };
+        let dz = if zb > za { (self.at(x, zb) - self.at(x, za)) / (zb - za) } else { 0.0 };
+        (dx, dz)
+    }
 }
 
 pub struct ChunkOut {
@@ -250,23 +310,26 @@ impl Canvas {
     pub fn build_chunk(&mut self, cx: i32, cz: i32, eye: Vec3, aspect: f32, data: ChunkData) -> ChunkOut {
         let (x0, z0) = (cx as f32 * CHUNK, cz as f32 * CHUNK);
         let view = Self::view(eye);
+        let field = Field { h: if data.heights.len() == HEIGHTS * HEIGHTS { data.heights } else { &[] }, x0, z0 };
 
         // Objects first: generate (or fetch) their assets while `lib` may change.
         let mut objects: Vec<(usize, Kind, Placement)> = Vec::new();
         let mut bounds: Vec<[f32; 7]> = Vec::new();
+        self.lib.trim(); // between builds: drop the cache if it grew too big
         for (index, o) in data.objects.chunks_exact(OBJECT_FLOATS).enumerate() {
             let Some(&kind) = self.kinds.get(o[0] as usize) else { continue };
-            if o.iter().any(|v| !v.is_finite()) {
+            if o[..6].iter().any(|v| !v.is_finite()) {
                 continue;
             }
+            let params = &o[6..6 + super::params::param_descs(kind).len()];
             let seed = o[1] as u32;
             let (x, z) = (o[2], o[3]);
             let d = (x - eye.x).hypot(z - eye.z);
             let lod = if d < 32.0 { 0 } else if d < 90.0 { 1 } else { 2 };
-            let asset = self.lib.get(kind, seed % VARIANTS, lod);
+            let asset = self.lib.get_with(kind, params, seed % VARIANTS, lod);
             let sink = if let Kind::Tree(_) = kind { 0.12 } else { 0.03 };
             let tint = 0.85 + 0.3 * hash2(seed as i64, 7);
-            let pl = Placement { pos: Vec3::new(x, GROUND - sink, z), yaw: o[4], scale: o[5].clamp(0.05, 20.0), tint };
+            let pl = Placement { pos: Vec3::new(x, field.at(x, z) - sink, z), yaw: o[4], scale: o[5].clamp(0.05, 20.0), tint };
             let (lo, hi) = self.lib.assets[asset].bounds();
             let r = [lo.x, hi.x, lo.z, hi.z].iter().fold(0.0f32, |m, v| m.max(v.abs())) * pl.scale;
             bounds.push([index as f32, x - r, pl.pos.y + lo.y * pl.scale, z - r, x + r, pl.pos.y + hi.y * pl.scale, z + r]);
@@ -275,7 +338,7 @@ impl Canvas {
 
         let seed = self.seed as u64 ^ ((cx as u64) << 32) ^ (cz as u32 as u64);
         let mut sk = Skinner::new(&self.glyphs, 0.1, aspect, seed);
-        ground(&mut sk, &view, x0, z0, aspect, data.tiles);
+        ground(&mut sk, &view, x0, z0, aspect, data.tiles, field);
         let ground_cards = sk.card_count();
         for &(asset, _, pl) in &objects {
             let a: &Asset = &self.lib.assets[asset];
@@ -289,15 +352,27 @@ impl Canvas {
             cap_stacking(&mut sk.cards, ground_cards, eye);
         }
 
-        let y = GROUND - 0.08;
-        let (a, b) = (Vec3::new(x0, y, z0), Vec3::new(x0 + CHUNK, y, z0));
-        let (c, d) = (Vec3::new(x0 + CHUNK, y, z0 + CHUNK), Vec3::new(x0, y, z0 + CHUNK));
-        let mut body = vec![[a, d, c], [a, c, b]];
+        // Opaque ground, sunk a little: two triangles when flat, a 1 m mesh otherwise.
+        let mut body = Vec::new();
+        if field.h.is_empty() {
+            let y = GROUND - 0.08;
+            let (a, b) = (Vec3::new(x0, y, z0), Vec3::new(x0 + CHUNK, y, z0));
+            let (c, d) = (Vec3::new(x0 + CHUNK, y, z0 + CHUNK), Vec3::new(x0, y, z0 + CHUNK));
+            body.extend([[a, d, c], [a, c, b]]);
+        } else {
+            let v = |i: usize, j: usize| Vec3::new(x0 + i as f32, field.at_vertex(i, j) - 0.08, z0 + j as f32);
+            for j in 0..HEIGHTS - 1 {
+                for i in 0..HEIGHTS - 1 {
+                    let (a, b, c, d) = (v(i, j), v(i + 1, j), v(i + 1, j + 1), v(i, j + 1));
+                    body.extend([[a, d, c], [a, c, b]]);
+                }
+            }
+        }
         body.append(&mut sk.solids);
         ChunkOut {
             cards: std::mem::take(&mut sk.cards),
             body,
-            heights: vec![GROUND; (GRID + 1) * (GRID + 1)],
+            heights: if field.h.is_empty() { vec![GROUND; HEIGHTS * HEIGHTS] } else { field.h.iter().map(|h| GROUND + h).collect() },
             colliders: Vec::new(),
             placed: objects.len(),
             bounds,
@@ -307,16 +382,17 @@ impl Canvas {
 
 /// Ground glyphs over the chunk at (x0, z0): one per grid point, each from
 /// the material its tile is painted with.
-fn ground(sk: &mut Skinner, view: &View, x0: f32, z0: f32, aspect: f32, tiles: &[u8]) {
+fn ground(sk: &mut Skinner, view: &View, x0: f32, z0: f32, aspect: f32, tiles: &[u8], field: Field) {
     let painted = tiles.len() == TILES * TILES;
     let cells = (CHUNK / CELL) as usize;
     for cj in 0..cells {
         for ci in 0..cells {
             let (ax, az) = (x0 + ci as f32 * CELL, z0 + cj as f32 * CELL);
-            let centre = Vec3::new(ax + CELL / 2.0, GROUND, az + CELL / 2.0);
+            let centre = Vec3::new(ax + CELL / 2.0, field.at(ax + CELL / 2.0, az + CELL / 2.0), az + CELL / 2.0);
             let s = spacing(view, centre);
             let sx = s * aspect;
-            let (step_x, step_z) = steps(view.eye, centre, s, aspect);
+            let (hx, hz) = field.slope(centre.x, centre.z);
+            let (step_x, step_z) = steps_on(view.eye, centre, unit(Vec3::new(-hx, 1.0, -hz)), s, aspect);
             // Grid points (i * step) inside this cell.
             let (i0, i1) = ((ax / step_x).ceil() as i64, ((ax + CELL) / step_x).ceil() as i64);
             let (j0, j1) = ((az / step_z).ceil() as i64, ((az + CELL) / step_z).ceil() as i64);
@@ -335,11 +411,15 @@ fn ground(sk: &mut Skinner, view: &View, x0: f32, z0: f32, aspect: f32, tiles: &
                     let glyph = sk.glyph(mat);
                     let f = 1.0 + def.var * (2.0 * hash2((x / sx).round() as i64, (z / s).round() as i64) - 1.0);
                     let col = def.albedo.map(|c| c * f);
-                    let c = Vec3::new(x, GROUND + 0.01 * s, z);
-                    // Flat on the ground (U x V = up), upright when seen from +z;
-                    // the shader leans it toward the camera.
+                    // Flat on the ground and tilted with its slope (U x V = surface
+                    // normal), upright when seen from +z; the shader leans it toward
+                    // the camera.
+                    let (sx_, sz_) = field.slope(x, z);
+                    let u = unit(Vec3::new(1.0, sx_, 0.0)) * sx;
+                    let v = unit(Vec3::new(0.0, -sz_, -1.0)) * s;
+                    let c = Vec3::new(x, field.at(x, z) + 0.01 * s, z);
                     let mode = if g == Ground::Water { CardMode::WaterLean } else { CardMode::GroundLean };
-                    sk.push(c, Vec3::X * sx, Vec3::new(0.0, 0.0, -s), col, def.alpha.0, glyph, mat, mode);
+                    sk.push(c, u, v, col, def.alpha.0, glyph, mat, mode);
                 }
             }
         }
@@ -369,6 +449,13 @@ mod tests {
 
     fn code(name: &str) -> f32 {
         Kind::all().iter().position(|k| k.name() == name).unwrap() as f32
+    }
+
+    /// One object record: kind, seed, x, z, yaw, scale, then default (blank) parameters.
+    fn rec(v: [f32; 6]) -> Vec<f32> {
+        let mut r = v.to_vec();
+        r.resize(OBJECT_FLOATS, f32::NAN);
+        r
     }
 
     #[test]
@@ -441,7 +528,7 @@ mod tests {
                 }
             }
         }
-        let c = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &tiles, objects: &[] });
+        let c = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &tiles, objects: &[], heights: &[] });
         let mut seen = [0usize; 3];
         for card in c.cards.chunks_exact(STRIDE) {
             let (x, z) = (card[0], card[2]);
@@ -464,11 +551,10 @@ mod tests {
     fn objects_are_skinned_whole_by_the_chunk_that_holds_their_base() {
         let mut canvas = Canvas::new(1, false);
         // An oak right next to the border with chunk (1, 0): its crown spills over.
-        let oak = [code("tree:oak"), 3.0, 31.5, 16.0, 0.0, 1.0];
-        let rock = [code("rock:boulder"), 1.0, 10.0, 10.0, 1.0, 1.0];
-        let objects: Vec<f32> = oak.iter().chain(&rock).copied().collect();
+        let mut objects = rec([code("tree:oak"), 3.0, 31.5, 16.0, 0.0, 1.0]);
+        objects.extend(rec([code("rock:boulder"), 1.0, 10.0, 10.0, 1.0, 1.0]));
         let blank_n = canvas.build_chunk(0, 0, eye(), ASPECT, blank()).cards.len();
-        let c = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &[], objects: &objects });
+        let c = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &[], objects: &objects, heights: &[] });
         assert_eq!(c.placed, 2);
         assert_eq!(c.bounds.len(), 2);
         let oak_box = c.bounds[0];
@@ -490,17 +576,74 @@ mod tests {
     }
 
     #[test]
+    fn objects_grow_with_their_parameters() {
+        let mut canvas = Canvas::new(1, false);
+        let oak = code("tree:oak");
+        let usual = rec([oak, 3.0, 16.0, 16.0, 0.0, 1.0]);
+        let mut tall = usual.clone();
+        let i = super::super::params::param_descs(Kind::all()[oak as usize]).iter().position(|d| d.name == "height").unwrap();
+        tall[6 + i] = 2.0;
+        let mut top = |objects: &[f32]| canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &[], objects, heights: &[] }).bounds[0][5];
+        let (a, b) = (top(&usual), top(&tall));
+        assert!(b > a * 1.6, "height 2 makes a taller oak: {a} -> {b}");
+    }
+
+    /// Heights for chunk (cx, cz) from a function of world (x, z).
+    fn heights_of(cx: i32, cz: i32, f: impl Fn(f32, f32) -> f32) -> Vec<f32> {
+        let (x0, z0) = (cx as f32 * CHUNK, cz as f32 * CHUNK);
+        (0..HEIGHTS * HEIGHTS).map(|k| f(x0 + (k % HEIGHTS) as f32, z0 + (k / HEIGHTS) as f32)).collect()
+    }
+
+    #[test]
+    fn the_ground_follows_its_heights_and_objects_stand_on_it() {
+        let mut canvas = Canvas::new(1, false);
+        // A plane rising 0.1 m per metre east: bilinear is exact on it.
+        let slope = |x: f32, _z: f32| 0.1 * x + 2.0;
+        let e = Vec3::new(32.0, 12.0, 16.0);
+        let mut objects = rec([code("rock:boulder"), 1.0, 10.0, 10.0, 0.0, 1.0]);
+        objects.extend(rec([code("tree:pine"), 2.0, 20.0, 5.0, 0.0, 1.0]));
+        for cx in [0, 1] {
+            let h = heights_of(cx, 0, slope);
+            let c = canvas.build_chunk(cx, 0, e, ASPECT, ChunkData { tiles: &[], objects: if cx == 0 { &objects } else { &[] }, heights: &h });
+            let mut n = 0;
+            for card in c.cards.chunks_exact(STRIDE).filter(|k| mat_mode(k).0 == Mat::Canvas as u32) {
+                let s = -card[layout::V + 2].clamp(-100.0, -1e-6);
+                let lift = 0.01 * (card[layout::V] * card[layout::V] + card[layout::V + 1] * card[layout::V + 1] + card[layout::V + 2] * card[layout::V + 2]).sqrt();
+                assert!((card[1] - slope(card[0], card[2]) - lift).abs() < 2e-3 * s.max(1.0), "glyph at ({}, {}) is at {} not {}", card[0], card[2], card[1], slope(card[0], card[2]));
+                // Tilted with the slope: U x V points up and a little west.
+                let u = Vec3::new(card[layout::U], card[layout::U + 1], card[layout::U + 2]);
+                let v = Vec3::new(card[layout::V], card[layout::V + 1], card[layout::V + 2]);
+                let nrm = unit(u.cross(v));
+                assert!((nrm.x - unit(Vec3::new(-0.1, 1.0, 0.0)).x).abs() < 1e-3 && nrm.y > 0.99, "normal {nrm:?}");
+                n += 1;
+            }
+            assert!(n > 100);
+            assert_eq!(c.heights.len(), HEIGHTS * HEIGHTS);
+            assert!((c.heights[HEIGHTS - 1] - slope(cx as f32 * CHUNK + 32.0, 0.0)).abs() < 1e-4, "physics heights follow");
+            assert!(c.body.len() >= 2 * 32 * 32, "a ground mesh, not a flat quad");
+            if cx == 0 {
+                // Objects stand on the ground under them (rocks sink 3 cm, trees 12).
+                let rock_bottom = c.bounds[0][2];
+                assert!(rock_bottom > slope(10.0, 10.0) - 0.6 && rock_bottom < slope(10.0, 10.0) + 0.2, "rock at {rock_bottom}");
+                let pine_bottom = c.bounds[1][2];
+                assert!((pine_bottom - slope(20.0, 5.0)).abs() < 0.6, "pine at {pine_bottom}");
+            }
+        }
+    }
+
+    #[test]
     fn unknown_or_broken_objects_are_skipped() {
         let mut canvas = Canvas::new(1, false);
-        let objects = [999.0, 1.0, 5.0, 5.0, 0.0, 1.0, code("rock:slab"), 1.0, f32::NAN, 5.0, 0.0, 1.0];
-        let c = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &[], objects: &objects });
+        let mut objects = rec([999.0, 1.0, 5.0, 5.0, 0.0, 1.0]);
+        objects.extend(rec([code("rock:slab"), 1.0, f32::NAN, 5.0, 0.0, 1.0]));
+        let c = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &[], objects: &objects, heights: &[] });
         assert_eq!(c.placed, 0);
     }
 
     #[test]
     fn deterministic() {
-        let objects = [code("bush:juniper"), 9.0, -80.0, 70.0, 0.4, 1.2];
-        let data = ChunkData { tiles: &[], objects: &objects };
+        let objects = rec([code("bush:juniper"), 9.0, -80.0, 70.0, 0.4, 1.2]);
+        let data = ChunkData { tiles: &[], objects: &objects, heights: &[] };
         let a = Canvas::new(5, true).build_chunk(-3, 2, eye(), ASPECT, data).cards;
         let mut canvas = Canvas::new(5, true);
         canvas.build_chunk(0, 0, eye(), ASPECT, blank()); // build order must not matter
@@ -541,6 +684,9 @@ mod tests {
         // Far ahead, rows (along the view) spread out more than columns.
         let (sx, sz) = steps(e, Vec3::new(16.0, 0.0, -150.0), 2.0, ASPECT);
         assert!(sz > sx * 4.0, "rows {sz} m apart, columns {sx} m");
+        // A hillside facing the eye, even above it, keeps its rows close.
+        let (eye, c) = (Vec3::new(0.0, 7.0, 0.0), Vec3::new(0.0, 20.0, -30.0));
+        assert_eq!(steps_on(eye, c, unit(eye - c), 2.0, ASPECT), (2.0 * ASPECT, 2.0));
         // Seen from straight above nothing needs spreading.
         assert_eq!(steps(Vec3::new(0.0, 100.0, 0.0), Vec3::new(10.0, 0.0, 0.0), 1.0, ASPECT), (ASPECT, 1.0));
     }
@@ -551,10 +697,10 @@ mod tests {
         let mut objects = Vec::new();
         for k in 0..30 {
             let (x, z) = (4.0 + (k % 6) as f32 * 5.0, 2.0 + (k / 6) as f32 * 6.0);
-            objects.extend_from_slice(&[code(["tree:oak", "tree:spruce", "tree:birch"][k % 3]), k as f32, x, z, k as f32, 1.0]);
+            objects.extend(rec([code(["tree:oak", "tree:spruce", "tree:birch"][k % 3]), k as f32, x, z, k as f32, 1.0]));
         }
         let e = Vec3::new(16.0, 7.0, 60.0);
-        let c = canvas.build_chunk(0, 0, e, ASPECT, ChunkData { tiles: &[], objects: &objects });
+        let c = canvas.build_chunk(0, 0, e, ASPECT, ChunkData { tiles: &[], objects: &objects, heights: &[] });
         assert_eq!(c.placed, 30);
         let is_object = |k: &[f32]| mat_mode(k).0 != Mat::Canvas as u32;
         let (p95, max) = stack(&c.cards, e, is_object);

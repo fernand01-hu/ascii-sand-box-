@@ -57,6 +57,36 @@ export class Lines {
     for (const [x, z] of [[lx, lz], [hx, lz], [hx, hz], [lx, hz]] as const) this.seg(x, ly, z, x, hy, z, c);
   }
 
+  /**
+   * A line from (ax, az) to (bx, bz) lying on the ground: y = yAt(x, z) +
+   * lift, cut into pieces about `step` metres long (one piece when flat).
+   */
+  drape(ax: number, az: number, bx: number, bz: number, c: RGB, yAt: (x: number, z: number) => number, lift: number, step: number): void {
+    const n = Number.isFinite(step) ? Math.max(1, Math.min(400, Math.ceil(Math.hypot(bx - ax, bz - az) / step))) : 1;
+    for (let k = 0; k < n; k++) {
+      const x0 = ax + ((bx - ax) * k) / n, z0 = az + ((bz - az) * k) / n;
+      const x1 = ax + ((bx - ax) * (k + 1)) / n, z1 = az + ((bz - az) * (k + 1)) / n;
+      this.seg(x0, yAt(x0, z0) + lift, z0, x1, yAt(x1, z1) + lift, z1, c);
+    }
+  }
+
+  /** A circle lying on the ground (see `drape`). */
+  circleOn(x: number, z: number, r: number, c: RGB, yAt: (x: number, z: number) => number, lift: number, n = 32): void {
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2, b = ((i + 1) / n) * Math.PI * 2;
+      const ax = x + r * Math.cos(a), az = z + r * Math.sin(a), bx = x + r * Math.cos(b), bz = z + r * Math.sin(b);
+      this.seg(ax, yAt(ax, az) + lift, az, bx, yAt(bx, bz) + lift, bz, c);
+    }
+  }
+
+  /** A square (half side r) lying on the ground. */
+  squareOn(x: number, z: number, r: number, c: RGB, yAt: (x: number, z: number) => number, lift: number, step: number): void {
+    this.drape(x - r, z - r, x + r, z - r, c, yAt, lift, step);
+    this.drape(x + r, z - r, x + r, z + r, c, yAt, lift, step);
+    this.drape(x + r, z + r, x - r, z + r, c, yAt, lift, step);
+    this.drape(x - r, z + r, x - r, z - r, c, yAt, lift, step);
+  }
+
   /** Flat circle at height y. */
   circle(x: number, y: number, z: number, r: number, c: RGB, n = 24): void {
     for (let i = 0; i < n; i++) {

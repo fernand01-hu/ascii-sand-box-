@@ -48,20 +48,58 @@ impl Kind {
     }
 }
 
-/// A few cached variants per kind and level of detail.
+/// The usual object of a kind (default parameters) from a seed.
+pub fn make_default(kind: Kind, seed: u32) -> Asset {
+    match kind {
+        Kind::Tree(t) => make_tree(seed, t),
+        Kind::Bush(b) => make_bush(seed, b),
+        Kind::Plant(p) => make_plant(seed, p),
+        Kind::Rock(r) => make_rock(seed, r),
+    }
+}
+
+/// Parameter values as a cache key (exact bits; an empty list = defaults).
+fn params_key(params: &[f32]) -> u64 {
+    params.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, v| (h ^ v.to_bits() as u64).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// A few cached variants per kind, parameter set and level of detail.
 pub struct Library {
     seed: u32,
-    index: HashMap<(Kind, u32, u8), usize>,
+    index: HashMap<(Kind, u64, u32, u8), usize>,
     pub assets: Vec<Asset>,
 }
 
 impl Library {
+    /// Most assets kept; past it the cache starts over (see `trim`).
+    pub const MAX_ASSETS: usize = 600;
+
     pub fn new(seed: u32) -> Library {
         Library { seed, index: HashMap::new(), assets: Vec::new() }
     }
 
+    /// Drop every cached asset if there are too many (call between builds,
+    /// never while indices from `get` are still in use).
+    pub fn trim(&mut self) {
+        if self.assets.len() > Self::MAX_ASSETS {
+            self.assets.clear();
+            self.index.clear();
+        }
+    }
+
+    /// Default parameters.
     pub fn get(&mut self, kind: Kind, variant: u32, lod: u8) -> usize {
-        if let Some(&i) = self.index.get(&(kind, variant, lod)) {
+        self.get_with(kind, &[], variant, lod)
+    }
+
+    /// With parameter values (see `params`; empty = defaults).
+    pub fn get_with(&mut self, kind: Kind, params: &[f32], variant: u32, lod: u8) -> usize {
+        let defaults = params.is_empty() || {
+            let d = super::params::param_descs(kind);
+            d.iter().enumerate().all(|(i, x)| params.get(i).is_none_or(|v| !v.is_finite() || (*v - x.default).abs() < 1e-6))
+        };
+        let pk = if defaults { 0 } else { params_key(params) };
+        if let Some(&i) = self.index.get(&(kind, pk, variant, lod)) {
             return i;
         }
         let base = if lod == 0 {
@@ -72,19 +110,14 @@ impl Library {
                 Kind::Rock(r) => 30 + r as u32,
             };
             let s = self.seed * 1000 + k * 7 + variant;
-            match kind {
-                Kind::Tree(t) => make_tree(s, t),
-                Kind::Bush(b) => make_bush(s, b),
-                Kind::Plant(p) => make_plant(s, p),
-                Kind::Rock(r) => make_rock(s, r),
-            }
+            if defaults { make_default(kind, s) } else { super::params::make_asset(kind, s, params) }
         } else {
-            let i0 = self.get(kind, variant, 0);
+            let i0 = self.get_with(kind, params, variant, 0);
             self.assets[i0].lod(lod, self.seed as u64)
         };
         self.assets.push(base);
         let i = self.assets.len() - 1;
-        self.index.insert((kind, variant, lod), i);
+        self.index.insert((kind, pk, variant, lod), i);
         i
     }
 }

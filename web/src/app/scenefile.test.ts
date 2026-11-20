@@ -23,7 +23,7 @@ function scene(m: MapData) {
   return buildScene('test', {
     canvas: { seed: 7, day: true }, weather: { wind: 0.4, rain: 0, leaves: 0.5 },
     camera: { position: [1, 2, 3], target: [4, 5, 6] },
-    chunkSize: 32, tiles: 64, grounds: GROUNDS, chunks: d.chunks, objects: d.objects,
+    chunkSize: 32, tiles: 64, grounds: GROUNDS, heightPoints: 33, chunks: d.chunks, objects: d.objects,
   });
 }
 
@@ -104,4 +104,55 @@ test('loading is one undoable change', () => {
   assert.deepEqual(snapshot(m), snapshot(other));
   h.undo();
   assert.deepEqual(snapshot(m), before, 'undo brings back what was there before loading');
+});
+
+test('object parameters are saved by name, only those off their default', async () => {
+  const { paramsByName, paramsFromNames } = await import('./scenefile.ts');
+  const descs = [{ name: 'height', default: 1 }, { name: 'leaves', default: 3 }, { name: 'lean', default: 0.1 }];
+  assert.equal(paramsByName([1, 3, 0.1], descs), undefined, 'all defaults: nothing saved');
+  assert.deepEqual(paramsByName([2, 3, 0.1], descs), { height: 2 });
+  assert.deepEqual(paramsFromNames({ height: 2 }, descs), [2, 3, 0.1]);
+  // A newer app with a parameter inserted before "leaves" still reads it right.
+  const newer = [{ name: 'height', default: 1 }, { name: 'crown', default: 1 }, { name: 'leaves', default: 3 }, { name: 'lean', default: 0.1 }];
+  assert.deepEqual(paramsFromNames({ height: 2, leaves: 5 }, newer), [2, 1, 5, 0.1]);
+  assert.equal(paramsFromNames({ gone: 4 }, newer), undefined, 'unknown names are ignored');
+  // Through a whole file.
+  const f = JSON.parse(JSON.stringify(buildScene('p', {
+    canvas: { seed: 1, day: false }, weather: { wind: 0, rain: 0, leaves: 0 }, chunkSize: 32, tiles: 64, grounds: GROUNDS, chunks: [],
+    objects: [{ id: 1, kind: 'tree:oak', x: 0, z: 0, yaw: 0, scale: 1, seed: 1, params: { height: 2 } }],
+  })));
+  assert.deepEqual(parseScene(f).objects[0]!.params, { height: 2 });
+  assert.throws(() => parseScene({ ...f, objects: [{ ...f.objects[0], params: { height: 'x' } }] }), /broken parameters/);
+});
+
+test('version 2: ground heights round-trip through a file (centimetres), alone or with paint', async () => {
+  const { heightDab } = await import('./heightbrush.ts');
+  const a = new MapData(info());
+  a.setHeights(heightDab(40, -20, { radius: 6, mode: 'raise', strength: 3.21 }, (i, j) => a.pointHeight(i, j)));
+  a.paintTileList([[0, 0]], 'grass');
+  const f = JSON.parse(JSON.stringify(scene(a)));
+  assert.equal(f.version, 2);
+  assert.ok(f.chunks.some((k: { heights?: string; tiles?: string }) => k.heights && !k.tiles), 'a chunk with only heights stores no paint');
+  const read = parseScene(f);
+  const b = new MapData(info());
+  b.replaceWith(remapGrounds(read.chunks, read.grounds, GROUNDS), read.objects);
+  for (const [x, z] of [[40, -20], [43.3, -18.7], [35, -25]]) assert.ok(Math.abs(b.heightAt(x!, z!) - a.heightAt(x!, z!)) < 0.006, `same height at ${x},${z} (to the centimetre)`);
+  assert.equal(b.groundAt(0.2, 0.2), 'grass');
+});
+
+test('version 1 files (paint only) still load', () => {
+  const v1 = {
+    format: 'ascii-sandbox-scene', version: 1, name: 'old', saved: '2026-11-20T00:00:00Z',
+    canvas: { seed: 3, day: false }, weather: { wind: 0.3, rain: 0, leaves: 0.5 },
+    chunkSize: 32, tiles: 64, grounds: GROUNDS,
+    chunks: [{ cx: 0, cz: 0, tiles: encodeTiles(new Uint8Array(4096).fill(2)) }],
+    objects: [{ id: 1, kind: 'tree:oak', x: 1, z: 1, yaw: 0, scale: 1, seed: 1 }],
+  };
+  const read = parseScene(v1);
+  assert.equal(read.chunks[0]!.heights, null);
+  assert.equal(read.heightPoints, 33);
+  const m = new MapData(info());
+  m.replaceWith(remapGrounds(read.chunks, read.grounds, GROUNDS), read.objects);
+  assert.equal(m.groundAt(5, 5), 'sand');
+  assert.throws(() => parseScene({ ...v1, chunks: [{ cx: 0, cz: 0 }] }), /chunk 0 is broken/, 'a version 1 chunk needs its paint');
 });
