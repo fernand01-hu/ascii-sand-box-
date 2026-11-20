@@ -134,12 +134,21 @@ next one.
     each chunk to know the objects in front of it. Do it together with
     step 14, which needs neighbour data for shadows anyway.
 
-- [ ] **5. TUI-style interface (old-school ASCII game look).**
-  - Use a monospace font, box-drawing borders (`┌─┐│└┘`), keyboard-first
-    menus and a small fixed colour palette. No modern rounded widgets.
-  - **(added)** Build a few reusable pieces first (panel, list, slider,
-    checkbox, text input). The debug terminal, brush panel and save dialog
-    are all made from them.
+- [x] **5. TUI-style interface (old-school ASCII game look).** (Done on
+      `step-05-tui`.)
+  - [x] Monospace font, double-line box borders with the title set into the
+    top edge, reverse-video selection, a small fixed palette
+    (`web/src/ui/tui.css`). No rounded or modern widgets.
+  - [x] **(added)** Reusable pieces (`web/src/ui/widgets.ts`): panel (with a
+    stack: the top panel gets the keys, Esc closes it), list / menu, slider
+    `[####····]`, checkbox `[x]`, text input, text line. Keyboard first,
+    and the mouse works too.
+  - [x] The first real interface, in every build (`web/src/ui/hud.ts`): a
+    status bar, an `Esc` menu, settings (canvas seed, day / dusk, view
+    distance, wind / rain / leaves, FPS in the status bar, card budget)
+    and help (`?`).
+  - [x] The debug terminal is rebuilt from the same panel and text input.
+    The brush panel (step 7) and save dialog (step 9) will be too.
 
 ## Phase 2: Scene editor
 

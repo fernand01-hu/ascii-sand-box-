@@ -2,20 +2,51 @@
 // (command output plus everything the app writes to the console) and a
 // prompt. ` (the key left of 1, ² on AZERTY) or F1 opens and closes it,
 // Esc closes it, Up/Down walk the history, Tab completes. F3 toggles the
-// performance overlay. Dev/test builds only.
+// performance overlay. Built from the TUI widgets. Dev/test builds only.
 
 import type { App } from '../app/app';
 import { complete, runCommand, type CommandIO, type LineKind } from '../app/commands';
 import { PerfOverlay } from './perf';
-import './tui.css';
+import { addGlobalKeys, Panel, TextInput, type Widget } from './widgets';
 
 const MAX_LINES = 500;
 
+/** The scrolling log: a widget that can't take focus. */
+class Log implements Widget {
+  readonly el = document.createElement('div');
+  readonly focusable = false;
+
+  constructor() {
+    this.el.className = 'tui-log';
+    this.el.setAttribute('role', 'log');
+    this.el.setAttribute('aria-live', 'polite');
+  }
+
+  print(text: string, kind: string): void {
+    const line = document.createElement('div');
+    line.className = `tui-${kind}`;
+    line.textContent = text;
+    const stick = this.el.scrollTop + this.el.clientHeight >= this.el.scrollHeight - 4;
+    this.el.appendChild(line);
+    while (this.el.childElementCount > MAX_LINES) this.el.firstElementChild!.remove();
+    if (stick) this.el.scrollTop = this.el.scrollHeight;
+  }
+
+  clear(): void {
+    this.el.replaceChildren();
+  }
+
+  setFocus(): void {}
+  key(): boolean {
+    return false;
+  }
+}
+
 export class Terminal {
-  readonly el: HTMLDivElement;
+  readonly panel: Panel;
   readonly perf: PerfOverlay;
-  private log: HTMLDivElement;
-  private input: HTMLInputElement;
+  private log = new Log();
+  private prompt: TextInput;
   private history: string[] = [];
   private historyPos = 0;
   private busy: Promise<void> = Promise.resolve();
@@ -24,44 +55,67 @@ export class Terminal {
   private io: CommandIO;
 
   constructor(private app: App, root: HTMLElement = document.body) {
-    this.el = document.createElement('div');
-    this.el.className = 'tui tui-box tui-terminal';
-    this.el.hidden = true;
-    this.el.innerHTML = `<span class="tui-title">terminal</span><span class="tui-hint">\` / F1 close · help</span>
-      <div class="tui-log" role="log" aria-live="polite"></div>
-      <label class="tui-prompt"><span>&gt;</span><input type="text" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="command"></label>`;
-    this.log = this.el.querySelector('.tui-log')!;
-    this.input = this.el.querySelector('input')!;
-    root.appendChild(this.el);
+    this.panel = new Panel({ title: 'terminal', hint: '` / F1 close · help', className: 'tui-terminal' }, root);
+    this.prompt = new TextInput({
+      label: '>',
+      labelWidth: 2,
+      clearOnSubmit: true,
+      onSubmit: (v) => {
+        const line = v.trim();
+        if (!line) return;
+        if (this.history[this.history.length - 1] !== line) this.history.push(line);
+        this.historyPos = this.history.length;
+        void this.run(line);
+      },
+      keys: (e, input) => {
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          if (this.history.length) {
+            this.historyPos = Math.min(this.history.length, Math.max(0, this.historyPos + (e.key === 'ArrowUp' ? -1 : 1)));
+            input.value = this.history[this.historyPos] ?? '';
+          }
+          return true;
+        }
+        if (e.key === 'Tab') {
+          this.completeInput(input);
+          return true;
+        }
+        return false;
+      },
+    });
+    this.prompt.el.classList.add('tui-prompt');
+    this.panel.add(this.log, this.prompt);
     this.perf = new PerfOverlay(app, root);
 
     this.io = {
       print: (text, kind) => this.print(text, kind),
-      clear: () => this.clear(),
+      clear: () => this.log.clear(),
       setPerf: (on) => this.perf.toggle(on),
     };
 
-    // Keep pointer and wheel input inside the panel (no orbiting behind it).
-    for (const type of ['pointerdown', 'wheel', 'contextmenu'] as const) this.el.addEventListener(type, (e) => e.stopPropagation());
-    this.input.addEventListener('keydown', this.onInputKey);
-    window.addEventListener('keydown', this.onGlobalKey, true);
+    addGlobalKeys((e) => {
+      if (e.code === 'Backquote' || e.key === 'F1') return this.toggle(), true;
+      if (e.key === 'F3') return this.perf.toggle(), true;
+      return false;
+    });
     this.mirrorConsole();
     this.print('debug terminal: type help', 'info');
   }
 
+  get el(): HTMLDivElement {
+    return this.panel.el;
+  }
+
   get isOpen(): boolean {
-    return !this.el.hidden;
+    return this.panel.isOpen;
   }
 
   open(): void {
-    this.el.hidden = false;
-    this.input.focus();
-    this.log.scrollTop = this.log.scrollHeight;
+    this.panel.open();
+    this.log.el.scrollTop = this.log.el.scrollHeight;
   }
 
   close(): void {
-    this.el.hidden = true;
-    this.input.blur();
+    this.panel.close();
   }
 
   toggle(): void {
@@ -71,17 +125,11 @@ export class Terminal {
 
   print(text: string, kind: LineKind | 'echo' | 'dim' = 'out'): void {
     this.capture?.push(text);
-    const line = document.createElement('div');
-    line.className = `tui-${kind}`;
-    line.textContent = text;
-    const stick = this.log.scrollTop + this.log.clientHeight >= this.log.scrollHeight - 4;
-    this.log.appendChild(line);
-    while (this.log.childElementCount > MAX_LINES) this.log.firstElementChild!.remove();
-    if (stick) this.log.scrollTop = this.log.scrollHeight;
+    this.log.print(text, kind);
   }
 
   clear(): void {
-    this.log.replaceChildren();
+    this.log.clear();
   }
 
   /** Run a command as if typed; resolves with the lines it printed. Commands run one at a time. */
@@ -101,54 +149,19 @@ export class Terminal {
     return result;
   }
 
-  private onGlobalKey = (e: KeyboardEvent): void => {
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.code === 'Backquote' || e.key === 'F1') {
-      e.preventDefault();
-      e.stopPropagation();
-      this.toggle();
-    } else if (e.key === 'F3') {
-      e.preventDefault();
-      this.perf.toggle();
-    } else if (e.key === 'Escape' && this.isOpen) {
-      e.preventDefault();
-      this.close();
-    }
-  };
-
-  private onInputKey = (e: KeyboardEvent): void => {
-    e.stopPropagation(); // typing never reaches the dev hotkeys
-    if (e.key === 'Enter') {
-      const line = this.input.value.trim();
-      this.input.value = '';
-      if (!line) return;
-      if (this.history[this.history.length - 1] !== line) this.history.push(line);
-      this.historyPos = this.history.length;
-      void this.run(line);
-    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-      e.preventDefault();
-      if (!this.history.length) return;
-      this.historyPos = Math.min(this.history.length, Math.max(0, this.historyPos + (e.key === 'ArrowUp' ? -1 : 1)));
-      this.input.value = this.history[this.historyPos] ?? '';
-    } else if (e.key === 'Tab') {
-      e.preventDefault();
-      this.completeInput();
-    }
-  };
-
-  private completeInput(): void {
-    const v = this.input.value;
+  private completeInput(input: HTMLInputElement): void {
+    const v = input.value;
     const matches = complete(this.app, v);
     if (matches.length === 0) return;
     const head = v.slice(0, v.length - (v.split(/\s+/).pop() ?? '').length);
     if (matches.length === 1) {
-      this.input.value = `${head}${matches[0]} `;
+      input.value = `${head}${matches[0]} `;
       return;
     }
     // Several: fill in what they share and list them.
     let common = matches[0]!;
     for (const m of matches) while (!m.startsWith(common)) common = common.slice(0, -1);
-    this.input.value = head + common;
+    input.value = head + common;
     this.print(matches.join('  '), 'dim');
   }
 

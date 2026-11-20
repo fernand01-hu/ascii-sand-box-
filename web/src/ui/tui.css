@@ -76,13 +76,115 @@
 .tui-echo { color: var(--tui-accent); }
 .tui-dim { color: var(--tui-dim); }
 
+/* ---- panels and rows ---------------------------------------------------- */
+
+.tui-panel {
+  background: var(--tui-bg); /* solid: panels stack on top of each other */
+  max-width: calc(100vw - 16px);
+}
+
+/* Scroll inside the body, so the title set into the border is never clipped. */
+.tui-panel .tui-body {
+  max-height: calc(100vh - 80px);
+  overflow: auto;
+}
+
+.tui-center {
+  left: 50%;
+  top: 46%;
+  transform: translate(-50%, -50%);
+  min-width: min(44ch, calc(100vw - 16px));
+}
+
+.tui-row {
+  white-space: pre;
+  padding: 0 1ch;
+  cursor: default;
+}
+
+.tui-head {
+  color: var(--tui-accent);
+  margin-top: 0.5em;
+  padding: 0;
+}
+.tui-head::before { content: '── '; color: var(--tui-border); }
+.tui-head::after { content: ' ──'; color: var(--tui-border); }
+.tui-head:first-child { margin-top: 0; }
+
+/* The focused row / selected item: reverse video, like a terminal menu. */
+.tui-sel,
+.tui-sel * {
+  background: var(--tui-fg);
+  color: var(--tui-bg) !important;
+}
+
+.tui-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 3ch;
+  cursor: pointer;
+}
+.tui-item .tui-key { color: var(--tui-dim); }
+
+.tui-slider .tui-bar { cursor: pointer; color: var(--tui-ok); touch-action: none; }
+.tui-slider .tui-label,
+.tui-input .tui-label { color: var(--tui-fg); }
+.tui-check { cursor: pointer; }
+.tui-check .tui-box-mark { color: var(--tui-accent); }
+
+.tui-input {
+  display: flex;
+  white-space: pre;
+}
+.tui-input input {
+  flex: 1;
+  min-width: 6ch;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dashed var(--tui-border);
+  outline: 0;
+  padding: 0;
+  color: var(--tui-fg);
+  caret-color: var(--tui-accent);
+}
+.tui-sel input { border-bottom-color: var(--tui-bg); }
+
+/* ---- status bar ------------------------------------------------------------ */
+
+.tui-status {
+  position: fixed;
+  z-index: 9;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  gap: 2ch;
+  align-items: baseline;
+  padding: 0.15em 1ch;
+  background: var(--tui-panel);
+  border-top: 1px solid var(--tui-border);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.tui-status .tui-name { color: var(--tui-accent); cursor: pointer; }
+.tui-status .tui-info { color: var(--tui-fg); flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.tui-status .tui-keys { color: var(--tui-dim); cursor: pointer; }
+.tui-status .tui-keys b { color: var(--tui-accent); font-weight: normal; }
+
 /* ---- debug terminal ---------------------------------------------------- */
 
 .tui-terminal {
   left: 8px;
   right: 8px;
-  bottom: 8px;
+  bottom: 30px; /* above the status bar */
   height: min(42vh, 360px);
+  display: flex;
+  flex-direction: column;
+}
+
+.tui-terminal .tui-body {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -98,27 +200,18 @@
 }
 
 .tui-prompt {
-  display: flex;
-  gap: 1ch;
   border-top: 1px dashed var(--tui-border);
-  padding-top: 0.25em;
+  padding: 0.25em 0 0;
   margin-top: 0.25em;
 }
 
-.tui-prompt span {
-  color: var(--tui-accent);
-}
-
-.tui-prompt input {
-  flex: 1;
-  min-width: 0;
-  background: transparent;
-  border: 0;
-  outline: 0;
-  padding: 0;
-  color: var(--tui-fg);
-  caret-color: var(--tui-accent);
-}
+.tui-prompt .tui-label { color: var(--tui-accent); }
+.tui-prompt input { border-bottom: 0; }
+/* The prompt stays readable while focused (no reverse video there). */
+.tui-prompt.tui-sel,
+.tui-prompt.tui-sel * { background: transparent; }
+.tui-prompt.tui-sel .tui-label { color: var(--tui-accent) !important; }
+.tui-prompt.tui-sel input { color: var(--tui-fg) !important; }
 
 /* ---- performance overlay ------------------------------------------------- */
 
@@ -133,6 +226,7 @@
 
 @media (max-width: 640px) {
   .tui { font-size: 11px; }
-  .tui-terminal { left: 4px; right: 4px; bottom: 4px; }
+  .tui-terminal { left: 4px; right: 4px; bottom: 26px; }
+  .tui-status .tui-name { display: none; }
   .tui-perf { top: 12px; right: 4px; }
 }

@@ -77,8 +77,10 @@ try {
       // next steps press), nor a card budget.
       await page.evaluate(() => window.__ascii?.stopPlaying?.()).catch(() => {});
       await page.evaluate(() => {
-        const t = document.querySelector('.tui-terminal');
-        if (t && !t.hidden) window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+        // Close every open panel (terminal, menu, settings...), top first.
+        for (let k = 0; k < 6 && document.querySelector('.tui-panel:not([hidden])'); k++) {
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+        }
         const v = window.__ascii?.app?.viewer;
         if (v) v.cards.budget = Infinity;
       }).catch(() => {});
@@ -269,6 +271,55 @@ try {
     assert.equal(await page.evaluate(() => document.querySelector('.tui-terminal').hidden), true, 'Esc closes it');
     assert.deepEqual(await page.evaluate(() => window.__ascii.run('pos')).then((l) => l.length), 1, 'run() returns the printed lines');
     await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+  });
+
+  await step('TUI: status bar, Esc menu, settings by keyboard and mouse, help; hotkeys stay quiet under panels', async () => {
+    const visible = (sel) => page.evaluate((sel) => { const e = document.querySelector(sel); return !!e && !e.hidden; }, sel);
+    const statusText = () => page.evaluate(() => document.querySelector('.tui-status').textContent);
+    assert.match(await statusText(), /\[Esc\] menu/);
+    assert.match(await statusText(), /canvas 1 · dusk/);
+    await page.keyboard.press('Escape');
+    assert.ok(await visible('.tui-menu'), 'Esc opens the menu');
+    await page.keyboard.press('9'); // a gallery hotkey: must not fire under the menu
+    assert.equal((await state()).model, 'canvas');
+    await page.keyboard.press('Enter'); // first item: Settings
+    assert.ok(await visible('.tui-settings'), 'Enter opens settings');
+    // Rows: seed, daytime, view, wind, rain, leaves, fps, budget.
+    for (let k = 0; k < 3; k++) await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    assert.equal((await state()).weather.wind, 0.4, 'Right twice raises the wind by 2 steps');
+    for (let k = 0; k < 3; k++) await page.keyboard.press('ArrowDown');
+    await page.keyboard.press(' ');
+    await page.waitForFunction(() => /fps/.test(document.querySelector('.tui-status .tui-fps').textContent), { timeout: 5000 });
+    // Mouse: click near the right end of the rain bar.
+    const bars = await page.$$('.tui-settings .tui-slider .tui-bar');
+    const box = await bars[2].boundingBox();
+    await page.mouse.click(box.x + box.width * 0.9, box.y + box.height / 2);
+    const rain = (await state()).weather.rain;
+    assert.ok(rain >= 0.8, `clicking the rain bar sets rain (${rain})`);
+    await page.screenshot({ path: join(outDir, '13d-settings.png') });
+    // The seed field: type a new seed, Enter applies it.
+    await page.click('.tui-settings .tui-input input');
+    await page.keyboard.down('Control');
+    await page.keyboard.press('a');
+    await page.keyboard.up('Control');
+    await page.keyboard.type('5');
+    assert.equal(await page.evaluate(() => document.querySelector('.tui-settings .tui-input input').value), '5');
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => window.__ascii.app.canvasOptions.seed === 5 && window.__ascii.status === 'ready', { timeout: 60_000 });
+    await page.keyboard.press('Escape');
+    assert.ok(!(await visible('.tui-settings')) && (await visible('.tui-menu')), 'Esc goes back to the menu');
+    await page.keyboard.press('Escape');
+    assert.ok(!(await visible('.tui-menu')), 'Esc closes the menu');
+    await page.keyboard.press('?');
+    assert.ok(await visible('.tui-help'), '? opens help');
+    await page.keyboard.press('Escape');
+    assert.ok(!(await page.evaluate(() => !!document.querySelector('.tui-panel:not([hidden])'))), 'no panel left open');
+    // Back to the defaults for the next steps.
+    for (const c of ['canvas 1', 'wind 0.3', 'rain off']) await page.evaluate((c) => window.__ascii.run(c), c);
+    await waitSettled('canvas');
+    await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
   });
 
   const models = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];
