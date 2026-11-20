@@ -9,6 +9,10 @@
 //   * objects: belong to the chunk holding their base point (x, z), even if
 //     their crown hangs over the next chunk. That chunk draws them whole.
 // Chunks with no paint and no objects are not stored at all.
+//
+// Every change is also reported as an edit (tiles with old and new codes,
+// objects added or removed), which the undo history records. This file has
+// no runtime imports, so it can be unit-tested with node --test.
 
 export interface MapInfo {
   /** Chunk side (m). */
@@ -55,6 +59,13 @@ export interface ChunkPayload {
 
 export const OBJECT_FLOATS = 6;
 
+/** One change to the map, as the undo history records it. */
+export interface MapEdit {
+  tiles?: TileChange[];
+  added?: PlacedObject[];
+  removed?: PlacedObject[];
+}
+
 /** One tile repainted: global tile index, old and new ground code. */
 export interface TileChange {
   gi: number;
@@ -74,8 +85,22 @@ export class MapData {
   private counter = 0;
   private nextId = 1;
   private listeners = new Set<(keys: string[]) => void>();
+  private editListeners = new Set<(edit: MapEdit) => void>();
+  readonly info: MapInfo;
 
-  constructor(readonly info: MapInfo) {}
+  constructor(info: MapInfo) {
+    this.info = info;
+  }
+
+  /** Called with every edit (for the undo history). */
+  onEdit(f: (edit: MapEdit) => void): () => void {
+    this.editListeners.add(f);
+    return () => this.editListeners.delete(f);
+  }
+
+  private edited(edit: MapEdit): void {
+    for (const f of this.editListeners) f(edit);
+  }
 
   /** Called with the keys of the chunks whose data changed. */
   onChange(f: (keys: string[]) => void): () => void {
@@ -172,6 +197,7 @@ export class MapData {
       changed.add(key);
     }
     for (const key of changed) this.tidy(key);
+    if (changes.length) this.edited({ tiles: changes });
     return { keys: this.changed([...changed]), changes };
   }
 
@@ -189,20 +215,33 @@ export class MapData {
       id: this.nextId++, kind: o.kind, x: o.x, z: o.z,
       seed: (o.seed ?? Math.floor(Math.random() * 0xffff)) >>> 0, yaw: o.yaw ?? 0, scale: o.scale ?? 1,
     };
+    this.insert(obj);
+    return obj;
+  }
+
+  /** Put back an object exactly as it was, id included (undo / redo). */
+  restoreObject(o: PlacedObject): void {
+    if (this.object(o.id)) return;
+    this.nextId = Math.max(this.nextId, o.id + 1);
+    this.insert({ ...o });
+  }
+
+  private insert(obj: PlacedObject): void {
     const key = chunkKey(...this.chunkOf(obj.x, obj.z));
     let c = this.chunks.get(key);
     if (!c) this.chunks.set(key, (c = { tiles: null, objects: [] }));
     c.objects.push(obj);
+    this.edited({ added: [{ ...obj }] });
     this.changed([key]);
-    return obj;
   }
 
   removeObject(id: number): boolean {
     for (const [key, c] of this.chunks) {
       const i = c.objects.findIndex((o) => o.id === id);
       if (i < 0) continue;
-      c.objects.splice(i, 1);
+      const [gone] = c.objects.splice(i, 1);
       this.tidy(key);
+      this.edited({ removed: [{ ...gone! }] });
       this.changed([key]);
       return true;
     }
@@ -243,7 +282,20 @@ export class MapData {
   /** Remove every edit. Returns the keys of the chunks that changed. */
   clear(): string[] {
     const keys = [...this.chunks.keys()];
+    // Report what goes, so clearing can be undone.
+    const n = this.info.tiles, tiles: TileChange[] = [], removed: PlacedObject[] = [];
+    for (const [key, c] of this.chunks) {
+      const m = /^w(-?\d+),(-?\d+)$/.exec(key);
+      if (c.tiles && m) {
+        const cx = Number(m[1]), cz = Number(m[2]);
+        c.tiles.forEach((code, at) => {
+          if (code) tiles.push({ gi: cx * n + (at % n), gj: cz * n + Math.floor(at / n), from: code, to: 0 });
+        });
+      }
+      removed.push(...c.objects.map((o) => ({ ...o })));
+    }
     this.chunks.clear();
+    if (tiles.length || removed.length) this.edited({ tiles, removed });
     return this.changed(keys);
   }
 

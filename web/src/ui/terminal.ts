@@ -171,9 +171,11 @@ export class Terminal {
       const out: string[] = [];
       const outer = this.capture;
       this.capture = out;
+      this.ctx.undo.begin(line.trim()); // one line, one undoable action
       try {
         await this.exec(line, true);
       } finally {
+        this.ctx.undo.end();
         this.capture = outer;
         outer?.push(...out);
       }

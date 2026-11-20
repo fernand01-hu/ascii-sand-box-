@@ -527,7 +527,8 @@ try {
         for (let k = 0; k < 72; k++) {
           const ang = (k / 72) * Math.PI * 2;
           n++;
-          if (m.groundAt(40 + 7.3 * Math.cos(ang), -60 + 7.3 * Math.sin(ang)) === 'grass') painted++;
+          // 6 m of 8: in the soft band, where about 38% of tiles are expected.
+          if (m.groundAt(40 + 6 * Math.cos(ang), -60 + 6 * Math.sin(ang)) === 'grass') painted++;
         }
         return painted / n;
       });
@@ -552,6 +553,81 @@ try {
       assert.ok(await page.evaluate(() => document.querySelector('.tui-brush').hidden), 'P hides the brush panel');
     } finally {
       for (const c of ['brush off', 'brush grass', 'brush size 2', 'brush shape circle', 'brush strength 1', 'brush soft 0.3', 'clearmap yes', 'camera orbit', 'canvas 1']) await run(c);
+    }
+    await waitSettled('canvas');
+    await settled();
+  });
+
+  await step('undo / redo: Ctrl+Z / Ctrl+Y for strokes, objects, scatter and clearmap; text fields keep their own undo', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    const ground = (x, z) => page.evaluate((x, z) => window.__ascii.app.map.groundAt(x, z), x, z);
+    const stats = () => page.evaluate(() => window.__ascii.worldStats());
+    const settled = () => page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+    const ctrl = async (key, shift = false) => {
+      await page.keyboard.down('Control');
+      if (shift) await page.keyboard.down('Shift');
+      await page.keyboard.press(key);
+      if (shift) await page.keyboard.up('Shift');
+      await page.keyboard.up('Control');
+    };
+    try {
+      // A brush stroke painted with the mouse is one action.
+      await page.keyboard.press('t');
+      await new Promise((r) => setTimeout(r, 900));
+      await run('brush on; brush sand; brush size 2; brush soft 0');
+      await page.mouse.move(420, 380);
+      const a = await page.evaluate(() => window.__ascii.cursorPoint());
+      await page.mouse.down();
+      await page.mouse.move(580, 380, { steps: 12 });
+      const b = await page.evaluate(() => window.__ascii.cursorPoint());
+      await page.mouse.up();
+      const mid = { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 };
+      assert.equal(await ground(mid.x, mid.z), 'sand');
+      await settled();
+      const builds = (await stats()).editBuilds;
+      await ctrl('z');
+      assert.equal(await ground(mid.x, mid.z), 'canvas', 'Ctrl+Z takes the whole stroke back');
+      assert.equal(await ground(a.x, a.z), 'canvas');
+      assert.match(await page.evaluate(() => document.querySelector('.tui-status').textContent), /undo: paint sand \(\d+ tiles\)/, 'the status bar says what was undone');
+      await settled();
+      assert.ok((await stats()).editBuilds > builds, 'the touched chunks were rebuilt');
+      await ctrl('y');
+      assert.equal(await ground(mid.x, mid.z), 'sand', 'Ctrl+Y paints it again');
+      await ctrl('z');
+      await ctrl('z', true);
+      assert.equal(await ground(mid.x, mid.z), 'sand', 'Ctrl+Shift+Z redoes too');
+      await run('brush off');
+      // Objects come back with their id.
+      const id = Number((await run('place tree:oak 4 -28 1 3'))[0].match(/#(\d+)/)[1]);
+      await ctrl('z');
+      assert.equal(await page.evaluate((id) => !!window.__ascii.app.map.object(id), id), false, 'Ctrl+Z removes the placed oak');
+      await ctrl('y');
+      assert.equal(await page.evaluate((id) => window.__ascii.app.map.object(id)?.kind, id), 'tree:oak', 'Ctrl+Y puts it back, same id');
+      // One terminal line is one action, however many objects it places.
+      const n0 = (await stats()).objects;
+      await run('scatter trees 20 0 -40 10');
+      assert.equal((await stats()).objects, n0 + 20);
+      assert.match((await run('undo')).join('\n'), /undone: scatter trees 20 0 -40 10/);
+      assert.equal((await stats()).objects, n0, 'one undo removes all twenty');
+      // Even clearing the map can be undone.
+      await run('fill grass -10 -60 10 -50');
+      await run('clearmap yes');
+      assert.equal((await stats()).edited, 0);
+      await run('undo');
+      assert.equal(await ground(0, -55), 'grass', 'undo brings the cleared paint back');
+      assert.ok((await stats()).objects >= 1, 'and the objects');
+      assert.match((await run('history')).join('\n'), /<- Ctrl\+Z undoes this/);
+      // Ctrl+Z inside the terminal's text field is the field's own undo.
+      const before = await stats();
+      await page.keyboard.press('Backquote');
+      await page.keyboard.type('abc');
+      await ctrl('z');
+      await page.keyboard.press('Escape');
+      const after = await stats();
+      assert.equal(after.objects, before.objects, 'typing Ctrl+Z in the terminal does not undo the map');
+      assert.equal(after.edited, before.edited);
+    } finally {
+      for (const c of ['brush off', 'brush grass', 'brush soft 0.3', 'clearmap yes', 'camera orbit', 'canvas 1']) await run(c);
     }
     await waitSettled('canvas');
     await settled();

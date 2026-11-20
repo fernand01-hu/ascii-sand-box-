@@ -60,7 +60,7 @@ Needs Rust (`rustup target add wasm32-unknown-unknown`), `wasm-pack` and Node.
 npm install
 npm run dev        # build the engine, start the dev server
 npm run build      # production build in dist/ (static files, host anywhere)
-npm test           # Rust tests, brush unit tests, typecheck + build, WASM smoke test, headless-Chrome e2e
+npm test           # Rust tests, unit tests (brush, undo), typecheck + build, WASM smoke test, headless-Chrome e2e
 ```
 
 In the viewer: drag to orbit, wheel to zoom, right-drag to pan. `T` switches
@@ -68,7 +68,8 @@ to a top-down editing view (drag pans, wheel sets the height, arrows pan),
 `G` shows a ground grid, and snapping is in Settings or `snap 1` in the
 terminal. `P` turns on the terrain brush: left drag paints, `1`-`4` pick
 grass / sand / water / rock, `E` is the eraser, `[` `]` change the size;
-shape, strength and soft edge are in the brush panel. `Esc` opens
+shape, strength and soft edge are in the brush panel. `Ctrl+Z` / `Ctrl+Y`
+undo and redo any change to the map (`history` in the terminal lists them). `Esc` opens
 the menu (settings: canvas seed, day / dusk, view distance, wind, rain,
 leaves, FPS readout, card budget); `?` shows help. Panels work with the
 keyboard (Up/Down, Left/Right, Space, Enter, Esc) or the mouse.
