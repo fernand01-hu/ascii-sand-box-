@@ -3,6 +3,8 @@
 // for `help`. Dev-only commands (the testbed pine) are added with
 // `registerCommand` from devtools.ts, so they never reach production.
 
+import { CLASSIC, STANDARD, SWITCHES } from './look';
+import { landscapeLines, LAB_SCENE, LAB_VIEWS, LAYOUTS, LIGHTS, WATERS, WEATHERS, type Lab, type LabLayout } from './lab';
 import { GALLERY_CATEGORIES, type GalleryCategory } from '../engine/protocol';
 import type { App } from './app';
 import type { Cursor } from './cursor';
@@ -45,6 +47,7 @@ export interface CommandContext {
   select: SelectTool;
   presets: PresetStore;
   height: HeightTool;
+  lab: Lab;
   term: {
     aliases: Map<string, string>;
     binds: Map<string, string>;
@@ -1047,6 +1050,79 @@ const COMMANDS: Command[] = [
     },
   },
   {
+    name: 'style', group: 'world',
+    usage: 'style [standard|classic|<feature> on|off|time <hours>|scene]',
+    help: 'the canvas look: live sun shadows, time of day, gusts, clouds, wet rain, storm, flowing water (all on = standard)',
+    run(_app, [a, b], io, ctx) {
+      const look = ctx.lab.look;
+      if (a === 'standard') look.set({ ...STANDARD });
+      else if (a === 'classic') look.set({ ...CLASSIC });
+      else if (a === 'time') look.setHour(b === 'scene' || b === 'off' ? null : num(b, 'hours', 0, 24));
+      else if (a === 'scene') look.setHour(null);
+      else if (a !== undefined) {
+        const sw = SWITCHES.find(([k]) => k.toLowerCase() === a.toLowerCase());
+        if (!sw || (b !== 'on' && b !== 'off')) throw new CommandError(`style standard|classic|time <h>|${SWITCHES.map(([k]) => k).join('|')} on|off`);
+        look.set({ [sw[0]]: b === 'on' });
+      }
+      for (const l of look.describe()) io.print(l);
+    },
+  },
+  {
+    name: 'lab', group: 'world',
+    usage: 'lab [on|off|list|scene|landscape|flow [on|off]|strike [near|far]|view wide|lake|hill|oak|stream|layout 1|wipe|2|4|pane <n> light|weather|water <variant>|all <light> <weather> <water>|time <hours>|off]',
+    help: 'look lab: compare lighting, weather and water variants side by side (Phase 3)',
+    async run(_app, args, io, ctx) {
+      const lab = ctx.lab;
+      const [a, b, c, d, e] = args;
+      if (a === 'on' || a === undefined && !lab.enabled) wrap(() => lab.setEnabled(true));
+      else if (a === 'off') lab.setEnabled(false);
+      else if (a === 'layout') {
+        if (!LAYOUTS.includes(b as LabLayout)) throw new CommandError(`layout: ${LAYOUTS.join(', ')}`);
+        lab.setLayout(b as LabLayout);
+      } else if (a === 'pane') {
+        const i = num(b, 'pane', 1, 4) - 1;
+        if (c !== 'light' && c !== 'weather' && c !== 'water') throw new CommandError('pane <n> light|weather|water <variant>');
+        wrap(() => lab.setPane(i, c, d ?? ''));
+      } else if (a === 'all') {
+        for (let i = 0; i < 4; i++) wrap(() => {
+          if (b) lab.setPane(i, 'light', b);
+          if (c) lab.setPane(i, 'weather', c);
+          if (d) lab.setPane(i, 'water', d);
+        });
+      } else if (a === 'time') {
+        if (b === 'off' || b === 'scene') lab.look.setHour(null);
+        else lab.look.setHour(num(b, 'hours', 0, 24));
+      } else if (a === 'strike') {
+        lab.look.strikeNow(b !== 'far');
+        io.print(`lightning (${b === 'far' ? 'far' : 'near'}) in the panes with the storm look`);
+      } else if (a === 'flow') {
+        lab.look.setArrows(b === undefined ? !lab.look.arrows : b === 'on');
+        io.print(`current arrows ${lab.look.arrows ? 'on: green slow -> red fast, blue dots still water' : 'off'}`);
+      } else if (a === 'view') {
+        const line = LAB_VIEWS[b ?? ''];
+        if (!line) throw new CommandError(`view: ${Object.keys(LAB_VIEWS).join(', ')}`);
+        await ctx.term.exec(line);
+      } else if (a === 'landscape') {
+        io.print('building the landscape (mountains, river, lake, hills, meadow)...', 'dim');
+        for (const line of landscapeLines()) await ctx.term.exec(line);
+        if (!lab.enabled) wrap(() => lab.setEnabled(true));
+        io.print('landscape ready, saved as "lab-landscape" (load lab-landscape brings it back). Cameras: lab view landscape | valley | lakeside | river | peaks');
+      } else if (a === 'scene') {
+        io.print('building the test scene...', 'dim');
+        for (const line of LAB_SCENE) await ctx.term.exec(line);
+        if (!lab.enabled) wrap(() => lab.setEnabled(true));
+        io.print('test scene ready: lake, stream, meadow, forested hill across chunk borders, rocks, a lone oak');
+      } else if (a === 'list') {
+        for (const [title, list] of [['light', LIGHTS], ['weather', WEATHERS], ['water', WATERS]] as const) {
+          io.print(title, 'info');
+          for (const v of list) io.print(`  ${v.id.padEnd(15)} ${v.name.slice(3).padEnd(20)} ${v.help}`);
+        }
+      } else if (a !== undefined && a !== 'on') throw new CommandError('lab [on|off|list|scene|landscape|flow|strike|view|layout|pane|all|time]');
+      void e;
+      for (const l of lab.describe()) io.print(l);
+    },
+  },
+  {
     name: 'repeat', group: 'terminal', usage: 'repeat <n> <command line>', help: 'run a command line n times',
     async run(_app, [ns, ...rest], io, ctx) {
       const n = num(ns, 'n', 1, 1000);
@@ -1112,6 +1188,8 @@ function argWords(app: App, cmd: string, ctx: CommandContext | null): string[] {
     case 'height': return ['on', 'off', ...HEIGHT_MODES, 'size', 'strength', 'stroke', 'at'];
     case 'objbrush': return ['on', 'off', 'mode', 'size', 'density', 'spacing', 'variation', 'stroke', ...KIND_MIXES, ...(m?.objectKinds ?? [])];
     case 'select': return ['none'];
+    case 'style': return ['standard', 'classic', 'time', 'scene', ...SWITCHES.map(([k]) => k), 'on', 'off'];
+    case 'lab': return ['on', 'off', 'list', 'scene', 'landscape', 'flow', 'strike', 'near', 'far', 'view', ...Object.keys(LAB_VIEWS), 'layout', 'pane', 'all', 'time', ...LAYOUTS, 'light', 'weather', 'water', ...LIGHTS.map((v) => v.id), ...WEATHERS.map((v) => v.id), ...WATERS.map((v) => v.id)];
     case 'param': return ['reset', 'vary', ...(ctx?.objects.paramDescs().map((d) => d.name) ?? [])];
     case 'preset': return ['save', 'load', 'delete'];
     case 'place': return m?.objectKinds ?? [];

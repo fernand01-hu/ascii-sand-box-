@@ -24,6 +24,16 @@ import { Underpaint } from './underpaint';
 
 export const BACKGROUND = new Color(0x090c13);
 
+export interface ViewPane {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** The view it is a strip of (wipe), as x, y, w, h fractions; default: its own rectangle. */
+  view?: [number, number, number, number];
+  apply: () => void;
+}
+
 export class Viewer {
   readonly renderer: WebGLRenderer;
   readonly scene = new Scene();
@@ -174,8 +184,68 @@ export class Viewer {
     this.dirty = true;
   }
 
-  /** Draw one frame: background (or underpaint wash), then the glyphs. */
+  /**
+   * Split view (look lab): panes drawn one after the other from the same
+   * camera, each after its `apply` sets its look. Fractions of the canvas,
+   * y from the top. A `wipe` pane keeps the full view and only shows its
+   * strip of it (before / after across a divider); the others each show the
+   * whole view, narrower.
+   */
+  panes: ViewPane[] | null = null;
+  /** Called once per frame before drawing (e.g. the sun shadow map). */
+  beforeDraw: (() => void) | null = null;
+
+  /** The pane under a canvas point (CSS px), for picking in a split view. */
+  paneAt(x: number, y: number): ViewPane | null {
+    const r = this.renderer.domElement.getBoundingClientRect();
+    const fx = (x - r.left) / r.width, fy = (y - r.top) / r.height;
+    return this.panes?.find((p) => fx >= p.x && fx < p.x + p.w && fy >= p.y && fy < p.y + p.h) ?? null;
+  }
+
+  /** Draw one frame: each pane, or the whole canvas. */
   private draw(): void {
+    this.beforeDraw?.();
+    const panes = this.panes;
+    if (!panes || panes.length === 0) {
+      this.drawView();
+      return;
+    }
+    const size = this.renderer.getSize(new Vector2());
+    const W = size.x, H = size.y, aspect = this.camera.aspect;
+    let drawn = 0;
+    // Clear the whole canvas first: panes may not cover all of it.
+    this.renderer.setRenderTarget(null);
+    this.renderer.setScissorTest(false);
+    this.renderer.setViewport(0, 0, W, H);
+    this.renderer.clear();
+    this.renderer.setScissorTest(true);
+    for (const p of panes) {
+      const px = Math.round(p.x * W), pw = Math.round((p.x + p.w) * W) - px;
+      const ph = Math.round((p.y + p.h) * H) - Math.round(p.y * H), py = H - Math.round(p.y * H) - ph;
+      if (p.view) {
+        const [vx, vy, vw, vh] = p.view;
+        const X = Math.round(vx * W), Wd = Math.round(vw * W), Hd = Math.round(vh * H), Y = H - Math.round(vy * H) - Hd;
+        this.renderer.setViewport(X, Y, Wd, Hd);
+        this.camera.aspect = Wd / Math.max(Hd, 1);
+      } else {
+        this.renderer.setViewport(px, py, pw, ph);
+        this.camera.aspect = pw / Math.max(ph, 1);
+      }
+      this.camera.updateProjectionMatrix();
+      this.renderer.setScissor(px, py, pw, ph);
+      p.apply();
+      this.drawView();
+      drawn += this.cards.drawn;
+    }
+    this.renderer.setScissorTest(false);
+    this.renderer.setViewport(0, 0, W, H);
+    this.camera.aspect = aspect;
+    this.camera.updateProjectionMatrix();
+    this.cards.drawn = drawn;
+  }
+
+  /** Draw the view: background (or underpaint wash), then the glyphs. */
+  private drawView(): void {
     this.cards.cullSky(this.camera);
     this.cards.applyBudget(this.camera);
     if (this.underpaint.enabled) {

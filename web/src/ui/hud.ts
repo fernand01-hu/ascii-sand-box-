@@ -5,6 +5,7 @@
 // world clock speed, freeze streaming) and a help panel. All built from the
 // TUI widgets; this ships in every build.
 
+import { SWITCHES, type Look } from '../app/look';
 import type { App } from '../app/app';
 import { DEBUG_OPTIONS, type DebugState } from '../app/debug';
 import { SNAP_STEPS, type Editor } from '../app/editor';
@@ -29,6 +30,7 @@ export interface HudDeps {
   objects: ObjectTool;
   select: SelectTool;
   height: HeightTool;
+  look: Look;
 }
 
 /** Card budget steps: 0 = no budget. */
@@ -54,7 +56,7 @@ export class Hud {
   private fps: HTMLSpanElement;
 
   constructor(private app: App, deps: HudDeps, root: HTMLElement = document.body) {
-    const { debug, settings, terminal, editor, brush, undo, scenes, objects, select, height } = deps;
+    const { debug, settings, terminal, editor, brush, undo, scenes, objects, select, height, look } = deps;
     this.heightTool = height;
     height.onChange(() => this.refresh());
     this.objectTool = objects;
@@ -155,8 +157,21 @@ export class Hud {
       label: 'snap', labelWidth: W, min: 0, max: SNAP_STEPS.length - 1, step: 1, value: SNAP_STEPS.indexOf(editor.snap),
       format: (i) => (SNAP_STEPS[i] ? `${SNAP_STEPS[i]} m` : 'off'), onChange: (i) => editor.setSnap(SNAP_STEPS[i] ?? 0),
     });
+    // The look (Phase 3): time of day, storm, and each feature.
+    const sceneLight = new Checkbox('time of day follows the scene', look.hour === null, (on) => look.setHour(on ? null : 16.5));
+    const daytime = new Slider({
+      label: 'time of day', labelWidth: W, min: 0, max: 24, step: 0.25, value: look.hour ?? 16.5, width: 16,
+      format: (v) => `${String(Math.floor(v)).padStart(2, '0')}:${String(Math.round((v % 1) * 60)).padStart(2, '0')}`,
+      onChange: (v) => look.setHour(v),
+    });
+    const storm = new Checkbox('storm: dark sky, lightning', look.features.storm, (on) => look.set({ storm: on }));
+    const feats = SWITCHES.filter(([k]) => k !== 'storm').map(([k, help]) => [k, new Checkbox(help, look.features[k] as boolean, (on) => look.set({ [k]: on }))] as const);
     // Values can change elsewhere (terminal, dev keys): pull them in on open.
     const sync = () => {
+      sceneLight.set(look.hour === null);
+      if (look.hour !== null) daytime.set(look.hour);
+      storm.set(look.features.storm);
+      for (const [k, c] of feats) c.set(look.features[k] as boolean);
       top.set(editor.mode === 'top');
       grid.set(editor.grid);
       snap.set(Math.max(0, SNAP_STEPS.indexOf(editor.snap)));
@@ -175,6 +190,7 @@ export class Hud {
       new Text('weather', 'tui-head'), wind, rain, leaves,
       new Text('editing', 'tui-head'), top, grid, snap,
       new Text('display', 'tui-head'), fps, budget,
+      new Text('light and look (all on = standard; `style classic` = before)', 'tui-head'), storm, sceneLight, daytime, ...feats.map(([, c]) => c),
       new Text('Up/Down move · Left/Right change · Space toggle · Enter apply', 'tui-dim'),
     );
     // ---- debug: one checkbox per debug option, generated from the shared list

@@ -333,13 +333,36 @@ next one.
 
 ## Phase 3: Visual quality
 
-- [ ] **13. (added) Weather on painted scenes.**
+- [ ] **Look lab (branch `phase3-lab`).** Variants of steps 13-15 shown side by side, live:
+  - 1, 2 or 4 panes, or a wipe, all showing the same camera. Each pane picks a lighting, weather and water variant.
+  - Shared controls: time of day, wind, rain, leaves.
+  - A test scene with camera spots (`lab scene`, `lab view lake`).
+  - `L`, the toolbar button or `lab` in the terminal.
+  - Once winners are picked, they become steps 13-15 and the rest is dropped.
+  - Water waits on the user's reference video.
+
+- [x] **13. (added) Weather on painted scenes.** (Done on `phase3-lab`: the look engine, `web/src/app/look.ts`.)
+  - [x] Picked in the lab:
+    - gust waves through the grass (painted grass now bends a little too)
+    - faint, fast cloud shadows
+    - wet ground with a sheen and splashes in the rain
+    - storm: dark sky, strobing lightning, a glyph bolt for close strikes
+  - [x] Blown leaves come from the trees (a canopy map round the camera), not from everywhere.
+  - [x] Water reacts to wind (ripples) and rain (rings).
+  - [x] Controls in the settings panel (weather, light, look) and the terminal (`style`, `weather`, `wind`, `rain`, `leaves`).
+  - Mist parked for now (user's choice).
+- (original notes)
   - Make sure wind sways painted grass, trees and reeds, rain falls over the
     whole view distance, and leaves blow from painted trees.
   - Water tiles react to wind and rain.
   - Add weather controls in the TUI and the debug terminal.
 
-- [ ] **14. New lighting and shadow implementation (experiment).**
+- [x] **14. New lighting and shadow implementation.** (Done: the live sun shadow map won in the lab.)
+  - [x] A sun shadow map, redrawn only when the camera, the sun or the cards change. Shadows cross chunk borders, fall from hills, follow the sun and edits, and have glyph shapes.
+  - [x] Time of day (`daytime` setting, settings panel, `style time 16.5`): the sun's path, colours, sky tint, haze, night with moonlight.
+  - [x] Measured on this machine (Radeon iGPU, Chrome, lab landscape, 1600x900): **60 FPS (the vsync cap) for classic and standard alike**, still or turning, in a storm with rain. `npm run bench:fps` re-measures.
+  - [x] The rest was tried and dropped in the lab: glyph shading, retro 16 colours, amber terminal.
+- (original notes)
   - The current lighting is a baked occlusion voxel grid (`light.rs`). It
     must be re-baked whenever objects change, which clashes with live editing.
   - Try shadow maps in the shader, or a per-chunk bake that re-runs on dirty
@@ -350,7 +373,40 @@ next one.
   - **(added)** Add a light-direction / time-of-day control in the debug
     terminal to test this.
 
-- [ ] **15. Rework the water.**
+- [x] **15b. (added 2026-11-20) Organic ground: grass, sand, rock look natural again.** (Done on `phase3-lab`, `canvas.rs::ground`.)
+  - [x] Painted glyphs are scattered inside their grid cells, not in rows. The count stays the same, so the stacking limits hold.
+  - [x] Borders mix over about 1 m.
+  - [x] Rock shows through on steep slopes; leaf litter lies under trees; sand next to water is darker (wet).
+  - [x] Dry and lush patches of grass; size, tilt and colour vary per glyph.
+  - [x] Every choice comes from a hash of the grid point, so a rebuild keeps glyphs in place (tested).
+  - [x] Steep slopes get 2x / 4x the grid points (powers of two, so the canvas rows stay aligned). Mountain faces stay covered.
+  - The blank canvas keeps its neat `#` rows.
+- (original notes)
+  - **Problem:** painted ground looks artificial next to the old procedural landscapes, which looked beautiful.
+    - The canvas puts painted grass, sand and rock on the same neat grid as the blank `#` rows.
+    - Every glyph has the same tilt and nearly the same colour.
+    - Tile borders are hard edges.
+  - **What the old `landscape::ground_region` did, to bring back (from git, before `ef828b5`):**
+    - glyphs scattered at random spots in 4 m cells (not rows), with the count from the view and the slope
+    - each glyph tilted a little off the surface, at a random angle
+    - its own colour variation per glyph, plus dry / lush patches of grass from noise
+    - the material chosen by the land: rock on steep slopes, soil and moss under trees, wet sand at the water
+    - water drawn in small clusters of wave glyphs coloured by the sky
+  - **Keep:**
+    - blank canvas stays neat `#` rows (user's choice); only painted ground goes organic
+    - the stacking limits (step 4), so the cost stays low
+    - stable glyphs (Phase 5): positions and glyphs come from a hash of the world position, not from a random sequence, so a rebuild doesn't reshuffle them
+  - **Borders:** materials mix over about 1 m (dithered) instead of meeting at a tile edge.
+  - Compare old and new in the look lab before merging.
+  - **(found 2026-11-20) Steep slopes need more glyphs.** Mountain faces steeper than about 45 degrees get too few ground glyphs and read as black holes in the sky. The ground grid only has points every 0.5 m across the flat plan. Add glyphs in proportion to the real surface area, as the old `ground_region` did with its slope boost.
+
+- [x] **15. Rework the water.** (Done on `phase3-lab`.)
+  - [x] Water follows the land: rivers run downhill along their bed and round bends, faster when narrow or steep. Lakes are still. A river's current fades into its lake (`shoremap.ts`, unit-tested).
+  - [x] Waves drawn with glyphs ride the current, with crests across the flow. Still water ripples in the wind. Near the shore the waves turn in and break into foam. There is white water in rapids.
+  - [x] Shallow / deep colours, sky reflection, sun glitter, rain rings.
+  - [x] `lab flow on` draws arrows for the current.
+  - A variant based on the user's reference video is still to come, once the link arrives.
+- (original notes)
   - Better flow, edge foam and shoreline glyphs, and reflections or a
     glyph-ripple animation.
   - The water tiles from the terrain brush (step 7) are the natural place to

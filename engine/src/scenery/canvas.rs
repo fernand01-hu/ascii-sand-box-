@@ -338,7 +338,14 @@ impl Canvas {
 
         let seed = self.seed as u64 ^ ((cx as u64) << 32) ^ (cz as u32 as u64);
         let mut sk = Skinner::new(&self.glyphs, 0.1, aspect, seed);
-        ground(&mut sk, &view, x0, z0, aspect, data.tiles, field);
+        // Tree crowns, for leaf litter on the ground under them.
+        let trees: Vec<(f32, f32, f32)> = objects
+            .iter()
+            .zip(&bounds)
+            .filter(|((_, k, _), _)| matches!(k, Kind::Tree(_)))
+            .map(|((_, _, pl), b)| (pl.pos.x, pl.pos.z, (b[4] - b[1]) * 0.3))
+            .collect();
+        ground(&mut sk, &view, aspect, data.tiles, field, &trees);
         let ground_cards = sk.card_count();
         for &(asset, _, pl) in &objects {
             let a: &Asset = &self.lib.assets[asset];
@@ -380,10 +387,74 @@ impl Canvas {
     }
 }
 
-/// Ground glyphs over the chunk at (x0, z0): one per grid point, each from
-/// the material its tile is painted with.
-fn ground(sk: &mut Skinner, view: &View, x0: f32, z0: f32, aspect: f32, tiles: &[u8], field: Field) {
+/// A hash of a grid point at a level of detail, as a number in [0, 1), for
+/// the n-th random choice made there.
+fn hash_at(i: i64, j: i64, level: i64, n: i64) -> f32 {
+    hash2(i.wrapping_mul(7919).wrapping_add(n.wrapping_mul(104_729)).wrapping_add(level), j.wrapping_mul(15_485_863) ^ level.wrapping_mul(31))
+}
+
+fn smooth(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Ground glyphs over the chunk at (x0, z0).
+///
+/// * Blank canvas: neat rows of '#', one per grid point.
+/// * Painted ground looks natural, as the old procedural landscapes did:
+///   each glyph is scattered inside its grid cell; materials mix over about
+///   a metre at a border instead of meeting at a tile edge; the land has a
+///   say (rock shows through on steep slopes, leaf litter under trees, sand
+///   is darker and wet next to water); grass has dry and lush patches; size,
+///   tilt and colour vary from glyph to glyph. Every choice comes from a hash
+///   of the glyph's grid point, never from build order, so a rebuild puts the
+///   same glyph in the same place.
+/// * Steep ground has more surface than its plan, so it gets more grid
+///   points (halved steps, which keeps the canvas rows aligned): mountain
+///   faces stay covered instead of thinning into holes.
+fn ground(sk: &mut Skinner, view: &View, aspect: f32, tiles: &[u8], field: Field, trees: &[(f32, f32, f32)]) {
+    let (x0, z0) = (field.x0, field.z0);
     let painted = tiles.len() == TILES * TILES;
+    let tile = |x: f32, z: f32| -> Ground {
+        if !painted {
+            return Ground::Canvas;
+        }
+        let ti = ((x - x0) / TILE).floor().clamp(0.0, (TILES - 1) as f32) as usize;
+        let tj = ((z - z0) / TILE).floor().clamp(0.0, (TILES - 1) as f32) as usize;
+        Ground::from_code(tiles[tj * TILES + ti])
+    };
+    // How many tiles (up to 4) each tile is from water, within the chunk: for wet sand.
+    let mut wet = vec![4u8; if painted { TILES * TILES } else { 0 }];
+    if painted {
+        for k in 0..TILES * TILES {
+            if Ground::from_code(tiles[k]) == Ground::Water {
+                wet[k] = 0;
+            }
+        }
+        for _ in 0..4 {
+            let prev = wet.clone();
+            for tj in 0..TILES {
+                for ti in 0..TILES {
+                    let mut m = prev[tj * TILES + ti];
+                    for (di, dj) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                        let (a, b) = (ti as i32 + di, tj as i32 + dj);
+                        if a >= 0 && b >= 0 && (a as usize) < TILES && (b as usize) < TILES {
+                            m = m.min(prev[b as usize * TILES + a as usize].saturating_add(1));
+                        }
+                    }
+                    wet[tj * TILES + ti] = m;
+                }
+            }
+        }
+    }
+    let wet_at = |x: f32, z: f32| -> u8 {
+        if !painted {
+            return 4;
+        }
+        let ti = ((x - x0) / TILE).floor().clamp(0.0, (TILES - 1) as f32) as usize;
+        let tj = ((z - z0) / TILE).floor().clamp(0.0, (TILES - 1) as f32) as usize;
+        wet[tj * TILES + ti]
+    };
     let cells = (CHUNK / CELL) as usize;
     for cj in 0..cells {
         for ci in 0..cells {
@@ -392,34 +463,70 @@ fn ground(sk: &mut Skinner, view: &View, x0: f32, z0: f32, aspect: f32, tiles: &
             let s = spacing(view, centre);
             let sx = s * aspect;
             let (hx, hz) = field.slope(centre.x, centre.z);
-            let (step_x, step_z) = steps_on(view.eye, centre, unit(Vec3::new(-hx, 1.0, -hz)), s, aspect);
+            let n = unit(Vec3::new(-hx, 1.0, -hz));
+            let (mut step_x, mut step_z) = steps_on(view.eye, centre, n, s, aspect);
+            let dense = if n.y < 0.35 { 4.0 } else if n.y < 0.7 { 2.0 } else { 1.0 };
+            step_x /= dense;
+            step_z /= dense;
+            let level = ((step_x * 64.0) as i64) * 4096 + (step_z * 64.0) as i64;
             // Grid points (i * step) inside this cell.
             let (i0, i1) = ((ax / step_x).ceil() as i64, ((ax + CELL) / step_x).ceil() as i64);
             let (j0, j1) = ((az / step_z).ceil() as i64, ((az + CELL) / step_z).ceil() as i64);
             for j in j0..j1 {
                 for i in i0..i1 {
-                    let (x, z) = (i as f32 * step_x, j as f32 * step_z);
-                    let g = if painted {
-                        let ti = (((x - x0) / TILE) as usize).min(TILES - 1);
-                        let tj = (((z - z0) / TILE) as usize).min(TILES - 1);
-                        Ground::from_code(tiles[tj * TILES + ti])
-                    } else {
-                        Ground::Canvas
-                    };
-                    let mat = g.mat();
-                    let def = mat.def();
-                    let glyph = sk.glyph(mat);
-                    let f = 1.0 + def.var * (2.0 * hash2((x / sx).round() as i64, (z / s).round() as i64) - 1.0);
-                    let col = def.albedo.map(|c| c * f);
-                    // Flat on the ground and tilted with its slope (U x V = surface
-                    // normal), upright when seen from +z; the shader leans it toward
-                    // the camera.
+                    let (gx, gz) = (i as f32 * step_x, j as f32 * step_z);
+                    let base = tile(gx, gz);
+                    if base == Ground::Canvas {
+                        // The blank canvas: neat rows of '#'.
+                        let mat = Mat::Canvas;
+                        let def = mat.def();
+                        let (sx_, sz_) = field.slope(gx, gz);
+                        let u = unit(Vec3::new(1.0, sx_, 0.0)) * sx;
+                        let v = unit(Vec3::new(0.0, -sz_, -1.0)) * s;
+                        let glyph = sk.glyph(mat);
+                        sk.push(Vec3::new(gx, field.at(gx, gz) + 0.01 * s, gz), u, v, def.albedo, def.alpha.0, glyph, mat, CardMode::GroundLean);
+                        continue;
+                    }
+                    let h = |k: i64| hash_at(i, j, level, k);
+                    // Scattered inside its grid cell (kept in the chunk).
+                    let x = (gx + (h(1) - 0.5) * 0.9 * step_x).clamp(x0, x0 + CHUNK - 1e-3);
+                    let z = (gz + (h(2) - 0.5) * 0.9 * step_z).clamp(z0, z0 + CHUNK - 1e-3);
+                    // Borders mix: the material comes from the tile under a nudged point.
+                    let mut g = tile((x + (h(3) - 0.5) * 1.1).clamp(x0, x0 + CHUNK - 1e-3), (z + (h(4) - 0.5) * 1.1).clamp(z0, z0 + CHUNK - 1e-3));
+                    if g == Ground::Canvas {
+                        g = base;
+                    }
                     let (sx_, sz_) = field.slope(x, z);
-                    let u = unit(Vec3::new(1.0, sx_, 0.0)) * sx;
-                    let v = unit(Vec3::new(0.0, -sz_, -1.0)) * s;
-                    let c = Vec3::new(x, field.at(x, z) + 0.01 * s, z);
+                    let ny = 1.0 / (1.0 + sx_ * sx_ + sz_ * sz_).sqrt();
+                    let mut mat = g.mat();
+                    if matches!(g, Ground::Grass | Ground::Sand) && h(5) < smooth(0.8, 0.55, ny) {
+                        mat = Mat::GroundRock; // bare rock shows on steep slopes
+                    } else if g == Ground::Grass && h(6) < 0.6 && trees.iter().any(|&(tx, tz, r)| (x - tx).hypot(z - tz) < r) {
+                        mat = Mat::Litter; // leaf litter under the trees
+                    }
+                    let def = mat.def();
+                    let mut col = def.albedo.map(|c| c * (1.0 + def.var * (2.0 * h(7) - 1.0)));
+                    if mat == Mat::GroundGrass {
+                        // Dry and lush patches.
+                        let dry = smooth(0.38, 0.72, crate::noise::fbm(Vec3::new(x / 26.0, 0.0, z / 26.0), 0x5eed));
+                        let dc = [0.36, 0.32, 0.13];
+                        col = [0, 1, 2].map(|k| col[k] * (1.0 - 0.6 * dry) + dc[k] * 0.6 * dry);
+                    } else if mat == Mat::Sand {
+                        let w = wet_at(x, z);
+                        if w <= 2 {
+                            col = col.map(|c| c * (0.6 + 0.12 * w as f32)); // wet next to the water
+                        }
+                    }
+                    // Size and tilt vary a little; flat on the slope (U x V = its
+                    // normal); the shader leans it toward the camera.
+                    let size = s * (0.88 + 0.3 * h(8));
+                    let tilt = Vec3::new((h(9) - 0.5) * 0.16, 0.0, (h(10) - 0.5) * 0.16);
+                    let nn = unit(Vec3::new(-sx_, 1.0, -sz_) + tilt);
+                    let u = unit(Vec3::new(nn.y, -nn.x, 0.0)) * (size * aspect);
+                    let v = unit(nn.cross(u)) * size;
+                    let glyph = sk.glyph_seeded(mat, ((i as u64) << 40) ^ ((j as u64) << 16) ^ level as u64);
                     let mode = if g == Ground::Water { CardMode::WaterLean } else { CardMode::GroundLean };
-                    sk.push(c, u, v, col, def.alpha.0, glyph, mat, mode);
+                    sk.push(Vec3::new(x, field.at(x, z) + 0.01 * s, z), u, v, col, def.alpha.0 + 0.08 * h(11), glyph, mat, mode);
                 }
             }
         }
@@ -530,9 +637,14 @@ mod tests {
         }
         let c = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &tiles, objects: &[], heights: &[] });
         let mut seen = [0usize; 3];
+        // Painted ground mixes over about a metre at its borders: judge away from them.
+        let near_border = |x: f32, z: f32| (x - 16.0).abs() < 0.6 || (x >= 15.4 && ((z - 8.0).abs() < 0.6 || (z - 10.0).abs() < 0.6));
         for card in c.cards.chunks_exact(STRIDE) {
             let (x, z) = (card[0], card[2]);
             let (mat, mode) = mat_mode(card);
+            if near_border(x, z) {
+                continue;
+            }
             if x < 16.0 {
                 assert_eq!((mat, mode), (Mat::Water as u32, CardMode::WaterLean as u32), "water at {x} {z}");
                 seen[0] += 1;
@@ -545,6 +657,86 @@ mod tests {
             }
         }
         assert!(seen.iter().all(|&n| n > 100), "{seen:?}");
+    }
+
+    fn painted(g: Ground) -> Vec<u8> {
+        vec![g as u8; TILES * TILES]
+    }
+
+    fn ground_cards(c: &ChunkOut) -> Vec<&[f32]> {
+        c.cards.chunks_exact(STRIDE).filter(|k| matches!(mat_mode(k).1, m if m == CardMode::GroundLean as u32 || m == CardMode::WaterLean as u32)).collect()
+    }
+
+    #[test]
+    fn painted_ground_is_scattered_not_in_rows_but_the_canvas_keeps_its_rows() {
+        let mut canvas = Canvas::new(1, false);
+        let grass = painted(Ground::Grass);
+        let g = canvas.build_chunk(0, -2, eye(), ASPECT, ChunkData { tiles: &grass, objects: &[], heights: &[] });
+        // Rows: many glyphs share a z. Scattered: almost every z is its own.
+        let rows = |cards: &[&[f32]]| cards.iter().map(|k| k[2].to_bits()).collect::<std::collections::HashSet<_>>().len() as f32 / cards.len() as f32;
+        let cards = ground_cards(&g);
+        let blank = canvas.build_chunk(0, -2, eye(), ASPECT, blank());
+        assert!(rows(&cards) > 0.8, "painted glyphs are scattered ({:.2} distinct rows per glyph)", rows(&cards));
+        assert!(rows(&ground_cards(&blank)) < 0.2, "the blank canvas keeps neat rows ({:.2})", rows(&ground_cards(&blank)));
+        // About as many glyphs as the canvas there: the stacking limits still hold.
+        let (a, b) = (cards.len() as f32, ground_cards(&blank).len() as f32);
+        assert!((a / b - 1.0).abs() < 0.15, "{a} painted vs {b} canvas glyphs");
+    }
+
+    #[test]
+    fn a_rebuild_puts_the_same_glyph_in_the_same_place() {
+        let mut canvas = Canvas::new(1, false);
+        let grass = painted(Ground::Grass);
+        let a = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &grass, objects: &[], heights: &[] });
+        // A tree in the chunk changes the build order of everything after the ground.
+        let tree = rec([code("tree:oak"), 3.0, 28.0, 4.0, 0.0, 1.0]);
+        let b = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &grass, objects: &tree, heights: &[] });
+        let key = |k: &[f32]| (k[0].to_bits(), k[2].to_bits(), k[layout::GLYPH].to_bits());
+        let far_from_tree = |k: &&[f32]| (k[0] - 28.0).hypot(k[2] - 4.0) > 10.0;
+        let sa: std::collections::HashSet<_> = ground_cards(&a).into_iter().filter(far_from_tree).map(key).collect();
+        let sb: std::collections::HashSet<_> = ground_cards(&b).into_iter().filter(far_from_tree).map(key).collect();
+        assert!(sa.len() > 500 && sa == sb, "same places, same glyphs ({} vs {})", sa.len(), sb.len());
+    }
+
+    #[test]
+    fn steep_slopes_keep_their_glyphs_and_show_rock() {
+        let mut canvas = Canvas::new(1, false);
+        let grass = painted(Ground::Grass);
+        let flat = canvas.build_chunk(0, -2, eye(), ASPECT, ChunkData { tiles: &grass, objects: &[], heights: &[] });
+        // A 63 degree slope rising away from the eye (2 m up per metre along -z).
+        let steep = heights_of(0, -2, |_, z| -2.0 * (z + 64.0));
+        let s = canvas.build_chunk(0, -2, eye(), ASPECT, ChunkData { tiles: &grass, objects: &[], heights: &steep });
+        let (nf, ns) = (ground_cards(&flat).len(), ground_cards(&s).len());
+        assert!(ns as f32 > nf as f32 * 1.6, "a steep face gets more glyphs than its flat plan: {ns} vs {nf}");
+        let rock = ground_cards(&s).iter().filter(|k| mat_mode(k).0 == Mat::GroundRock as u32).count();
+        assert!(rock * 3 > ns, "rock shows through on the steep grass: {rock} of {ns}");
+        assert_eq!(ground_cards(&flat).iter().filter(|k| mat_mode(k).0 == Mat::GroundRock as u32).count(), 0, "none on flat grass");
+    }
+
+    #[test]
+    fn leaf_litter_under_trees_and_wet_sand_by_the_water() {
+        let mut canvas = Canvas::new(1, false);
+        let grass = painted(Ground::Grass);
+        let tree = rec([code("tree:oak"), 3.0, 16.0, 6.0, 0.0, 1.2]);
+        let c = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &grass, objects: &tree, heights: &[] });
+        let litter = |k: &&&[f32]| mat_mode(k).0 == Mat::Litter as u32;
+        let near: Vec<_> = ground_cards(&c).into_iter().filter(|k| (k[0] - 16.0).hypot(k[2] - 6.0) < 2.0).collect();
+        let far: Vec<_> = ground_cards(&c).into_iter().filter(|k| (k[0] - 16.0).hypot(k[2] - 6.0) > 12.0).collect();
+        assert!(near.iter().filter(litter).count() * 3 > near.len(), "litter under the crown");
+        assert_eq!(far.iter().filter(litter).count(), 0, "none in the open");
+        // Sand: the half by the water is darker.
+        let mut tiles = painted(Ground::Sand);
+        for tj in 0..TILES {
+            for ti in 0..8 {
+                tiles[tj * TILES + ti] = Ground::Water as u8;
+            }
+        }
+        let c = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &tiles, objects: &[], heights: &[] });
+        let sand = |lo: f32, hi: f32| {
+            let v: Vec<f32> = ground_cards(&c).iter().filter(|k| mat_mode(k).0 == Mat::Sand as u32 && (lo..hi).contains(&k[0])).map(|k| k[9]).collect();
+            v.iter().sum::<f32>() / v.len().max(1) as f32
+        };
+        assert!(sand(4.6, 5.0) < sand(12.0, 30.0) * 0.85, "wet sand by the water: {} vs {}", sand(4.6, 5.0), sand(12.0, 30.0));
     }
 
     #[test]

@@ -60,7 +60,7 @@ export class DebugTools {
   /** Apply the switches that change something at once. */
   private apply(): void {
     const v = this.app.viewer;
-    v.cards.setDebugView(this.on('light') ? 'light' : this.on('size') ? 'size' : 'normal');
+    v.cards.setDebugView(this.on('light') ? 'light' : this.on('size') ? 'size' : this.on('shadowmap') ? 'shadowmap' : 'normal');
     this.perf.toggle(this.on('perf'));
     this.info.show(this.on('info') || this.debug.watches.length > 0);
     this.heat.show(this.on('heat'));
