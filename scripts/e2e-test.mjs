@@ -128,6 +128,10 @@ try {
   };
 
   await page.goto(url, { waitUntil: 'load' });
+  // Reference images need still frames: no detail fades (the smooth-detail step turns them on for itself).
+  // (Set directly: going through `set` would save every setting before the canvas is up.)
+  await page.waitForFunction(() => !!window.__ascii?.app?.viewer, { timeout: 120_000 });
+  await page.evaluate(() => { window.__ascii.app.viewer.cards.fadeSeconds = 0; });
   if (only) {
     console.log(`  quick mode: only steps matching /${only.source}/i`);
     await page.waitForFunction(() => window.__ascii && window.__ascii.model === 'canvas' && window.__ascii.status === 'ready', { timeout: 120_000 });
@@ -1112,7 +1116,7 @@ try {
       assert.deepEqual(await page.evaluate(() => [window.__ascii.app.viewRadius, window.__ascii.lab.look.features.shadows]), [12, true], 'high: long view, live shadows');
       assert.match((await run('gpu')).join('\n'), /quality high/);
     } finally {
-      for (const c of ['lod freeze off', 'set view 9', 'set budget off', 'style shadows on', 'lod fade 0.8', 'clearmap yes', 'canvas 1']) await run(c).catch(() => {});
+      for (const c of ['lod freeze off', 'set view 9', 'set budget off', 'style shadows on', 'lod fade 0', 'clearmap yes', 'canvas 1']) await run(c).catch(() => {});
     }
     await waitSettled('canvas');
   });
