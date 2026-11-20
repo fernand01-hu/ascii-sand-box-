@@ -118,6 +118,7 @@ async function handle(req: WorkerRequest): Promise<void> {
       if (!world) throw new Error('no world: call worldInit first');
       const t0 = performance.now();
       const [ex, ey, ez] = req.eye;
+      world.setNearDetail(req.nearDetail ?? 1);
       const c = world.buildChunk(req.cx, req.cz, ex, ey, ez, req.glyphAspect, req.tiles ?? new Uint8Array(0), req.objects, req.heights ?? new Float32Array(0));
       try {
         const cards = c.takeCards();

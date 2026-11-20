@@ -138,6 +138,8 @@ export type WorkerRequest =
   | { kind: 'worldSetup'; id: number; seed: number | null; day: boolean }
   | {
     kind: 'worldChunk'; id: number; cx: number; cz: number; eye: [number, number, number]; glyphAspect: number;
+    /** Finest ground rows reach this many times farther than the glyph rule (1 = plain). */
+    nearDetail?: number;
     /** The chunk's map data (see app/map.ts): ground tiles or null, objects, revision. */
     tiles: Uint8Array | null; heights: Float32Array | null; objects: Float32Array; rev: number;
   };

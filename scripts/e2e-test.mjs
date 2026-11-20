@@ -1044,6 +1044,18 @@ try {
       await page.keyboard.press('f');
       assert.ok(await page.evaluate(() => !!window.__ascii.app.player), 'F starts play mode');
       assert.match(await page.evaluate(() => document.querySelector('.tui-status').textContent), /PLAY/);
+      // The ground round the player is rebuilt first, its finest glyphs reaching 3x farther.
+      const nearNow = () => {
+        const w = window.__ascii.app.world;
+        const p = window.__ascii.app.viewer.camera.position;
+        const S = w.info.chunkSize;
+        const here = w.chunks().find((c) => c.cx === Math.floor(p.x / S) && c.cz === Math.floor(p.z / S));
+        return { detail: w.nearDetail, built: here?.loaded?.near ?? 0 };
+      };
+      await page.waitForFunction(`(${nearNow})().built === 3`, { timeout: 60_000, polling: 200 }).catch(() => {});
+      const near = await page.evaluate(nearNow);
+      assert.equal(near.detail, 3, 'play mode widens the fine ground');
+      assert.equal(near.built, 3, 'the chunk under the player was rebuilt with the wide fine ground');
       assert.ok(await page.evaluate(() => document.querySelector('.tui-toolbar [data-tool=play]').classList.contains('tui-sel')), 'the play button is on');
       // Editor keys stay quiet while playing.
       await page.keyboard.press('h');
@@ -1065,6 +1077,7 @@ try {
       await page.screenshot({ path: join(outDir, '13m-play.png') });
       await page.keyboard.press('f');
       assert.equal(await page.evaluate(() => window.__ascii.app.player), null, 'F goes back to editing');
+      assert.equal(await page.evaluate(() => window.__ascii.app.world.nearDetail), 1, 'editing uses the plain detail again');
       assert.ok(await page.evaluate(() => window.__ascii.app.viewer.controls.enabled), 'the editing camera is back');
     } finally {
       await page.evaluate(() => window.__ascii.app.stopPlaying());

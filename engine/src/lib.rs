@@ -384,6 +384,15 @@ impl CanvasWorld {
         self.inner.day
     }
 
+    /// The finest ground rows reach this many times farther than the
+    /// glyph-size rule says (1 = the plain rule and the default; play mode uses 3; at most 8).
+    #[wasm_bindgen(js_name = setNearDetail)]
+    pub fn set_near_detail(&mut self, near: f32) {
+        if near.is_finite() {
+            self.inner.near = near.clamp(1.0, 8.0);
+        }
+    }
+
     /// Ground height at (x, z), m.
     pub fn height(&self, _x: f32, _z: f32) -> f32 {
         scenery::canvas::GROUND

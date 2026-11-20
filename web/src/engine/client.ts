@@ -164,7 +164,7 @@ export class EngineClient {
   }
 
   /** Build one world chunk from its map data, glyphs sized for `eye`, on the least busy chunk worker. */
-  worldChunk(cx: number, cz: number, eye: [number, number, number], glyphAspect: number, data: ChunkPayload): Promise<EngineResult> {
+  worldChunk(cx: number, cz: number, eye: [number, number, number], glyphAspect: number, data: ChunkPayload, nearDetail = 1): Promise<EngineResult> {
     if (this.disposed) return Promise.reject(new Error('engine disposed'));
     if (this.pool.length === 0) return Promise.reject(new Error('no world: call worldInit first'));
     let slot = this.pool[0]!;
@@ -172,7 +172,7 @@ export class EngineClient {
     const transfer: Transferable[] = [data.objects.buffer];
     if (data.tiles) transfer.push(data.tiles.buffer);
     if (data.heights) transfer.push(data.heights.buffer);
-    return slot.send({ kind: 'worldChunk', id: this.nextId++, cx, cz, eye, glyphAspect, ...data }, transfer);
+    return slot.send({ kind: 'worldChunk', id: this.nextId++, cx, cz, eye, glyphAspect, nearDetail, ...data }, transfer);
   }
 
   /** Build a test scene (dev/test builds only). */
