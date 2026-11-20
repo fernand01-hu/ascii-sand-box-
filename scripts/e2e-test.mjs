@@ -284,12 +284,12 @@ try {
     assert.equal((await state()).model, 'canvas');
     await page.keyboard.press('Enter'); // first item: Settings
     assert.ok(await visible('.tui-settings'), 'Enter opens settings');
-    // Rows: seed, daytime, view, wind, rain, leaves, fps, budget.
+    // Rows: seed, daytime, view, wind, rain, leaves, top-down, grid, snap, fps, budget.
     for (let k = 0; k < 3; k++) await page.keyboard.press('ArrowDown');
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('ArrowRight');
     assert.equal((await state()).weather.wind, 0.4, 'Right twice raises the wind by 2 steps');
-    for (let k = 0; k < 3; k++) await page.keyboard.press('ArrowDown');
+    for (let k = 0; k < 6; k++) await page.keyboard.press('ArrowDown');
     await page.keyboard.press(' ');
     await page.waitForFunction(() => /fps/.test(document.querySelector('.tui-status .tui-fps').textContent), { timeout: 5000 });
     // Mouse: click near the right end of the rain bar.
@@ -324,6 +324,7 @@ try {
 
   await step('debug tools: menu panel, overlays, inspector, light view, terminal tools, link, warnings', async () => {
     const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    try {
     const visible = (sel) => page.evaluate((sel) => [...document.querySelectorAll(sel)].some((e) => !e.hidden), sel);
     // The menu's Debug panel: its first checkbox is the info box.
     await page.keyboard.press('Escape');
@@ -405,12 +406,82 @@ try {
     assert.ok(await visible('.tui-terminal'), 'clicking the counter opens the terminal');
     assert.equal(await page.evaluate(() => document.querySelector('.tui-warn').hidden), true, 'opening the terminal clears it');
     await page.keyboard.press('Escape');
-    // Back to a clean state for the next steps.
-    for (const c of ['clearmap yes', 'bind k', 'alias storm', 'watch off', 'wind 0.3', 'rain 0', 'time 0', 'canvas 1',
-      ...['info', 'chunks', 'outlines', 'axes', 'culling', 'chunkLabels', 'objects', 'inspector', 'heat', 'perf', 'light', 'size'].map((d) => `debug ${d} off`)]) await run(c);
+    } finally {
+      // Back to a clean state for the next steps, even if something above failed.
+      await page.evaluate(() => { for (let k = 0; k < 6 && document.querySelector('.tui-panel:not([hidden])'); k++) window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+      for (const c of ['clearmap yes', 'bind k', 'alias storm', 'watch off', 'wind 0.3', 'rain 0', 'time 0', 'canvas 1',
+        ...['info', 'cursor', 'chunks', 'outlines', 'axes', 'culling', 'chunkLabels', 'objects', 'tiles', 'bodies', 'inspector', 'heat', 'perf', 'light', 'size', 'rebuilds'].map((d) => `debug ${d} off`)]) await run(c);
+    }
     await waitSettled('canvas');
     await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
     assert.equal(await page.evaluate(() => window.__ascii.app.viewer.overlay.children.length), 0, 'every overlay is gone again');
+  });
+
+  await step('editing camera: T looks straight down, pans and zooms, G grid, snapping, T back to orbit', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    const cam = () => page.evaluate(() => {
+      const v = window.__ascii.app.viewer;
+      const d = v.camera.getWorldDirection(v.camera.position.clone());
+      return { pos: v.camera.position.toArray(), target: v.controls.target.toArray(), dirY: d.y };
+    });
+    const settleCam = () => new Promise((r) => setTimeout(r, 900)); // damping
+    const before = await cam();
+    const offset = Math.hypot(before.pos[0] - before.target[0], before.pos[1] - before.target[1], before.pos[2] - before.target[2]);
+    await page.keyboard.press('t');
+    await settleCam();
+    let c = await cam();
+    assert.ok(c.dirY < -0.99, `T looks straight down (dir y ${c.dirY.toFixed(3)})`);
+    assert.ok(Math.abs(c.pos[0] - c.target[0]) < 0.05 && Math.abs(c.pos[2] - c.target[2]) < 0.05, 'the camera is right above its target');
+    // The ground under the middle of the screen is the target.
+    const mid = await page.evaluate(() => window.__ascii.groundAt(window.innerWidth / 2, (window.innerHeight) / 2));
+    assert.ok(mid && Math.hypot(mid.x - c.target[0], mid.z - c.target[2]) < 1, 'the screen centre looks at the target');
+    // Arrow up pans north (-z).
+    await page.keyboard.press('ArrowUp');
+    await settleCam();
+    const north = await cam();
+    assert.ok(north.target[2] < c.target[2] - 0.5, 'ArrowUp moves north');
+    // Dragging pans (never rotates in this view).
+    await page.mouse.move(500, 400);
+    await page.mouse.down();
+    await page.mouse.move(650, 400, { steps: 10 });
+    await page.mouse.up();
+    await settleCam();
+    const dragged = await cam();
+    assert.ok(Math.abs(dragged.target[0] - north.target[0]) > 1, 'dragging pans the view');
+    assert.ok(dragged.dirY < -0.99, 'still looking straight down after dragging');
+    // The wheel changes the height.
+    await page.mouse.wheel({ deltaY: 400 });
+    await settleCam();
+    const higher = await cam();
+    assert.ok(higher.pos[1] > dragged.pos[1] + 1, 'wheel out raises the camera');
+    // Grid and snapping.
+    await page.keyboard.press('g');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(await page.evaluate(() => window.__ascii.app.viewer.overlay.children.length > 0), 'G draws the grid');
+    await run('snap 1');
+    await page.mouse.move(430, 330);
+    await page.mouse.move(433, 333);
+    const p = await page.evaluate(() => window.__ascii.cursorPoint());
+    assert.ok(p && Number.isInteger(p.x) && Number.isInteger(p.z), `the cursor point snaps to 1 m (${p && `${p.x}, ${p.z}`})`);
+    const status = await page.evaluate(() => document.querySelector('.tui-status').textContent);
+    assert.match(status, /TOP · grid · snap 1 m/);
+    await page.screenshot({ path: join(outDir, '13f-top-view.png') });
+    // The menu agrees.
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Enter');
+    assert.match(await page.evaluate(() => document.querySelector('.tui-settings').textContent), /\[x\] top-down view/);
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    // T again: back to orbiting from the same distance.
+    await page.keyboard.press('t');
+    await settleCam();
+    const back = await cam();
+    const backOffset = Math.hypot(back.pos[0] - back.target[0], back.pos[1] - back.target[1], back.pos[2] - back.target[2]);
+    assert.ok(back.dirY > -0.9, 'orbiting again');
+    assert.ok(Math.abs(backOffset - offset) < 0.5, `the orbit distance comes back (${backOffset.toFixed(1)} vs ${offset.toFixed(1)})`);
+    await run('snap off; grid off; canvas 1');
+    await waitSettled('canvas');
+    await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
   });
 
   const models = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];

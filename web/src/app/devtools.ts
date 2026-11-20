@@ -47,6 +47,10 @@ export interface DebugHandle extends AppState {
   run(line: string): Promise<string[]>;
   /** Apply a share link's hash (what opening the link would do). */
   applyLink(hash: string): Promise<boolean>;
+  /** The editor's (snapped) ground point under the mouse. */
+  cursorPoint(): { x: number; z: number } | null;
+  /** The ground point under a screen position (CSS px). */
+  groundAt(x: number, y: number): { x: number; z: number } | null;
   /** The app itself, for poking at it from the console (dev builds only). */
   app: App;
   /** Fraction of pixels that differ from the background. */
@@ -105,6 +109,8 @@ export function installDevtools(app: App, terminal: Terminal): void {
     thumbnail: () => app.viewer.thumbnail(),
     run: (line: string) => terminal.run(line),
     applyLink: (hash: string) => terminal.ctx.settings.applyLink(hash, terminal.ctx.debug),
+    cursorPoint: () => terminal.ctx.editor.point(),
+    groundAt: (x: number, y: number) => terminal.ctx.cursor.groundAt(x, y),
   }) as DebugHandle;
   // Not enumerable, so JSON snapshots of the state skip it (it links back to the state).
   Object.defineProperty(window.__ascii, 'app', { value: app, enumerable: false });

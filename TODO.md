@@ -183,11 +183,21 @@ next one.
 
 ## Phase 2: Scene editor
 
-- [ ] **6. (added) Editing camera and ground picking.**
-  - A top-down / orthographic camera mode for editing.
-  - A grid overlay and snapping.
-  - Convert the mouse position into a point on the ground plane
-    (raycasting). Every brush needs this.
+- [x] **6. (added) Editing camera and ground picking.** (Done on
+      `step-06-editing-camera`.)
+  - [x] Top-down view (`T`): the camera looks straight down, north up.
+    Drag pans, the wheel sets the height, the arrow keys pan (Shift is
+    faster), and `T` again returns to the same orbit view. It is a
+    perspective camera pointing down, not an orthographic one, because
+    glyph sizes depend on the distance from the eye.
+  - [x] Grid on the ground (`G`). Its spacing follows the height or the
+    snap size, and chunk borders are drawn brighter.
+  - [x] Snapping (off / 0.5 / 1 / 2 / 4 / 8 m), with a marker on the
+    snapped point under the mouse.
+  - [x] Ground picking: the ground point under the mouse (from step 5b's
+    cursor). `editor.point()` is what the brushes will use.
+  - [x] In the menu (Settings → editing), the terminal (`camera`, `grid`,
+    `snap`, `set`) and the status bar. Remembered between visits.
 
 - [ ] **7. Terrain brush on the 2D plane.**
   - Paint grass, sand, water and rock onto the `#` canvas.

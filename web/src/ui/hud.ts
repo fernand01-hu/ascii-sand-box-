@@ -7,6 +7,7 @@
 
 import type { App } from '../app/app';
 import { DEBUG_OPTIONS, type DebugState } from '../app/debug';
+import { SNAP_STEPS, type Editor } from '../app/editor';
 import type { Settings } from '../app/settings';
 import type { Terminal } from './terminal';
 import { addRootKeys, Checkbox, List, Panel, Slider, Text, TextInput } from './widgets';
@@ -15,6 +16,7 @@ export interface HudDeps {
   debug: DebugState;
   settings: Settings;
   terminal: Terminal;
+  editor: Editor;
 }
 
 /** Card budget steps: 0 = no budget. */
@@ -28,11 +30,13 @@ export class Hud {
   readonly debugPanel: Panel;
   private showFps = false;
   private warn: HTMLSpanElement;
+  private editor: Editor;
   private info: HTMLSpanElement;
   private fps: HTMLSpanElement;
 
   constructor(private app: App, deps: HudDeps, root: HTMLElement = document.body) {
-    const { debug, settings, terminal } = deps;
+    const { debug, settings, terminal, editor } = deps;
+    this.editor = editor;
     // ---- status bar
     this.status = document.createElement('div');
     this.status.className = 'tui tui-status';
@@ -103,8 +107,23 @@ export class Hud {
         app.viewer.requestRender();
       },
     });
+    const top = new Checkbox('top-down view (T)', editor.mode === 'top', (on) => {
+      try {
+        editor.setMode(on ? 'top' : 'orbit');
+      } catch {
+        top.set(editor.mode === 'top');
+      }
+    });
+    const grid = new Checkbox('grid on the ground (G)', editor.grid, (on) => editor.setGrid(on));
+    const snap = new Slider({
+      label: 'snap', labelWidth: W, min: 0, max: SNAP_STEPS.length - 1, step: 1, value: SNAP_STEPS.indexOf(editor.snap),
+      format: (i) => (SNAP_STEPS[i] ? `${SNAP_STEPS[i]} m` : 'off'), onChange: (i) => editor.setSnap(SNAP_STEPS[i] ?? 0),
+    });
     // Values can change elsewhere (terminal, dev keys): pull them in on open.
     const sync = () => {
+      top.set(editor.mode === 'top');
+      grid.set(editor.grid);
+      snap.set(Math.max(0, SNAP_STEPS.indexOf(editor.snap)));
       seed.set(String(app.canvasOptions.seed));
       day.set(app.canvasOptions.day);
       view.set(app.viewRadius);
@@ -118,6 +137,7 @@ export class Hud {
     this.settings.add(
       new Text('world', 'tui-head'), seed, day, view,
       new Text('weather', 'tui-head'), wind, rain, leaves,
+      new Text('editing', 'tui-head'), top, grid, snap,
       new Text('display', 'tui-head'), fps, budget,
       new Text('Up/Down move · Left/Right change · Space toggle · Enter apply', 'tui-dim'),
     );
@@ -148,6 +168,9 @@ export class Hud {
       ['mouse drag', 'orbit round the view'],
       ['wheel', 'zoom'],
       ['right drag', 'pan (travel across the canvas)'],
+      ['T', 'top-down view (drag pans, wheel height)'],
+      ['arrows', 'pan in the top-down view (Shift: faster)'],
+      ['G', 'grid on the ground'],
       ['Esc', 'menu / close a panel'],
       ['Up / Down', 'move in a panel'],
       ['Left / Right', 'change a slider'],
@@ -170,7 +193,9 @@ export class Hud {
   /** Update the status bar text. */
   refresh(): void {
     const a = this.app, s = a.state, w = s.weather;
-    const where = a.world ? `canvas ${a.canvasOptions.seed} · ${a.canvasOptions.day ? 'day' : 'dusk'}` : s.model || '…';
+    const ed = this.editor;
+    const edit = a.world ? `${ed.mode === 'top' ? ' · TOP' : ''}${ed.grid ? ' · grid' : ''}${ed.snap ? ` · snap ${ed.snap} m` : ''}` : '';
+    const where = a.world ? `canvas ${a.canvasOptions.seed} · ${a.canvasOptions.day ? 'day' : 'dusk'}${edit}` : s.model || '…';
     const status = s.status === 'loading' ? ' · loading' : s.status === 'error' ? ' · error' : '';
     this.info.textContent = `${where}${status} │ wind ${w.wind.toFixed(2)} rain ${w.rain > 0 ? w.rain.toFixed(2) : 'off'} leaves ${w.leaves.toFixed(2)}`;
     const f = a.viewer.stats.fps;

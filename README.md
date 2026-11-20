@@ -63,7 +63,10 @@ npm run build      # production build in dist/ (static files, host anywhere)
 npm test           # Rust unit tests, typecheck + build, WASM smoke test, headless-Chrome e2e
 ```
 
-In the viewer: drag to orbit, wheel to zoom, right-drag to pan. `Esc` opens
+In the viewer: drag to orbit, wheel to zoom, right-drag to pan. `T` switches
+to a top-down editing view (drag pans, wheel sets the height, arrows pan),
+`G` shows a ground grid, and snapping is in Settings or `snap 1` in the
+terminal. `Esc` opens
 the menu (settings: canvas seed, day / dusk, view distance, wind, rain,
 leaves, FPS readout, card budget); `?` shows help. Panels work with the
 keyboard (Up/Down, Left/Right, Space, Enter, Esc) or the mouse.

@@ -8,6 +8,7 @@ import { App } from './app/app';
 import { Cursor } from './app/cursor';
 import { DebugState } from './app/debug';
 import { DebugTools } from './app/debugtools';
+import { Editor } from './app/editor';
 import { Settings } from './app/settings';
 import { Hud } from './ui/hud';
 import { Terminal } from './ui/terminal';
@@ -23,8 +24,10 @@ const debug = new DebugState();
 const settings = new Settings(app);
 const cursor = new Cursor(app);
 const tools = new DebugTools(app, debug, cursor);
-const terminal = new Terminal(app, { debug, settings, cursor, tools });
-new Hud(app, { debug, settings, terminal });
+const editor = new Editor(app, cursor, settings);
+tools.editor = editor;
+const terminal = new Terminal(app, { debug, settings, cursor, tools, editor });
+new Hud(app, { debug, settings, terminal, editor });
 if (DEVTOOLS) {
   void import('./app/devtools').then((m) => m.installDevtools(app, terminal));
 }

@@ -9,6 +9,7 @@ import type { Cursor } from './cursor';
 import type { DebugState } from './debug';
 import { DEBUG_OPTIONS } from './debug';
 import type { DebugTools } from './debugtools';
+import { SNAP_STEPS, type Editor } from './editor';
 import { statLines, statNames, statValue } from './stats';
 import { TEST_MODELS } from './models';
 import { parseCards, type Settings } from './settings';
@@ -27,6 +28,7 @@ export interface CommandContext {
   settings: Settings;
   cursor: Cursor;
   tools: DebugTools;
+  editor: Editor;
   term: {
     aliases: Map<string, string>;
     binds: Map<string, string>;
@@ -335,6 +337,41 @@ const COMMANDS: Command[] = [
     },
   },
 
+  {
+    name: 'camera', group: 'camera', usage: 'camera [top|orbit]', help: 'top-down editing view or orbit (also T)',
+    run(_app, [m], io, ctx) {
+      if (m === undefined) ctx.editor.toggleMode();
+      else if (m === 'top' || m === 'orbit') {
+        try {
+          ctx.editor.setMode(m);
+        } catch (e) {
+          throw new CommandError(e instanceof Error ? e.message : String(e));
+        }
+      } else throw new CommandError('camera: top or orbit');
+      io.print(`camera ${ctx.editor.mode}`);
+    },
+  },
+  {
+    name: 'grid', group: 'camera', usage: 'grid [on|off]', help: 'ground grid (also G)',
+    run(_app, [a], io, ctx) {
+      if (a === undefined) ctx.editor.setGrid(!ctx.editor.grid);
+      else if (a === 'on' || a === 'off') ctx.editor.setGrid(a === 'on');
+      else throw new CommandError('grid: on or off');
+      io.print(`grid ${ctx.editor.grid ? 'on' : 'off'}`);
+    },
+  },
+  {
+    name: 'snap', group: 'camera', usage: `snap [off|${SNAP_STEPS.slice(1).join('|')}]`, help: 'snap the cursor point to a grid of that size (m)',
+    run(_app, [a], io, ctx) {
+      if (a !== undefined) {
+        const n = a === 'off' ? 0 : Number(a);
+        if (!SNAP_STEPS.includes(n)) throw new CommandError(`snap: off or ${SNAP_STEPS.slice(1).join(', ')}`);
+        ctx.editor.setSnap(n);
+      }
+      io.print(ctx.editor.snap ? `snap ${ctx.editor.snap} m` : 'snap off');
+    },
+  },
+
   // ---- world
   {
     name: 'canvas', group: 'world', usage: 'canvas [seed] [day|dusk]', help: 'show the canvas (edits are kept)',
@@ -572,7 +609,7 @@ const COMMANDS: Command[] = [
     },
   },
   {
-    name: 'profile', group: 'debug', usage: 'profile [seconds]', help: 'record frame times: min, average, worst 5%, max, histogram',
+    name: 'profile', group: 'debug', usage: 'profile [seconds]', help: 'record frame times (at least 3 frames): min, average, worst 5%, max, histogram',
     async run(app, [s], io) {
       const secs = s === undefined ? 3 : num(s, 'seconds', 0.5, 60);
       app.viewer.requestRender();
@@ -585,7 +622,8 @@ const COMMANDS: Command[] = [
           times.push(now - last);
           last = now;
           app.viewer.requestRender();
-          if (now - t0 < secs * 1000) requestAnimationFrame(step);
+          // At least a few frames, even if drawing is slower than the time asked for (max 30 s).
+          if ((now - t0 < secs * 1000 || times.length < 4) && now - t0 < 30_000) requestAnimationFrame(step);
           else done();
         };
         requestAnimationFrame(step);
@@ -594,7 +632,8 @@ const COMMANDS: Command[] = [
       if (!times.length) throw new CommandError('no frames were drawn');
       const sorted = [...times].sort((a, b) => a - b);
       const avg = times.reduce((a, b) => a + b, 0) / times.length;
-      io.print(`${times.length} frames in ${secs} s: ${(1000 / avg).toFixed(1)} fps average`, 'info');
+      const spent = times.reduce((a, b) => a + b, 0) / 1000;
+      io.print(`${times.length} frames in ${spent.toFixed(1)} s: ${(1000 / avg).toFixed(1)} fps average`, 'info');
       io.print(`frame time  min ${sorted[0]!.toFixed(1)}  avg ${avg.toFixed(1)}  worst 5% ${sorted[Math.floor(sorted.length * 0.95)]!.toFixed(1)}  max ${sorted[sorted.length - 1]!.toFixed(1)} ms`);
       const edges = [8, 16.7, 33.3, 50, 100, Infinity];
       const names = ['<8', '8-17', '17-33', '33-50', '50-100', '>100'];
@@ -758,7 +797,9 @@ function argWords(app: App, cmd: string, ctx: CommandContext | null): string[] {
     case 'place': return m?.objectKinds ?? [];
     case 'scatter': return [...Object.keys(KIND_GROUPS), ...(m?.objectKinds ?? [])];
     case 'gallery': return GALLERY_CATEGORIES;
-    case 'perf': case 'rain': case 'leaves': case 'stream': return ['on', 'off'];
+    case 'perf': case 'rain': case 'leaves': case 'stream': case 'grid': return ['on', 'off'];
+    case 'camera': return ['top', 'orbit'];
+    case 'snap': return ['off', ...SNAP_STEPS.slice(1).map(String)];
     case 'freeze': return ['off'];
     case 'canvas': return ['day', 'dusk'];
     case 'rebuild': return ['all'];

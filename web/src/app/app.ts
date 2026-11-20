@@ -127,6 +127,13 @@ export class App {
   private atlas: GlyphAtlas;
   // Only the most recent request may update the scene.
   private latest = 0;
+  private sceneListeners = new Set<(name: string) => void>();
+
+  /** Called after a new scene is on screen (canvas, gallery, model) with its name. */
+  onSceneChange(f: (name: string) => void): () => void {
+    this.sceneListeners.add(f);
+    return () => this.sceneListeners.delete(f);
+  }
 
   constructor(container: HTMLElement) {
     this.atlas = createGlyphAtlas(DEFAULT_CHARSET);
@@ -161,6 +168,7 @@ export class App {
       if (token !== this.latest) return;
       show(res);
       Object.assign(this.state, { status: 'ready', cards: res.count, timings: res.timings });
+      for (const f of this.sceneListeners) f(name);
     } catch (err) {
       if (err instanceof SupersededError) {
         this.state.skipped++;

@@ -11,6 +11,7 @@ import { addGlobalKeys } from '../ui/widgets';
 import type { App } from './app';
 import type { Cursor } from './cursor';
 import type { DebugState } from './debug';
+import type { Editor } from './editor';
 import { statValue } from './stats';
 import type { WorldStreamer } from './world';
 
@@ -31,6 +32,9 @@ export class DebugTools {
   private unsubscribeBuilds: (() => void) | null = null;
   private raf = 0;
   private lastPick = 0;
+
+  /** Set once the editor exists (it shows the snapped cursor point). */
+  editor: Editor | null = null;
 
   constructor(private app: App, readonly debug: DebugState, readonly cursor: Cursor) {
     this.draw = new DebugDraw(app.viewer.overlay);
@@ -98,6 +102,7 @@ export class DebugTools {
         `clock   ${f1(v.clock)} s  x${v.clockRate}${v.clockFrozen ? ' (frozen)' : ''} · ${a.canvasOptions.day ? 'day' : 'dusk'}`,
         `weather wind ${w.wind.toFixed(2)}  rain ${w.rain.toFixed(2)}  leaves ${w.leaves.toFixed(2)}`,
         `canvas  seed ${a.canvasOptions.seed} · view ${a.viewRadius}${a.world?.frozen ? ' · streaming frozen' : ''}`,
+        `editor  camera ${this.editor?.mode ?? 'orbit'} · grid ${this.editor?.grid ? 'on' : 'off'} · snap ${this.editor?.snap ? `${this.editor.snap} m` : 'off'}`,
         `map     ${a.map?.editedChunks ?? 0} chunks edited · ${a.map?.objectCount ?? 0} objects`,
       );
     }
@@ -105,6 +110,8 @@ export class DebugTools {
       const g = this.cursor.ground();
       if (g && a.map) {
         lines.push(`cursor  ${f1(g.x)}, ${f1(g.z)}  chunk ${Math.floor(g.x / S)},${Math.floor(g.z / S)}  tile ${Math.floor(g.x / tile)},${Math.floor(g.z / tile)} · ${a.map.groundAt(g.x, g.z)}`);
+        const p = this.editor?.snap ? this.editor.point() : null;
+        if (p) lines.push(`snapped ${f1(p.x)}, ${f1(p.z)}  (${this.editor!.snap} m)`);
       } else lines.push(['cursor  (point at the ground)', 'tui-dim']);
     }
     for (const w of this.debug.watches) lines.push(`${w.padEnd(7)} ${statValue(a, this.cursor, w) ?? '?'}`);

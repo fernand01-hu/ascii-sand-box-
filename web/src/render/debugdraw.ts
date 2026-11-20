@@ -14,7 +14,7 @@ import {
   type Mesh,
 } from 'three';
 
-export type Layer = 'chunks' | 'culling' | 'outlines' | 'tiles' | 'axes' | 'bodies';
+export type Layer = 'chunks' | 'culling' | 'outlines' | 'tiles' | 'axes' | 'bodies' | 'grid' | 'marker';
 
 /** Colours (r, g, b 0..1), in the TUI palette. */
 export const COLORS = {
@@ -29,6 +29,9 @@ export const COLORS = {
   y: [0.55, 0.82, 0.49],
   z: [0.47, 0.6, 1.0],
   body: [0.75, 0.45, 0.9],
+  grid: [0.3, 0.34, 0.4],
+  gridMajor: [0.55, 0.6, 0.68],
+  marker: [0.89, 0.7, 0.25],
 } as const;
 
 type RGB = readonly [number, number, number];
