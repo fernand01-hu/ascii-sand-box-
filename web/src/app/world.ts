@@ -22,7 +22,10 @@ import { chunkKey, type MapData } from './map';
 import { ColliderGrid, type Ground } from './physics';
 
 /** Why a chunk was (re)built. */
-export type BuildReason = 'new' | 'edit' | 'move' | 'angle';
+export type BuildReason = 'new' | 'edit' | 'move' | 'angle' | 'near';
+
+/** How far (m) from the eye the engine's finest ground rows reach with the plain glyph rule. */
+const FINE_REACH = (0.25 * 1072) / 15;
 
 interface Loaded {
   data: WorldChunkData;
@@ -34,6 +37,8 @@ interface Loaded {
   builtAt: number;
   /** Glyphs kept, added and removed by this build (the "pop", Phase 5). */
   pop: { kept: number; added: number; removed: number; groundKept: number; groundRemoved: number };
+  /** The near detail it was built with (see `WorldStreamer.nearDetail`). */
+  near: number;
 }
 
 /** One chunk as the debug tools see it. */
@@ -76,6 +81,12 @@ export class WorldStreamer implements Ground {
   private buildListeners = new Set<BuildListener>();
   /** No rebuilds for moving or looking from another height (new and edited chunks still build). */
   detailFrozen = false;
+  /**
+   * The finest ground glyphs reach this many times farther than the plain
+   * glyph rule (~18 m): 3 in play mode, so the walker never sees the coarse
+   * rows. Ground in that reach is loaded and rebuilt before anything else.
+   */
+  nearDetail = 1;
   /** Glyphs kept / added / removed over the rebuilds of loaded chunks (not new ones). */
   readonly pop = { kept: 0, added: 0, removed: 0, rebuilds: 0, groundKept: 0, groundRemoved: 0 };
 
@@ -182,6 +193,26 @@ export class WorldStreamer implements Ground {
         const dNow = Math.hypot(eye.x - centre[0], eye.z - centre[1]);
         const have = this.loaded.get(k);
         const seen = onScreen(cx, cz);
+        // The near ground (first priority): how far its nearest point is.
+        const nx = Math.min(Math.max(eye.x, cx * S), (cx + 1) * S), nz = Math.min(Math.max(eye.z, cz * S), (cz + 1) * S);
+        const a = Math.hypot(eye.x - nx, eye.y - g0, eye.z - nz);
+        const reach = FINE_REACH * this.nearDetail;
+        const near = this.nearDetail > 1 && a < reach;
+        if (near && !have) {
+          want.push({ cx, cz, prio: -3e6 + a, reason: 'new' });
+          continue;
+        }
+        if (near && have && !this.dirty.has(k) && !this.detailFrozen) {
+          // The ground within `keep` of the eye must lie inside the reach the
+          // chunk was built with (from its build eye); else rebuild it now.
+          const keep = 0.6 * reach;
+          const [bx, by, bz] = have.data.eye;
+          const fromBuilt = Math.hypot(bx - nx, by - g0, bz - nz);
+          if (a < keep && fromBuilt + (keep - a) > FINE_REACH * have.near) {
+            want.push({ cx, cz, prio: -3e6 + a, reason: 'near' });
+            continue;
+          }
+        }
         if (!have) {
           // A hole on screen is worse than a coarse patch: nearest holes first.
           want.push({ cx, cz, prio: seen ? -1e6 + dNow : 1e5 + dNow, reason: 'new' });
@@ -222,7 +253,7 @@ export class WorldStreamer implements Ground {
     let detail = [...this.inflightReasons.values()].filter((r) => r === 'move' || r === 'angle').length;
     for (const w of want) {
       if (this.inflight.size >= this.maxInflight) break;
-      const isDetail = w.reason === 'move' || w.reason === 'angle';
+      const isDetail = w.reason === 'move' || w.reason === 'angle'; // ('near' is not capped)
       if (isDetail && detail >= Math.max(1, this.maxInflight >> 1)) continue;
       if (isDetail) detail++;
       this.request(w.cx, w.cz, [eye.x, eye.y, eye.z], w.reason);
@@ -233,9 +264,10 @@ export class WorldStreamer implements Ground {
     const k = this.key(cx, cz);
     this.inflight.add(k);
     this.inflightReasons.set(k, reason);
+    const near = this.nearDetail;
     const wasDirty = this.dirty.delete(k);
     const reload = !wasDirty && this.loaded.has(k);
-    this.engine.worldChunk(cx, cz, eye, glyphAspect(), this.map.payload(cx, cz)).then(
+    this.engine.worldChunk(cx, cz, eye, glyphAspect(), this.map.payload(cx, cz), near).then(
       (res) => {
         this.inflight.delete(k);
         this.inflightReasons.delete(k);
@@ -258,7 +290,7 @@ export class WorldStreamer implements Ground {
         }
         if (res.mesh) this.viewer.addBody(k, res.mesh.positions, res.mesh.normals);
         const buildMs = res.timings.generateMs;
-        this.loaded.set(k, { data: res.chunk, colliders: new ColliderGrid(res.chunk.colliders), buildMs, cards: res.count, reason, builtAt: performance.now(), pop });
+        this.loaded.set(k, { data: res.chunk, colliders: new ColliderGrid(res.chunk.colliders), buildMs, cards: res.count, reason, builtAt: performance.now(), pop, near });
         this.built++;
         for (const f of this.buildListeners) f(k, reason, buildMs, res.count);
         this.viewer.requestRender();

@@ -100,10 +100,29 @@ impl Ground {
     }
 }
 
-/// Row spacing (m) for ground at `p`: the glyph-size rule rounded up to
+/// How many times farther than the glyph-size rule says the ground keeps
+/// its finest rows (`FINE`), so the plentiful glyphs reach well past the
+/// viewer's feet: ~18 m becomes ~54 m. Beyond that the rows coarsen back to
+/// the usual rule by twice that distance, one level at a time.
+pub const NEAR_DETAIL: f32 = 3.0;
+
+/// Row spacing (m) for ground at `p`: the glyph-size rule (finest out to
+/// `near` times its usual reach, see `NEAR_DETAIL`) rounded up to
 /// `FINE` x 2^k, at most `COARSE`.
-pub fn spacing(view: &View, p: Vec3) -> f32 {
-    let g = view.glyph_at(p);
+pub fn spacing(view: &View, p: Vec3, near: f32) -> f32 {
+    let near = near.clamp(1.0, 8.0);
+    let to_d = view.focal / 15.0; // glyph size -> distance
+    let d = view.glyph_at(p) * to_d; // the distance the rule sees
+    let r = FINE * to_d; // where the finest rows usually end
+    let big = r * near;
+    let d = if d <= big {
+        d / near
+    } else if d < 2.0 * big {
+        r + (d - big) / big * (2.0 * big - r)
+    } else {
+        d
+    };
+    let g = d / to_d;
     let mut s = FINE;
     while s < g && s < COARSE {
         s *= 2.0;
@@ -280,6 +299,9 @@ pub struct ChunkOut {
 pub struct Canvas {
     pub seed: u32,
     pub day: bool,
+    /// Finest ground rows reach this many times farther than the glyph
+    /// rule: 1 (plain) unless set, `NEAR_DETAIL` in play mode.
+    pub near: f32,
     glyphs: Glyphs,
     lib: Library,
     kinds: Vec<Kind>,
@@ -287,7 +309,7 @@ pub struct Canvas {
 
 impl Canvas {
     pub fn new(seed: u32, day: bool) -> Canvas {
-        Canvas { seed, day, glyphs: Glyphs::new(), lib: Library::new(seed), kinds: Kind::all() }
+        Canvas { seed, day, near: 1.0, glyphs: Glyphs::new(), lib: Library::new(seed), kinds: Kind::all() }
     }
 
     fn view(eye: Vec3) -> View {
@@ -359,7 +381,7 @@ impl Canvas {
             .filter(|((_, k, _), _)| matches!(k, Kind::Tree(_)))
             .map(|((_, _, pl), b)| (pl.pos.x, pl.pos.z, (b[4] - b[1]) * 0.3))
             .collect();
-        ground(&mut sk, &view, aspect, data.tiles, field, &trees);
+        ground(&mut sk, &view, self.near, aspect, data.tiles, field, &trees);
         let ground_cards = sk.card_count();
         for &(asset, _, pl) in &objects {
             let a: &Asset = &self.lib.assets[asset];
@@ -426,7 +448,7 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
 /// * Steep ground has more surface than its plan, so it gets more grid
 ///   points (halved steps, which keeps the canvas rows aligned): mountain
 ///   faces stay covered instead of thinning into holes.
-fn ground(sk: &mut Skinner, view: &View, aspect: f32, tiles: &[u8], field: Field, trees: &[(f32, f32, f32)]) {
+fn ground(sk: &mut Skinner, view: &View, near: f32, aspect: f32, tiles: &[u8], field: Field, trees: &[(f32, f32, f32)]) {
     let (x0, z0) = (field.x0, field.z0);
     let painted = tiles.len() == TILES * TILES;
     let tile = |x: f32, z: f32| -> Ground {
@@ -474,7 +496,7 @@ fn ground(sk: &mut Skinner, view: &View, aspect: f32, tiles: &[u8], field: Field
         for ci in 0..cells {
             let (ax, az) = (x0 + ci as f32 * CELL, z0 + cj as f32 * CELL);
             let centre = Vec3::new(ax + CELL / 2.0, field.at(ax + CELL / 2.0, az + CELL / 2.0), az + CELL / 2.0);
-            let s = spacing(view, centre);
+            let s = spacing(view, centre, near);
             let sx = s * aspect;
             let (hx, hz) = field.slope(centre.x, centre.z);
             let n = unit(Vec3::new(-hx, 1.0, -hz));
@@ -639,8 +661,8 @@ mod tests {
         let far = canvas.build_chunk(8, 0, eye(), ASPECT, blank()).cards.len();
         assert!(near > far * 8, "near {near}, far {far}");
         let v = Canvas::view(eye());
-        assert_eq!(spacing(&v, eye()), FINE);
-        assert_eq!(spacing(&v, Vec3::new(5000.0, 0.0, 0.0)), COARSE);
+        assert_eq!(spacing(&v, eye(), 1.0), FINE);
+        assert_eq!(spacing(&v, Vec3::new(5000.0, 0.0, 0.0), NEAR_DETAIL), COARSE);
     }
 
     #[test]
@@ -1005,5 +1027,48 @@ mod tests {
         assert!(modes[CardMode::Emissive as usize] > 20_000, "sky dome");
         assert_eq!(modes[CardMode::Rain as usize], 7000, "rain");
         assert_eq!(modes[CardMode::Drift as usize], 900, "blowing leaves");
+    }
+}
+#[cfg(test)]
+mod near_detail {
+    use super::*;
+
+    #[test]
+    fn finest_rows_reach_three_times_farther_and_coarsen_one_level_at_a_time() {
+        let eye = Vec3::new(0.0, 1.7, 0.0);
+        let v = Canvas::view(eye);
+        let at = |d: f32, near: f32| spacing(&v, Vec3::new(d, 0.0, 0.0), near);
+        assert_eq!(at(17.0, 1.0), FINE);
+        assert!(at(30.0, 1.0) > FINE);
+        assert_eq!(at(50.0, NEAR_DETAIL), FINE, "finest out to ~54 m");
+        assert!(at(60.0, NEAR_DETAIL) > FINE);
+        // Never finer farther out, never more than one level per step, and
+        // back on the plain rule by twice the reach.
+        let mut last = FINE;
+        for k in 0..400 {
+            let s = at(k as f32, NEAR_DETAIL);
+            assert!(s >= last && s <= last * 2.0, "at {k} m: {last} -> {s}");
+            last = s;
+        }
+        assert_eq!(at(120.0, NEAR_DETAIL), at(120.0, 1.0));
+    }
+
+    #[test]
+    fn near_detail_costs_the_walker_little() {
+        let grass = vec![Ground::Grass as u8; TILES * TILES];
+        let eye = Vec3::new(16.0, 1.7, 16.0);
+        let count = |near: f32| {
+            let mut c = Canvas::new(1, false);
+            c.near = near;
+            let mut n = 0;
+            for cz in -2..=2 {
+                for cx in -2..=2 {
+                    n += c.build_chunk(cx, cz, eye, 0.6, ChunkData { tiles: &grass, objects: &[], heights: &[] }).cards.len() / 16;
+                }
+            }
+            n
+        };
+        let (plain, near) = (count(1.0), count(NEAR_DETAIL));
+        assert!(near > plain * 3 / 2 && near < plain * 4, "plain {plain}, near {near}");
     }
 }

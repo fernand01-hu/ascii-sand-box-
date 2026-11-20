@@ -207,10 +207,11 @@ export class App {
     this.viewer.requestRender();
   }
 
+  /** In play mode the finest ground glyphs reach this many times farther (setting `playdetail`). */
+  playDetail = 3;
   /**
    * Walk the canvas in first person: WASD / arrows, Shift to run, Space to
-   * jump, mouse to look (click to capture it). On hold until play mode
-   * (TODO.md, Phase 4): nothing calls it from the UI for now.
+   * jump, mouse to look (click to capture it). Play mode (playmode.ts) calls it.
    */
   play(): boolean {
     if (this.player) return false;
@@ -221,6 +222,7 @@ export class App {
     const t = v.controls.target;
     const yaw = Math.atan2(-(t.x - cam.position.x), -(t.z - cam.position.z));
     this.player = new Player(ground, { x: cam.position.x, z: cam.position.z, yaw }, v.renderer.domElement);
+    ground.nearDetail = this.playDetail;
     v.controls.enabled = false;
     cam.near = 0.05;
     cam.updateProjectionMatrix();
@@ -249,6 +251,7 @@ export class App {
     const v = this.viewer;
     p.dispose();
     this.player = null;
+    if (this.world) this.world.nearDetail = 1;
     this.updateFrameHook();
     const cam = v.camera;
     const dir = cam.getWorldDirection(cam.position.clone());

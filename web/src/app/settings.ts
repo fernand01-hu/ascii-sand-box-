@@ -63,6 +63,16 @@ export class Settings {
         },
       },
       {
+        name: 'playdetail', help: 'play mode: the finest ground glyphs reach this many times farther, 1-6', persist: true,
+        get: () => String(app.playDetail),
+        set: (v) => {
+          const n = Number(v);
+          if (!Number.isFinite(n) || n < 1 || n > 6) throw new Error('playdetail: a number from 1 to 6');
+          app.playDetail = n;
+          if (app.player && app.world) app.world.nearDetail = n;
+        },
+      },
+      {
         name: 'view', help: 'view distance in chunks, 1-16', persist: true,
         get: () => String(app.viewRadius),
         set: (v) => {
