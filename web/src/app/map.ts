@@ -178,6 +178,11 @@ export class MapData {
     return false;
   }
 
+  /** Every placed object, in no particular order. */
+  allObjects(): PlacedObject[] {
+    return [...this.chunks.values()].flatMap((c) => c.objects);
+  }
+
   /** Objects whose base is in chunk (cx, cz). */
   objectsIn(cx: number, cz: number): readonly PlacedObject[] {
     return this.chunks.get(chunkKey(cx, cz))?.objects ?? [];

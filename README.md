@@ -38,9 +38,11 @@ engine/          Rust engine, compiled to WebAssembly
 web/
   src/engine/      Web Workers running the WASM engine (one main worker plus a
                    pool that builds canvas chunks in parallel) + promise client
-  src/render/      glyph atlas, instanced card shader, viewer (orbit, resize)
+  src/render/      glyph atlas, instanced card shader, viewer (orbit, resize, frame stats)
+  src/ui/          TUI look (tui.css) and the debug terminal + perf overlay
   src/app/         app core, the edited map (map.ts: paint + objects per
-                   chunk), canvas chunk streaming, dev tools; player and
+                   chunk), canvas chunk streaming, terminal commands, dev
+                   tools; player and
                    physics are kept for the later play mode (not wired to a key)
   src/main.ts      wiring
   public/models/   test STL files (regenerate: npm run models)
@@ -59,7 +61,13 @@ npm test           # Rust unit tests, typecheck + build, WASM smoke test, headle
 ```
 
 In the viewer: drag to orbit, wheel to zoom, right-drag to pan.
-Dev shortcuts (dev/test builds only):
+
+Debug terminal (dev/test builds only): press `` ` `` (the key left of `1`,
+`²` on AZERTY) or `F1`, then type `help`. Try `paint grass 0 -20 6`,
+`place tree:oak 4 -25`, `wind 0.8`, `view 6`, or `perf on` (also `F3`) for
+FPS, frame time, cards and chunks.
+
+Dev shortcuts (dev/test builds only, while the terminal is closed):
 - `C`: back to the canvas
 - `1`-`4`: test models
 - `5`: testbed pine

@@ -1,0 +1,138 @@
+/* The TUI look: an old-school terminal / ASCII game, not a modern UI.
+   Monospace text, double-line box borders with the title set into the top
+   edge, a small fixed palette, no rounded corners, no shadows, no blur.
+   Every panel (debug terminal, perf overlay, later the brush panel and
+   save dialog) is built from these tokens and classes. */
+
+:root {
+  --tui-bg: #0a0d14;
+  --tui-panel: rgba(10, 13, 20, 0.92);
+  --tui-fg: #c9d1d9;
+  --tui-dim: #6e7681;
+  --tui-border: #4b5563;
+  --tui-accent: #e3b341; /* amber */
+  --tui-info: #79c0ff;
+  --tui-ok: #8bd17c;
+  --tui-err: #ff7b72;
+  --tui-select: #1f2937;
+  --tui-font: 13px/1.35 ui-monospace, 'DejaVu Sans Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+}
+
+.tui {
+  font: var(--tui-font);
+  color: var(--tui-fg);
+  letter-spacing: 0;
+  box-sizing: border-box;
+  -webkit-font-smoothing: none;
+  font-smooth: never;
+}
+
+.tui *,
+.tui *::before,
+.tui *::after {
+  box-sizing: inherit;
+  font: inherit;
+}
+
+/* A box: double-line border, title cut into the top edge. */
+.tui-box {
+  position: fixed;
+  z-index: 10;
+  background: var(--tui-panel);
+  border: 3px double var(--tui-border);
+  border-radius: 0;
+  padding: 0.6em 1ch 0.4em;
+}
+
+.tui-box[hidden] {
+  display: none;
+}
+
+.tui-title,
+.tui-hint {
+  position: absolute;
+  top: -0.75em;
+  padding: 0 1ch;
+  background: var(--tui-bg);
+  white-space: nowrap;
+}
+
+.tui-title {
+  left: 1ch;
+  color: var(--tui-accent);
+}
+
+.tui-title::before { content: '[ '; color: var(--tui-border); }
+.tui-title::after { content: ' ]'; color: var(--tui-border); }
+
+.tui-hint {
+  right: 1ch;
+  color: var(--tui-dim);
+}
+
+.tui-out { color: var(--tui-fg); }
+.tui-info { color: var(--tui-info); }
+.tui-err { color: var(--tui-err); }
+.tui-echo { color: var(--tui-accent); }
+.tui-dim { color: var(--tui-dim); }
+
+/* ---- debug terminal ---------------------------------------------------- */
+
+.tui-terminal {
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  height: min(42vh, 360px);
+  display: flex;
+  flex-direction: column;
+}
+
+.tui-log {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+  scrollbar-color: var(--tui-border) transparent;
+}
+
+.tui-prompt {
+  display: flex;
+  gap: 1ch;
+  border-top: 1px dashed var(--tui-border);
+  padding-top: 0.25em;
+  margin-top: 0.25em;
+}
+
+.tui-prompt span {
+  color: var(--tui-accent);
+}
+
+.tui-prompt input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  padding: 0;
+  color: var(--tui-fg);
+  caret-color: var(--tui-accent);
+}
+
+/* ---- performance overlay ------------------------------------------------- */
+
+.tui-perf {
+  top: 14px; /* room for the title set into the top border */
+  right: 8px;
+  max-width: calc(100vw - 16px);
+  white-space: pre;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+@media (max-width: 640px) {
+  .tui { font-size: 11px; }
+  .tui-terminal { left: 4px; right: 4px; bottom: 4px; }
+  .tui-perf { top: 12px; right: 4px; }
+}
