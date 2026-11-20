@@ -364,3 +364,86 @@ next one.
       the old procedural terrain.
 - [ ] Decide what happens in painted water (swim, wade, or blocked).
 - [ ] Collisions with placed trees, rocks and big bushes.
+
+## Phase 5: Smooth detail, then the GPU
+
+**Goal:** when detail changes, nothing pops.
+- Glyphs already on screen stay where they are.
+- New glyphs fade in a few at a time, most important first. Moving away, the extra ones fade out the same way.
+- The chunks that look most wrong update first.
+- It stays cheap: the work is done when a chunk is built. Each frame, the renderer only moves one number per chunk that is changing.
+
+**Decision (2026-11-20):** we keep our version. The native rewrite on `main` and `grosminet/*` is not merged. We port ideas from it by hand (step 22).
+
+**Why it looks bad today (from the code):**
+- **One big jump:** a chunk is rebuilt only once its glyph size is off by about 1.7x (`world.ts`). Glyph sizes then double or halve all at once.
+- **Instant swap:** the new chunk replaces the old one in a single frame, all of it.
+- **Objects redraw completely:** trees, bushes and rocks switch between 3 separately built versions (detail levels at 32 m and 90 m). The glyphs land in different places, so the whole object redraws.
+- **A different set of glyphs survives:** the limit of 6 object glyphs per patch is recomputed from the new eye, so different glyphs are kept.
+- **Random-looking order:** rebuilds are sorted only by distance to the chunk centre. Every move rebuild waits behind all new chunks. Nothing checks whether a chunk is on screen or how wrong it looks.
+- **Ground is half-way there:** its levels already nest (each coarser level keeps every other row) and each point keeps its colour. But glyph sizes jump and the swap is instant.
+
+Order: 16 → 22. Steps 16-21 need no GPU, and they help the no-GPU target too (fewer rebuilds).
+
+- [ ] **16. Measure the pop first (debug tools).**
+  - Per rebuild, match glyphs by world position and count kept / added / removed. Show "kept %" in the chunk inspector and `chunks`. Today it is near 0% for objects.
+  - `lod slow <factor>`: transitions in slow motion. `lod freeze`: stop all detail changes.
+  - An overlay that colours chunks by how wrong their detail is (their priority), and glyphs by rank (step 18).
+  - A short e2e check (a few frames of the camera flying toward a tree) that records the baseline numbers here.
+
+- [ ] **17. Stable glyphs: same place, same glyph.**
+  - A glyph's character, twist and colour come from a hash of its identity, never from build order or detail level:
+    - ground: the grid point
+    - objects: the object's seed plus the card's index in its full-detail list
+  - The ground already does this for colour. Extend it to the character and twist.
+  - Unit test: two builds from different eyes give identical glyphs wherever they overlap.
+
+- [ ] **18. Nested detail with ranks ("keep the old, add the new").**
+  - **Rank:** every glyph gets one. Coarse detail = the lowest ranks only. Finer detail = the same glyphs plus higher ranks. Any detail change then only adds or removes glyphs; the ones in common never move.
+  - **Ground:** rank = the coarsest grid level the point is on, plus a small hash to spread glyphs within a level.
+  - **Objects:** build each asset once, at full detail, and order its cards by importance:
+    1. outline and silhouette
+    2. trunk and main branches
+    3. big leaves and rock faces
+    4. inner filler, last
+
+    Shuffle within each group (a fixed hash), so thinning stays even. Detail level n = the first k cards. This replaces the 3 separately built versions, which also uses less cache memory in the workers.
+  - **Patch limit:** the 6-glyphs-per-patch limit keeps the lowest ranks, not just the nearest glyphs. The kept set then barely changes when the eye moves.
+  - **Size:** when fewer glyphs are shown, the kept ones grow to cover the gap (as now), but smoothly with distance instead of in doubling steps.
+  - Tests: every level holds the level below it (ground and objects); a rebuild after moving 30% closer keeps at least 95% of its glyphs.
+
+- [ ] **19. Gradual transitions (fade in, fade out).**
+  - **Getting closer:** when a rebuilt chunk arrives, the glyphs it shares with the old one stay put (drawn once, no flicker). The new glyphs fade in over about 0.6-1 s, in rank order (important first, filler last), growing from a dot instead of popping.
+  - **Moving away:** glyphs no longer needed fade out in reverse rank order, filler first. Then the old set is freed.
+  - **Ground:** glyph size changes ease over the same time.
+  - **How:** a rank per card in the card buffer, and one number per chunk (`shownRank`) that animates from the old amount to the new one. The shader turns that into each card's fade and size. Per frame, the CPU only updates that number for the chunks that are changing.
+  - **Edits stay instant (or at most 0.15 s):** you need to see your brush at once. Rain, leaves and the sky are unaffected.
+  - Setting `lodfade` (seconds, 0 = instant as today); terminal `lod fade 0.8`.
+
+- [ ] **20. Most important first (update priority).**
+  - **One score per chunk, instead of distance only:** how wrong it looks on screen. That is the detail error in pixels (how far its glyph size is from right), times how big the chunk is on screen, times whether it is on screen (off-screen last), times a bonus near the middle of the view and the cursor.
+  - **Order:**
+    1. edited chunks (as now)
+    2. holes (visible chunks not loaded yet): a hole is worse than a coarse patch
+    3. visible chunks, biggest error first
+    4. the rest
+  - **Fresh order:** re-sort as the camera turns, drop builds that went stale, and cap builds per second so a fast move doesn't flood the workers.
+  - **Some glyphs faster than others:** fade speed per group. Outline and trunk fast (about 0.3 s), leaves medium, ground filler slowest, edits instant. This is a table in the settings.
+  - Inside a chunk, ranks already make the important glyphs come first (step 19).
+  - Debug: a priority heat-map overlay, and the build queue in order in the terminal.
+
+- [ ] **21. Continuous detail (fewer rebuilds).**
+  - **Headroom:** build each chunk with detail for about 30% closer than its build eye. The extra glyphs are ranked last and hidden.
+  - **Detail follows the distance:** every frame, the shader shows the right amount for the current distance (a rank cut-off), so moving shows and hides glyphs smoothly. No rebuild until the camera passes the headroom.
+  - **Rebuild when:** the nearest part of a chunk is 25% nearer than it was built for, or its centre is 60% farther (the rules the native branch uses).
+  - **Cost:** a few more cards per chunk in memory (measure it; cap it with the stacking limits), in exchange for most move rebuilds.
+  - The same idea as "continuous detail / prefix culling" on the native branch, done in our three.js shader.
+
+- [ ] **22. GPU integration.**
+  - **Measure first:** our version in a real browser (Chrome, WebGL on the integrated Radeon) next to the software test. Record the perf overlay numbers here.
+  - **Two quality modes:** keep a "no GPU" mode that holds 30 FPS or more in software, add a "GPU" mode, and pick between them from the measured frame time. Both appear in settings.
+  - **GPU mode adds:**
+    - shadow maps, if step 14's comparison favours them: a moving sun, shadows across chunk borders, live while editing
+    - a longer view distance, with far ground out to 1 km (an idea from the native branch)
+    - more glyphs per patch
+  - **Later, optional:** a WebGPU renderer with a WebGL fallback. Ideas from the `grosminet` branches to port by hand: each card evaluated once per frame, the frame-time trace. Never by merging `main`.
