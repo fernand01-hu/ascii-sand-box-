@@ -1050,7 +1050,7 @@ const COMMANDS: Command[] = [
   },
   {
     name: 'lab', group: 'world',
-    usage: 'lab [on|off|list|scene|landscape|flow [on|off]|view wide|lake|hill|oak|stream|layout 1|wipe|2|4|pane <n> light|weather|water <variant>|all <light> <weather> <water>|time <hours>|off]',
+    usage: 'lab [on|off|list|scene|landscape|flow [on|off]|strike [near|far]|view wide|lake|hill|oak|stream|layout 1|wipe|2|4|pane <n> light|weather|water <variant>|all <light> <weather> <water>|time <hours>|off]',
     help: 'look lab: compare lighting, weather and water variants side by side (Phase 3)',
     async run(_app, args, io, ctx) {
       const lab = ctx.lab;
@@ -1073,6 +1073,9 @@ const COMMANDS: Command[] = [
       } else if (a === 'time') {
         if (b === 'off' || b === 'scene') lab.setHour(null);
         else lab.setHour(num(b, 'hours', 0, 24));
+      } else if (a === 'strike') {
+        lab.strikeNow(b !== 'far');
+        io.print(`lightning (${b === 'far' ? 'far' : 'near'}) in the panes with the storm look`);
       } else if (a === 'flow') {
         lab.setArrows(b === undefined ? !lab.arrows : b === 'on');
         io.print(`current arrows ${lab.arrows ? 'on: green slow -> red fast, blue dots still water' : 'off'}`);
@@ -1095,7 +1098,7 @@ const COMMANDS: Command[] = [
           io.print(title, 'info');
           for (const v of list) io.print(`  ${v.id.padEnd(15)} ${v.name.slice(3).padEnd(20)} ${v.help}`);
         }
-      } else if (a !== undefined && a !== 'on') throw new CommandError('lab [on|off|list|scene|landscape|flow|view|layout|pane|all|time]');
+      } else if (a !== undefined && a !== 'on') throw new CommandError('lab [on|off|list|scene|landscape|flow|strike|view|layout|pane|all|time]');
       void e;
       for (const l of lab.describe()) io.print(l);
     },
@@ -1166,7 +1169,7 @@ function argWords(app: App, cmd: string, ctx: CommandContext | null): string[] {
     case 'height': return ['on', 'off', ...HEIGHT_MODES, 'size', 'strength', 'stroke', 'at'];
     case 'objbrush': return ['on', 'off', 'mode', 'size', 'density', 'spacing', 'variation', 'stroke', ...KIND_MIXES, ...(m?.objectKinds ?? [])];
     case 'select': return ['none'];
-    case 'lab': return ['on', 'off', 'list', 'scene', 'landscape', 'flow', 'view', ...Object.keys(LAB_VIEWS), 'layout', 'pane', 'all', 'time', ...LAYOUTS, 'light', 'weather', 'water', ...LIGHTS.map((v) => v.id), ...WEATHERS.map((v) => v.id), ...WATERS.map((v) => v.id)];
+    case 'lab': return ['on', 'off', 'list', 'scene', 'landscape', 'flow', 'strike', 'near', 'far', 'view', ...Object.keys(LAB_VIEWS), 'layout', 'pane', 'all', 'time', ...LAYOUTS, 'light', 'weather', 'water', ...LIGHTS.map((v) => v.id), ...WEATHERS.map((v) => v.id), ...WATERS.map((v) => v.id)];
     case 'param': return ['reset', 'vary', ...(ctx?.objects.paramDescs().map((d) => d.name) ?? [])];
     case 'preset': return ['save', 'load', 'delete'];
     case 'place': return m?.objectKinds ?? [];

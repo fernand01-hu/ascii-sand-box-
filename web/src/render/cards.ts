@@ -48,7 +48,8 @@ export const RAMP_SHADE = '@%#&*+=-:.';
 export const RAMP_WAVE = "_.-~^'";
 export const RAMP_SPLASH = ".oO°";
 export const RAMP_FOAM = "~*o°";
-export const LAB_GLYPHS = RAMP_SHADE + RAMP_WAVE + RAMP_SPLASH + RAMP_FOAM;
+export const RAMP_BOLT = '/\\|';
+export const LAB_GLYPHS = RAMP_SHADE + RAMP_WAVE + RAMP_SPLASH + RAMP_FOAM + RAMP_BOLT;
 /** A 16-colour palette in the spirit of old PC text modes, toned for scenery. */
 const RETRO_PALETTE: [number, number, number][] = [
   [0.05, 0.05, 0.08], [0.1, 0.15, 0.45], [0.12, 0.45, 0.15], [0.1, 0.5, 0.5],
@@ -402,7 +403,9 @@ void main() {
   if (emissive || rain) {
     vColor = iColor.rgb;
     vAlpha = baseA * alphaMul * (rain ? 1.0 : smoothstep(0.02, 0.25, abs(facing)));
-    if (cardMode > 3.5 && cardMode < 4.5) vColor = vColor * uSkyTint + uFlash * vec3(0.5, 0.55, 0.7);
+    // Sky (and lightning bolts): tinted by the time of day; a flash lights the clouds up.
+    // (a lightning bolt is bright enough to stand out against the lit clouds).
+    if (cardMode > 3.5 && cardMode < 4.5) vColor = vColor * (uSkyTint + uFlash * 0.55) + uFlash * vec3(0.12, 0.13, 0.22);
     if (waterLean) {
       vec3 wc = iColor.rgb;
       vec4 wm = waterAt(center.xz);
@@ -480,7 +483,7 @@ void main() {
           vAlpha = max(vAlpha, 0.8 * (1.0 - f) + 0.2);
         }
       }
-      vColor = wc + uFlash * 0.3;
+      vColor = wc + uFlash * vec3(0.4, 0.45, 0.6);
     }
   } else {
     float ts = leaf ? 1.0 : iLight.x;
@@ -504,7 +507,8 @@ void main() {
     vec3 rad = iColor.rgb * (ts * uSunColor * (1.25 * diff + A.z * back) + uTone.y * tk * hemi * uSkyColor + uTone.z)
              + A.x * spec * ts * uGlintColor;
     rad *= 1.0 + 0.45 * gustLit;
-    rad += iColor.rgb * uFlash * (0.4 + 0.6 * hemi) * vec3(0.9, 0.95, 1.1);
+    // Lightning: a cold, hard light from above; what's under the trees stays darker.
+    rad += iColor.rgb * uFlash * 1.7 * (0.2 + 0.8 * max(Nlight.y, 0.0)) * (0.3 + 0.7 * tk) * vec3(0.82, 0.9, 1.15);
     if (uFxB.x > 0.5 && lean && uRain > 0.02) {
       // Wet ground: darker, with a sheen toward the light; drops splash on it.
       float wspec = pow(clamp(dot(Nlight, normalize(uSunDir + toCam)), 0.0, 1.0), 30.0);
@@ -529,7 +533,7 @@ void main() {
     vAlpha = min(1.0, (baseA + B.z * ts * diff) * uAlphaGain) * edge * alphaMul;
   }
   // Scene haze: far things melt into the sky colour (thicker in the rain).
-  if (uFog.y > 0.0 && C.z > 0.5) {
+  if (uFog.y > 0.0 && C.z > 0.5 && !(cardMode > 3.5 && cardMode < 4.5)) {
     float hz = (1.0 - exp(-dist / (uFog.x * (1.0 - 0.55 * uRain)))) * uFog.y;
     vColor = mix(vColor, uHazeColor, hz);
   }
@@ -901,6 +905,11 @@ export class CardLayer {
   setSkyTint(tint: Vector3, flash = 0): void {
     (this.material.uniforms.uSkyTint!.value as Vector3).copy(tint);
     this.material.uniforms.uFlash!.value = flash;
+  }
+
+  /** Show or hide every chunk of one card set (e.g. a lightning bolt in some panes only). */
+  setSetVisible(key: string, on: boolean): void {
+    for (const c of this.sets.get(key) ?? []) c.mesh.visible = on;
   }
 
   /** The card meshes (for passes that swap their material, like the sun shadow map). */

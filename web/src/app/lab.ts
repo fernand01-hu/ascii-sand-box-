@@ -9,7 +9,8 @@
 // Terminal: `lab`, menu: Look lab, settings remembered in this browser.
 
 import { Color, Vector3, Vector4 } from 'three';
-import type { Lighting } from '../render/cards';
+import { CARD_STRIDE, type Lighting } from '../render/cards';
+import { glyphAspect } from '../render/atlas';
 import { SunShadow } from '../render/sunshadow';
 import type { ViewPane } from '../render/viewer';
 import type { App } from './app';
@@ -89,6 +90,8 @@ interface Saved {
 }
 
 const KEY = 'ascii-sandbox.lab';
+/** Card set of the lightning bolt. */
+const BOLT = 'lab-bolt';
 
 /** Light at an hour of the day: sun (or moon) colour, sky, haze, background, sky-dome tint. */
 const DAY_KEYS: [number, number[], number[], number[], number[], number[]][] = [
@@ -152,7 +155,10 @@ export class Lab {
   arrows = false;
   private arrowDraw: DebugDraw | null = null;
   private arrowRev = -1;
-  private nextBolt = 0;
+  private dark = 0;
+  private nextStrike = 0;
+  /** The lightning strike under way: when, how close, its strobes (s after the start), whether it has a bolt. */
+  private strike: { t: number; near: boolean; pulses: number[]; bolt: boolean } | null = null;
 
   constructor(private app: App) {
     try {
@@ -357,16 +363,7 @@ export class Lab {
     const app = this.app, v = app.viewer;
     if (!this.base) this.capture();
     const now = this.lightNow();
-    // Lightning, for panes with the storm look.
-    const t = v.clock;
-    if (this.uses((p) => !!WEATHERS.find((w) => w.id === p.weather)?.storm)) {
-      if (t > this.nextBolt + 30 || t < this.nextBolt - 30) this.nextBolt = t + 3;
-      if (t >= this.nextBolt) {
-        this.flash = 1;
-        this.nextBolt = t + 4 + Math.random() * 8;
-      }
-      this.flash = Math.max(0, this.flash - 0.12);
-    } else this.flash = 0;
+    this.lightning(v.clock);
     v.setBackground(now.bg);
     (v.cards.material.uniforms.uHazeColor!.value as Vector3).copy(now.haze);
     // Sun shadow map, once a frame, when a pane shows it.
@@ -398,14 +395,109 @@ export class Lab {
       light.skyColor = light.skyColor.clone().multiplyScalar(0.7);
       tint.multiplyScalar(0.45);
     }
+    if (W.storm) {
+      // Just after a strike the storm seems darker still.
+      const k = 1 - 0.45 * this.dark;
+      light.sunColor = light.sunColor.clone().multiplyScalar(k);
+      light.skyColor = light.skyColor.clone().multiplyScalar(k);
+      tint.multiplyScalar(k);
+    }
     c.setLighting(light);
     c.setSkyTint(tint, W.storm ? this.flash : 0);
+    c.setSetVisible(BOLT, !!W.storm && this.flash > 0.25);
     const ground = this.app.world?.info.ground ?? 0;
     c.setFx(
       new Vector4(L.shadows ? 1 : 0, L.shade, W.clouds ? 1 : 0, W.gusts ? 1 : 0),
       new Vector4(W.wet ? 1 : 0, W.mist ? 1 : 0, W.storm ? 1 : 0, ground),
       new Vector4(R.waves ? 1 : 0, R.shore ? 1 : 0, R.glints ? 1 : 0, R.rings ? 1 : 0),
     );
+  }
+
+  /**
+   * Lightning for panes with the storm look. Strikes every 4-13 s; each one
+   * strobes 2-3 times within a quarter second, then glows out, then the
+   * storm seems darker for a moment. One in three is close: blinding, with
+   * a jagged bolt of glyphs across the sky; the rest are far, dim flashes.
+   */
+  private lightning(t: number): void {
+    const v = this.app.viewer;
+    if (!this.uses((p) => !!WEATHERS.find((w) => w.id === p.weather)?.storm)) {
+      this.flash = this.dark = 0;
+      if (this.strike?.bolt) v.cards.removeSet(BOLT);
+      this.strike = null;
+      return;
+    }
+    if (Math.abs(t - this.nextStrike) > 60) this.nextStrike = t + 2; // the clock jumped
+    if (t >= this.nextStrike) {
+      if (this.strike?.bolt) v.cards.removeSet(BOLT);
+      const near = Math.random() < 0.35;
+      const pulses = [0, 0.07 + Math.random() * 0.06];
+      if (Math.random() < 0.6) pulses.push(0.18 + Math.random() * 0.1);
+      this.strike = { t, near, pulses, bolt: near };
+      if (near) v.cards.addSet(BOLT, this.boltCards(), CARD_STRIDE);
+      this.nextStrike = t + 4 + Math.random() * 9;
+    }
+    const s = this.strike;
+    const dt = s ? t - s.t : Infinity;
+    let f = 0;
+    if (s && dt >= 0 && dt < 2) {
+      for (const p of s.pulses) if (dt >= p) f = Math.max(f, Math.exp(-(dt - p) / 0.045));
+      f = Math.max(f, 0.3 * Math.exp(-dt / 0.35));
+      f *= s.near ? 1.7 : 0.5;
+    }
+    this.flash = f;
+    this.dark = s && dt > 0.3 && dt < 2 ? Math.sin(Math.min(1, (dt - 0.3) / 1.5) * Math.PI) * (s.near ? 1 : 0.5) : 0;
+    if (s?.bolt && dt > 0.5) {
+      v.cards.removeSet(BOLT);
+      s.bolt = false;
+    }
+  }
+
+  /** Strike now (testing): `near` gives the blinding kind with a bolt. */
+  strikeNow(near = true): void {
+    const v = this.app.viewer, t = v.clock;
+    if (this.strike?.bolt) v.cards.removeSet(BOLT);
+    this.strike = { t, near, pulses: [0, 0.09, 0.22], bolt: near };
+    if (near) v.cards.addSet(BOLT, this.boltCards(), CARD_STRIDE);
+    this.nextStrike = t + 6;
+  }
+
+  /** A jagged bolt of / \\ | glyphs from the clouds to the ground, ahead of the camera, with a fork or two. */
+  private boltCards(): Float32Array {
+    const cam = this.app.viewer.camera, chars = this.app.charset;
+    const slot = (c: string) => Math.max(0, chars.indexOf(c)) + 1024 * (0 + 64 * 4); // material 0, mode 4: emissive, follows the camera
+    const fwd = cam.getWorldDirection(new Vector3()).setY(0).normalize();
+    const dir = fwd.clone().applyAxisAngle(new Vector3(0, 1, 0), (Math.random() - 0.5) * 0.7);
+    const dist = 170 + Math.random() * 110;
+    const ground = (this.app.world?.info.ground ?? 0) - cam.position.y;
+    const right = new Vector3().crossVectors(dir, new Vector3(0, 1, 0)).normalize();
+    const size = dist * 0.05, aspect = glyphAspect();
+    const out: number[] = [];
+    const push = (p: Vector3, ch: string, bright: number, scale = 1, depth = 0) => {
+      const s = size * scale, U = right.clone().multiplyScalar(s * aspect);
+      const q = p.clone().addScaledVector(dir, depth); // the halo sits just behind the bolt
+      out.push(q.x, q.y, q.z, U.x, U.y, U.z, 0, s, 0, 3.2 * bright, 3.3 * bright, 4 * bright, Math.min(1, bright), slot(ch), 1, 1);
+    };
+    const path = (start: Vector3, steps: number, bright: number, fork: boolean) => {
+      let p = start.clone();
+      for (let i = 0; i < steps && p.y > ground; i++) {
+        const side = (Math.random() - 0.5) * size * 2.4;
+        const next = p.clone().addScaledVector(right, side).add(new Vector3(0, -size * (0.9 + 0.6 * Math.random()), 0));
+        const ch = Math.abs(side) < size * 0.35 ? '|' : side > 0 ? '/' : '\\';
+        // Each glyph twice, side by side: a thicker stroke than the font's.
+        for (let k = 0; k < 3; k++) {
+          const q = p.clone().lerp(next, (k + 0.5) / 3);
+          push(q, ch, bright);
+          push(q.clone().addScaledVector(right, size * 0.12), ch, bright);
+        }
+        // A faint glow round it.
+        push(p.clone().lerp(next, 0.5), '*', bright * 0.22, 2.2, 3);
+        if (fork && i > 2 && Math.random() < 0.18) path(next, 3 + Math.floor(Math.random() * 4), bright * 0.6, false);
+        p = next;
+      }
+    };
+    path(dir.clone().multiplyScalar(dist).setY(dist * 0.4), 60, 1, true);
+    return new Float32Array(out);
   }
 
   /** Show or hide arrows for the current on the water (debug). */
