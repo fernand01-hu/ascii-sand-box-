@@ -17,6 +17,7 @@ import { GALLERY_CATEGORIES, type GalleryCategory } from '../engine/protocol';
 import { showPine } from '../testbed/pine';
 import type { App, AppState } from './app';
 import { Terminal } from '../ui/terminal';
+import { panelOpen } from '../ui/widgets';
 import type { MapData, NewObject, PlacedObject } from './map';
 import { TEST_MODELS } from './models';
 
@@ -101,8 +102,8 @@ export function installDevtools(app: App): void {
 
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    // Keys typed into the terminal (or any text field) are not hotkeys.
-    if (terminal.isOpen || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    // Keys meant for a panel (menu, settings, terminal) or a text field are not hotkeys.
+    if (panelOpen() || terminal.isOpen || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     if (e.key === '5') return void showPine(app);
     const k = e.key.toLowerCase();
     if (k === 'c') return void app.showCanvas();

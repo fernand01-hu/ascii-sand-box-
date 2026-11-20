@@ -39,7 +39,9 @@ web/
   src/engine/      Web Workers running the WASM engine (one main worker plus a
                    pool that builds canvas chunks in parallel) + promise client
   src/render/      glyph atlas, instanced card shader, viewer (orbit, resize, frame stats)
-  src/ui/          TUI look (tui.css) and the debug terminal + perf overlay
+  src/ui/          TUI look (tui.css), widgets (panel, list, slider, checkbox,
+                   text input), the interface (status bar, menu, settings,
+                   help) and the debug terminal + perf overlay
   src/app/         app core, the edited map (map.ts: paint + objects per
                    chunk), canvas chunk streaming, terminal commands, dev
                    tools; player and
@@ -60,7 +62,10 @@ npm run build      # production build in dist/ (static files, host anywhere)
 npm test           # Rust unit tests, typecheck + build, WASM smoke test, headless-Chrome e2e
 ```
 
-In the viewer: drag to orbit, wheel to zoom, right-drag to pan.
+In the viewer: drag to orbit, wheel to zoom, right-drag to pan. `Esc` opens
+the menu (settings: canvas seed, day / dusk, view distance, wind, rain,
+leaves, FPS readout, card budget); `?` shows help. Panels work with the
+keyboard (Up/Down, Left/Right, Space, Enter, Esc) or the mouse.
 
 Debug terminal (dev/test builds only): press `` ` `` (the key left of `1`,
 `²` on AZERTY) or `F1`, then type `help`. Try `paint grass 0 -20 6`,
