@@ -10,7 +10,10 @@
 
 import {
   BufferAttribute,
+  Frustum,
   Group,
+  Matrix4,
+  type PerspectiveCamera,
   Sphere,
   InstancedBufferGeometry,
   InstancedInterleavedBuffer,
@@ -369,6 +372,8 @@ interface Chunk {
   mesh: Mesh<InstancedBufferGeometry, ShaderMaterial>;
   count: number;
   global: boolean;
+  /** Sky sector: direction of its centre and angular radius (rad), or null. */
+  sky: { dir: Vector3; radius: number } | null;
   lo: Vector3;
   hi: Vector3;
 }
@@ -382,6 +387,18 @@ export class CardLayer {
   private count = 0;
   /** Cards actually submitted in the last frame (after frustum culling). */
   drawn = 0;
+  /**
+   * Most cards to draw per frame (Infinity = no limit). Over budget, the
+   * nearest chunks in view draw in full and farther ones an even sample of
+   * their cards (each chunk is shuffled, so any prefix is a fair sample).
+   * Sky, rain and leaves always draw and count against it.
+   */
+  budget = Infinity;
+  /** Cards left out by the budget in the last frame. */
+  thinned = 0;
+  /** Always-drawn cards (sky sectors in view, rain, leaves) in the last budgeted frame. */
+  globalDrawn = 0;
+  private budgeted = false;
 
   constructor(atlas: GlyphAtlas, lighting: Lighting = DEFAULT_LIGHTING) {
     const vec4s = () => Array.from({ length: MAX_MATERIALS }, () => new Vector4());
@@ -421,6 +438,104 @@ export class CardLayer {
 
   get cardCount(): number {
     return this.count;
+  }
+
+  /**
+   * Hide the sky sectors that point out of view (the dome follows the
+   * camera, so only its direction matters). Saves most of the ~100k sky
+   * cards every frame.
+   */
+  cullSky(camera: PerspectiveCamera): void {
+    const fwd = camera.getWorldDirection(new Vector3());
+    const half = Math.atan(Math.tan((camera.fov * Math.PI) / 360) * Math.hypot(1, camera.aspect)); // to a corner
+    for (const c of this.chunks) {
+      if (c.sky) c.mesh.visible = fwd.angleTo(c.sky.dir) <= half + c.sky.radius + 0.05;
+    }
+  }
+
+  /** Apply `budget` for this camera: set how many cards each chunk draws. */
+  applyBudget(camera: PerspectiveCamera): void {
+    this.thinned = 0;
+    if (!Number.isFinite(this.budget)) {
+      if (this.budgeted) for (const c of this.chunks) c.mesh.geometry.instanceCount = c.count;
+      this.budgeted = false;
+      return;
+    }
+    this.budgeted = true;
+    this.globalDrawn = 0;
+    camera.updateMatrixWorld();
+    const frustum = new Frustum().setFromProjectionMatrix(new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+    let left = this.budget;
+    const inView: { c: Chunk; d: number }[] = [];
+    for (const c of this.chunks) {
+      const g = c.mesh.geometry;
+      if (c.global) {
+        g.instanceCount = c.count;
+        if (c.mesh.visible) {
+          left -= c.count;
+          this.globalDrawn += c.count;
+        }
+      } else if (!g.boundingSphere || frustum.intersectsSphere(g.boundingSphere)) {
+        inView.push({ c, d: g.boundingSphere ? g.boundingSphere.center.distanceTo(camera.position) : 0 });
+      } else {
+        g.instanceCount = c.count; // culled anyway
+      }
+    }
+    inView.sort((a, b) => a.d - b.d);
+    // Nearest first in full; once that no longer fits, the rest share what is left.
+    let k = 0;
+    for (; k < inView.length && inView[k]!.c.count <= left; k++) {
+      inView[k]!.c.mesh.geometry.instanceCount = inView[k]!.c.count;
+      left -= inView[k]!.c.count;
+    }
+    let rest = 0;
+    for (let i = k; i < inView.length; i++) rest += inView[i]!.c.count;
+    const f = rest > 0 ? Math.max(0, left) / rest : 1;
+    for (let i = k; i < inView.length; i++) {
+      const c = inView[i]!.c;
+      const n = Math.floor(c.count * f);
+      c.mesh.geometry.instanceCount = n;
+      this.thinned += c.count - n;
+    }
+  }
+
+  /**
+   * How many glyphs stack on one spot of the screen: projects the centre of
+   * every ground and object card in view (not sky, rain or leaves) and counts
+   * them per square screen cell of `cellPx` CSS px (about one glyph).
+   * Returns the number of occupied cells and the mean, 95th percentile and
+   * maximum count per occupied cell. For tests and the terminal; not per frame.
+   */
+  stacking(camera: PerspectiveCamera, width: number, height: number, cellPx = 16): { cells: number; mean: number; p95: number; max: number } {
+    camera.updateMatrixWorld();
+    const vp = new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    const frustum = new Frustum().setFromProjectionMatrix(vp);
+    const cols = Math.ceil(width / cellPx), rows = Math.ceil(height / cellPx);
+    const counts = new Uint32Array(cols * rows);
+    const e = vp.elements;
+    for (const c of this.chunks) {
+      if (c.global || !c.mesh.visible) continue;
+      const g = c.mesh.geometry;
+      if (g.boundingSphere && !frustum.intersectsSphere(g.boundingSphere)) continue;
+      const attr = g.getAttribute('iCenter') as InterleavedBufferAttribute;
+      const arr = attr.data.array as Float32Array, stride = attr.data.stride;
+      const n = Math.min(g.instanceCount, c.count);
+      for (let i = 0; i < n; i++) {
+        const o = i * stride;
+        const x = arr[o]!, y = arr[o + 1]!, z = arr[o + 2]!;
+        const w = e[3]! * x + e[7]! * y + e[11]! * z + e[15]!;
+        if (w <= 0) continue;
+        const nx = (e[0]! * x + e[4]! * y + e[8]! * z + e[12]!) / w;
+        const ny = (e[1]! * x + e[5]! * y + e[9]! * z + e[13]!) / w;
+        if (nx < -1 || nx >= 1 || ny < -1 || ny >= 1) continue;
+        const cx = Math.floor(((nx + 1) / 2) * width / cellPx), cy = Math.floor(((1 - ny) / 2) * height / cellPx);
+        counts[cy * cols + cx]!++;
+      }
+    }
+    const used = Array.from(counts).filter((v) => v > 0).sort((a, b) => a - b);
+    if (used.length === 0) return { cells: 0, mean: 0, p95: 0, max: 0 };
+    const mean = used.reduce((a, b) => a + b, 0) / used.length;
+    return { cells: used.length, mean, p95: used[Math.floor(used.length * 0.95)]!, max: used[used.length - 1]! };
   }
 
   /** The chunk meshes (the underpaint pass draws them with its own material). */
@@ -531,12 +646,16 @@ export class CardLayer {
       const r = lo.distanceTo(hi) / 2 + size + 1;
       geometry.boundingSphere = new Sphere(lo.clone().add(hi).multiplyScalar(0.5), r);
       const mesh = new Mesh(geometry, this.material);
-      const chunk: Chunk = { mesh, count, global: global > 0.5, lo, hi };
+      const centre = lo.clone().add(hi).multiplyScalar(0.5);
+      const sky = global > 1.5
+        ? { dir: centre.clone().normalize(), radius: Math.atan2(lo.distanceTo(hi) / 2, Math.max(centre.length(), 1)) }
+        : null;
+      const chunk: Chunk = { mesh, count, global: global > 0.5, lo, hi, sky };
       // Global chunks (sky dome, rain round the camera, blown leaves) always draw.
       mesh.frustumCulled = !chunk.global;
       mesh.renderOrder = 1; // after the opaque body
       mesh.onBeforeRender = () => {
-        this.drawn += chunk.count;
+        this.drawn += Math.min(geometry.instanceCount, chunk.count);
       };
       set.push(chunk);
       this.chunks.push(chunk);

@@ -65,7 +65,9 @@ In the viewer: drag to orbit, wheel to zoom, right-drag to pan.
 Debug terminal (dev/test builds only): press `` ` `` (the key left of `1`,
 `²` on AZERTY) or `F1`, then type `help`. Try `paint grass 0 -20 6`,
 `place tree:oak 4 -25`, `wind 0.8`, `view 6`, or `perf on` (also `F3`) for
-FPS, frame time, cards and chunks.
+FPS, frame time, cards and chunks. `stack` shows how many glyphs pile up on
+one spot of the screen; `budget 80k` caps the cards drawn per frame on a slow
+machine.
 
 Dev shortcuts (dev/test builds only, while the terminal is closed):
 - `C`: back to the canvas
@@ -88,6 +90,7 @@ shader, so the weather costs almost nothing per frame.
 Visual references for the e2e test live in `tests/golden/`; after an intended
 visual change, check `test-results/` and run `UPDATE_GOLDEN=1 npm run test:e2e`.
 `node scripts/bench-world.mjs` (after `npm run build:test`) times how long
-the canvas takes to stream in.
+the canvas takes to stream in; `node scripts/bench-stacking.mjs` measures
+how many glyphs pile up on screen and how many cards are drawn, in four views.
 
 See `docs/branches.md` for what was built on the side branches and what of it is on `master`.

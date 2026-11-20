@@ -73,8 +73,15 @@ try {
       failures++;
       console.log(`  FAIL ${name}\n       ${e.message}`);
     } finally {
-      // Never leave play mode on: it swallows the keys the next steps press.
+      // Never leave play mode or the terminal on (they swallow the keys the
+      // next steps press), nor a card budget.
       await page.evaluate(() => window.__ascii?.stopPlaying?.()).catch(() => {});
+      await page.evaluate(() => {
+        const t = document.querySelector('.tui-terminal');
+        if (t && !t.hidden) window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+        const v = window.__ascii?.app?.viewer;
+        if (v) v.cards.budget = Infinity;
+      }).catch(() => {});
     }
   };
 
@@ -125,10 +132,35 @@ try {
     const s = await state();
     assert.equal(s.status, 'ready', s.error ?? '');
     assert.ok(s.weather.wind > 0, 'the canvas starts with a breeze');
-    assert.ok((await coverage()) > 0.3, 'ground and sky fill the frame');
+    assert.ok((await coverage()) > 0.2, 'ground and sky fill the frame'); // glyphs barely overlap, so ~30% of pixels
     await page.screenshot({ path: join(outDir, '13-canvas.png') });
     await matchesGolden('13-canvas');
     await page.evaluate(() => window.__ascii.freezeTime(null));
+  });
+
+  await step('glyphs do not pile up; the sky outside the view is skipped; the card budget caps drawing', async () => {
+    const st = await page.evaluate(() => window.__ascii.stacking());
+    console.log(`       glyphs per screen cell: mean ${st.mean.toFixed(1)}, 95% under ${st.p95}, max ${st.max}`);
+    assert.ok(st.p95 <= 8, `95% of screen cells should hold at most 8 glyphs (got ${st.p95})`);
+    const drawn = () => page.evaluate(() => {
+      const v = window.__ascii.app.viewer;
+      v.requestRender();
+      window.__ascii.thumbnail();
+      return { drawn: v.cards.drawn, loaded: v.cards.cardCount, thinned: v.cards.thinned, always: v.cards.globalDrawn };
+    });
+    const full = await drawn();
+    console.log(`       cards drawn ${full.drawn} of ${full.loaded} loaded`);
+    assert.ok(full.drawn < full.loaded * 0.6, 'sky sectors behind the camera are not drawn');
+    await page.evaluate(() => window.__ascii.run('budget 20k'));
+    const capped = await drawn();
+    console.log(`       budget 20k: ${capped.drawn} drawn (${capped.always} sky, rain and leaves, always drawn), ${capped.thinned} left out`);
+    assert.ok(capped.thinned > 0 && capped.drawn < full.drawn, 'the budget leaves cards out');
+    assert.ok(capped.drawn <= Math.max(20_000, capped.always), 'no more than the budget, or the always-drawn cards if those alone exceed it');
+    await page.evaluate(() => window.__ascii.run('budget off'));
+    const back = await drawn();
+    // (Chunks may still be streaming in, so the total can differ a little.)
+    assert.equal(back.thinned, 0, 'budget off leaves nothing out');
+    assert.ok(back.drawn > capped.drawn, 'budget off draws more again');
   });
 
   await step('canvas edits: paint and place objects, only the touched chunks rebuild', async () => {
@@ -159,7 +191,12 @@ try {
     assert.equal(after.viewBuilds, before.viewBuilds, 'no other loaded chunk was rebuilt');
     assert.equal(after.editBuilds - before.editBuilds, touched, 'one rebuild per touched chunk');
     await page.screenshot({ path: join(outDir, '13b-canvas-edits.png') });
-    await matchesGolden('13b-canvas-edits');
+    let golden = null;
+    try {
+      await matchesGolden('13b-canvas-edits');
+    } catch (e) {
+      golden = e; // clean up first, so later steps start from an empty map
+    }
     // Undo it all: the map is empty again and stores nothing.
     const left = await page.evaluate(() => {
       const a = window.__ascii;
@@ -171,6 +208,7 @@ try {
     assert.equal(left.objects, 0);
     await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
     await page.evaluate(() => window.__ascii.freezeTime(null));
+    if (golden) throw golden;
   });
 
   await step('debug terminal: opens with `, runs commands, keeps keys away from hotkeys, perf overlay', async () => {
@@ -305,7 +343,7 @@ try {
     const before = (await page.evaluate(() => window.__ascii.worldStats())).built;
     await page.waitForFunction((b) => window.__ascii.worldStats().built >= b + 9, { timeout: 900_000, polling: 1000 }, before);
     await chunksLoaded(12);
-    assert.ok((await coverage()) > 0.3, 'the canvas fills the view far from the start');
+    assert.ok((await coverage()) > 0.2, 'the canvas fills the view far from the start');
     await page.screenshot({ path: join(outDir, '16d-canvas-travelled.png') });
     await page.keyboard.press('c');
     await waitSettled('canvas');
@@ -313,15 +351,30 @@ try {
   });
 
   await step('wind carries leaves across the canvas; calm air does not', async () => {
-    // Leaves fly round the camera's height: look from eye level, fixed (no damping drift).
-    await page.evaluate(() => {
-      const v = window.__ascii.app.viewer;
+    // Leaves fly round the camera's height: look from eye level, fixed (no
+    // damping drift), and let every chunk finish building first, so only the
+    // weather changes between frames (software WebGL is too slow to stream
+    // while drawing, so drawing pauses meanwhile).
+    await page.evaluate(async () => {
+      const app = window.__ascii.app, v = app.viewer, w = app.world;
       v.controls.enableDamping = false;
       v.camera.position.set(0, 2, 0);
       v.controls.target.set(0, 1.6, -20);
       v.controls.update();
+      const draw = v.draw;
+      v.draw = () => {};
+      try {
+        for (let quiet = 0; quiet < 3;) {
+          w.update(v.camera.position, true);
+          quiet = w.pending === 0 && w.dirtyCount === 0 ? quiet + 1 : 0;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+      } finally {
+        v.draw = draw;
+      }
     });
-    const at = (t) => page.evaluate((t) => { window.__ascii.freezeTime(t); return window.__ascii.thumbnail(); }, t);
+    // Leaves are small: compare finer images than the reference thumbnails.
+    const at = (t) => page.evaluate((t) => { window.__ascii.freezeTime(t); return window.__ascii.app.viewer.thumbnail(250, 200); }, t);
     const diff = (a, b) => a.reduce((s, v, i) => s + Math.abs(v - b[i]), 0) / a.length;
     const change = async () => {
       let sum = 0;
@@ -334,7 +387,7 @@ try {
     const calm = await change();
     await page.evaluate(() => { window.__ascii.app.viewer.controls.enableDamping = true; });
     console.log(`       frame change: windy ${windy.toFixed(2)}, calm ${calm.toFixed(2)}`);
-    assert.ok(windy > calm * 1.5 && windy > 0.2, 'wind should visibly carry the leaves');
+    assert.ok(windy > calm * 3 && windy > 0.08, 'wind should visibly carry the leaves');
   });
 
   await step('rain and blowing leaves show up and switch off again', async () => {

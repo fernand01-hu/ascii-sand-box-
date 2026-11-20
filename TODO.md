@@ -108,14 +108,31 @@ next one.
   - [x] It is the first TUI piece (`web/src/ui/tui.css`: palette, double-line
     boxes with titles in the border). Dev/test builds only.
 
-- [ ] **4. Limit overlapping characters on screen.** (Moved up from Phase 3:
-      on a CPU-only machine the number of characters is the main cost, and
-      this is what keeps the 30 FPS target.)
-  - The current budget in `skin.rs` is per object. Add a screen-space cap:
-    at most N cards drawn on one screen cell, nearest first.
-  - **(added)** A global card budget per frame, shared out by distance.
-    Earlier, thinning far chunks looked bad, so test this carefully against
-    screenshots.
+- [x] **4. Limit overlapping characters on screen.** (Done on
+      `step-04-char-limit`. Moved up from Phase 3: on a CPU-only machine the
+      number of characters is the main cost.)
+  - [x] Ground: each 4 m cell picks its row and column spacing so that at
+    most 3 grid points fall inside one glyph's footprint as seen from the eye.
+    Low views spread the rows going away from the eye. Rows stay on one
+    world grid (i x step), so the levels nest and line up.
+  - [x] Objects: each chunk keeps at most 6 object glyphs per glyph-sized
+    patch of view, nearest first, so what hides behind a nearer crown goes.
+  - [x] Chunks are rebuilt when the eye looks at them from a very
+    different height, not only when it moves sideways.
+  - [x] The sky dome (~97k cards) is split into direction sectors, and the
+    ones out of view are skipped. This was the biggest single saving.
+  - [x] **(added)** An optional global card budget per frame (`budget 80k`
+    in the terminal; off by default): nearest chunks draw in full, farther
+    ones draw an even sample. It makes holes in the far rows, so it is off
+    unless a machine needs it.
+  - [x] Measuring: `stack` in the terminal, `scripts/bench-stacking.mjs`
+    (4 views). Before → after, worst 5% of screen cells: canvas 27 → 5,
+    canvas at eye level 62 → 4, forest 121 → 27. Cards drawn per frame:
+    143k → 50k (canvas), 215k → 69k (forest).
+  - [ ] Left over: crowns in *different* chunks can still line up behind each
+    other near the horizon (that's the remaining forest 27). Fixing it needs
+    each chunk to know the objects in front of it. Do it together with
+    step 14, which needs neighbour data for shadows anyway.
 
 - [ ] **5. TUI-style interface (old-school ASCII game look).**
   - Use a monospace font, box-drawing borders (`┌─┐│└┘`), keyboard-first

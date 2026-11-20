@@ -3,11 +3,19 @@
 //! * Unpainted ground is neat, evenly spaced, parallel rows of '#'. Painted
 //!   ground (grass, sand, water, rock) uses the same grid with that
 //!   material's characters, so the map keeps its tidy terminal look.
-//! * Every glyph sits on one world-aligned grid, so rows run straight across
-//!   chunk borders. Glyph size follows the usual rule (~15 px tall from the
-//!   eye the chunk was built for), rounded up to `FINE` x a power of two.
-//!   Each coarser level keeps every other row and column of the finer one,
-//!   so distant ground shows bigger glyphs that still line up.
+//! * Every glyph sits on one world-aligned grid (points at i x step), so
+//!   rows run straight across chunk borders. Glyph size follows the usual
+//!   rule (~15 px tall from the eye the chunk was built for), rounded up to
+//!   `FINE` x a power of two. Each coarser level keeps every other row and
+//!   column of the finer one, so distant ground shows bigger glyphs that
+//!   still line up.
+//! * Glyphs never pile up much on screen. Ground seen at a low angle
+//!   squeezes its rows together, so each 4 m cell picks its row and column
+//!   steps on their own: doubled until at most `GROUND_STACK` glyphs
+//!   overlap where it lands on screen. Objects keep at most `OBJECT_STACK`
+//!   glyphs per glyph-sized patch of view, nearest first: what hides behind
+//!   a nearer crown is what goes. Both are measured from the eye, by angle,
+//!   so they hold whichever way the camera turns.
 //! * What a chunk holds is passed in: its ground tiles (`TILES` x `TILES`,
 //!   `TILE` m each) and the objects whose base point lies inside it. An
 //!   object is skinned in full by that chunk, even where its crown hangs
@@ -41,10 +49,18 @@ pub const TILES: usize = (CHUNK / TILE) as usize;
 pub const OBJECT_FLOATS: usize = 6;
 /// Generated variants per kind; an object's seed picks one of them.
 pub const VARIANTS: u32 = 8;
+/// Ground glyphs allowed to overlap on one spot of the screen.
+pub const GROUND_STACK: f32 = 3.0;
+/// Object glyphs allowed per glyph-sized patch of view (one chunk's objects).
+pub const OBJECT_STACK: usize = 6;
+/// Row / column step (m) is never coarser than this.
+pub const MAX_STEP: f32 = 512.0;
 /// The glyph size is chosen per square cell of this side (m).
 const CELL: f32 = 4.0;
 /// 50 degree field of view, 1000 px tall.
 const FOCAL: f32 = 1072.0;
+/// One glyph (15 px) as an angle from the eye, radians.
+const GLYPH_ANGLE: f32 = 15.0 / FOCAL;
 
 /// What a ground tile is painted with. The code is the byte stored per tile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +104,83 @@ pub fn spacing(view: &View, p: Vec3) -> f32 {
         s *= 2.0;
     }
     s
+}
+
+/// Row and column steps (x, z) for the cell centred at `c`, whose glyphs
+/// are `s` tall (`s * aspect` wide): each starts at the glyph size and
+/// doubles while more than `GROUND_STACK` grid points fall inside one
+/// glyph's footprint on the ground. Seen from the eye at a grazing angle,
+/// that footprint stretches away from the eye by 1 / sin(angle), so the
+/// step that points more away from the eye is the one that grows.
+pub fn steps(eye: Vec3, c: Vec3, s: f32, aspect: f32) -> (f32, f32) {
+    let (dx, dz) = (c.x - eye.x, c.z - eye.z);
+    let d = dx.hypot(dz);
+    let (mut sx, mut sz) = (s * aspect, s);
+    if d < 1.0 {
+        return (sx, sz);
+    }
+    let h = (eye.y - GROUND).max(0.05);
+    let graze = h / h.hypot(d); // sin of the angle down to the ground
+    let footprint = s * s * aspect / graze; // ground area under one glyph, m^2
+    let x_first = dx.abs() >= dz.abs(); // x points more away from the eye
+    for _ in 0..24 {
+        if footprint / (sx * sz) <= GROUND_STACK {
+            break;
+        }
+        let grow_x = if x_first { sx < MAX_STEP } else { sz >= MAX_STEP };
+        if grow_x && sx < MAX_STEP {
+            sx *= 2.0;
+        } else if sz < MAX_STEP {
+            sz *= 2.0;
+        } else {
+            break;
+        }
+    }
+    (sx, sz)
+}
+
+/// Keep at most `OBJECT_STACK` of the cards from `start` on per
+/// glyph-sized patch of view from `eye`, nearest first.
+fn cap_stacking(cards: &mut Vec<f32>, start: usize, eye: Vec3) {
+    use crate::cards::STRIDE;
+    let n = cards.len() / STRIDE;
+    if n <= start {
+        return;
+    }
+    let mut keyed: Vec<(i64, f32, usize)> = (start..n)
+        .map(|i| {
+            let c = &cards[i * STRIDE..i * STRIDE + 3];
+            let (dx, dy, dz) = (c[0] - eye.x, c[1] - eye.y, c[2] - eye.z);
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt().max(1e-4);
+            let pitch = (dy / dist).clamp(-1.0, 1.0).asin();
+            // Columns of equal width on the view sphere: fewer round the poles.
+            let yaw_cell = GLYPH_ANGLE / pitch.cos().max(0.05);
+            let (a, b) = ((dz.atan2(dx) / yaw_cell).floor() as i64, (pitch / GLYPH_ANGLE).floor() as i64);
+            ((a << 24) ^ (b & 0xff_ffff), dist, i)
+        })
+        .collect();
+    keyed.sort_unstable_by(|p, q| p.0.cmp(&q.0).then(p.1.total_cmp(&q.1)));
+    let mut keep: Vec<usize> = Vec::with_capacity(keyed.len());
+    let mut run = (i64::MIN, 0usize);
+    for &(key, _, i) in &keyed {
+        if key != run.0 {
+            run = (key, 0);
+        }
+        if run.1 < OBJECT_STACK {
+            keep.push(i);
+        }
+        run.1 += 1;
+    }
+    if keep.len() == n - start {
+        return;
+    }
+    keep.sort_unstable(); // keep the original order (it carries no meaning, but stays deterministic)
+    let mut out = Vec::with_capacity((start + keep.len()) * STRIDE);
+    out.extend_from_slice(&cards[..start * STRIDE]);
+    for i in keep {
+        out.extend_from_slice(&cards[i * STRIDE..(i + 1) * STRIDE]);
+    }
+    *cards = out;
 }
 
 /// A small, stable hash of a grid point (colour variation that doesn't
@@ -176,6 +269,7 @@ impl Canvas {
         let seed = self.seed as u64 ^ ((cx as u64) << 32) ^ (cz as u32 as u64);
         let mut sk = Skinner::new(&self.glyphs, 0.1, aspect, seed);
         ground(&mut sk, &view, x0, z0, aspect, data.tiles);
+        let ground_cards = sk.card_count();
         for &(asset, _, pl) in &objects {
             let a: &Asset = &self.lib.assets[asset];
             skin_placed(&mut sk, a, pl, &view);
@@ -184,6 +278,8 @@ impl Canvas {
             // Baked shadows from this chunk's own objects (onto the ground too).
             let occ = Occlusion::with_max_cells(&sk.occluders, 6.0e5);
             sk.light(&occ, sky::sun_for(self.day), &|_| 1.0, Some(eye));
+            // After lighting: it refers to cards by index.
+            cap_stacking(&mut sk.cards, ground_cards, eye);
         }
 
         let y = GROUND - 0.08;
@@ -209,14 +305,16 @@ fn ground(sk: &mut Skinner, view: &View, x0: f32, z0: f32, aspect: f32, tiles: &
     for cj in 0..cells {
         for ci in 0..cells {
             let (ax, az) = (x0 + ci as f32 * CELL, z0 + cj as f32 * CELL);
-            let s = spacing(view, Vec3::new(ax + CELL / 2.0, GROUND, az + CELL / 2.0));
+            let centre = Vec3::new(ax + CELL / 2.0, GROUND, az + CELL / 2.0);
+            let s = spacing(view, centre);
             let sx = s * aspect;
-            // Grid points whose centre falls inside this cell: (i + 0.5) * sx.
-            let (i0, i1) = (((ax / sx) - 0.5).ceil() as i64, (((ax + CELL) / sx) - 0.5).ceil() as i64);
-            let (j0, j1) = (((az / s) - 0.5).ceil() as i64, (((az + CELL) / s) - 0.5).ceil() as i64);
+            let (step_x, step_z) = steps(view.eye, centre, s, aspect);
+            // Grid points (i * step) inside this cell.
+            let (i0, i1) = ((ax / step_x).ceil() as i64, ((ax + CELL) / step_x).ceil() as i64);
+            let (j0, j1) = ((az / step_z).ceil() as i64, ((az + CELL) / step_z).ceil() as i64);
             for j in j0..j1 {
                 for i in i0..i1 {
-                    let (x, z) = ((i as f32 + 0.5) * sx, (j as f32 + 0.5) * s);
+                    let (x, z) = (i as f32 * step_x, j as f32 * step_z);
                     let g = if painted {
                         let ti = (((x - x0) / TILE) as usize).min(TILES - 1);
                         let tj = (((z - z0) / TILE) as usize).min(TILES - 1);
@@ -227,7 +325,7 @@ fn ground(sk: &mut Skinner, view: &View, x0: f32, z0: f32, aspect: f32, tiles: &
                     let mat = g.mat();
                     let def = mat.def();
                     let glyph = sk.glyph(mat);
-                    let f = 1.0 + def.var * (2.0 * hash2(i, j) - 1.0);
+                    let f = 1.0 + def.var * (2.0 * hash2((x / sx).round() as i64, (z / s).round() as i64) - 1.0);
                     let col = def.albedo.map(|c| c * f);
                     let c = Vec3::new(x, GROUND + 0.01 * s, z);
                     // Flat on the ground (U x V = up), upright when seen from +z;
@@ -281,7 +379,7 @@ mod tests {
             let sx = s * ASPECT;
             assert!((FINE..=COARSE).contains(&s));
             assert!((card[layout::U] - sx).abs() < 1e-6 && card[layout::U + 1] == 0.0 && card[layout::V + 1] == 0.0);
-            let (fi, fj) = (card[0] / sx - 0.5, card[2] / s - 0.5);
+            let (fi, fj) = (card[0] / sx, card[2] / s);
             assert!((fi - fi.round()).abs() < 1e-3 && (fj - fj.round()).abs() < 1e-3, "off the grid at {} {}", card[0], card[2]);
             assert!((card[1] - GROUND).abs() < 0.05);
         }
@@ -394,6 +492,62 @@ mod tests {
         let mut canvas = Canvas::new(5, true);
         canvas.build_chunk(0, 0, eye(), ASPECT, blank()); // build order must not matter
         assert_eq!(canvas.build_chunk(-3, 2, eye(), ASPECT, data).cards, a);
+    }
+
+    /// Cards per glyph-sized patch of view from `eye`: (95th percentile, max).
+    fn stack(cards: &[f32], eye: Vec3, only: impl Fn(&[f32]) -> bool) -> (usize, usize) {
+        let mut counts = std::collections::HashMap::<(i64, i64), usize>::new();
+        for c in cards.chunks_exact(STRIDE).filter(|c| only(c)) {
+            let (dx, dy, dz) = (c[0] - eye.x, c[1] - eye.y, c[2] - eye.z);
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            let pitch = (dy / dist).asin();
+            let key = ((dz.atan2(dx) * pitch.cos() / GLYPH_ANGLE).floor() as i64, (pitch / GLYPH_ANGLE).floor() as i64);
+            *counts.entry(key).or_default() += 1;
+        }
+        let mut v: Vec<usize> = counts.into_values().collect();
+        v.sort_unstable();
+        (v[v.len() * 95 / 100], v[v.len() - 1])
+    }
+
+    #[test]
+    fn ground_glyphs_do_not_pile_up_toward_the_horizon() {
+        let mut canvas = Canvas::new(1, false);
+        // Eye level, looking along -z: the whole strip of chunks ahead.
+        let e = Vec3::new(16.0, 1.7, 16.0);
+        let mut cards = Vec::new();
+        for cz in -9..=0 {
+            for cx in -1..=1 {
+                cards.extend(canvas.build_chunk(cx, cz, e, ASPECT, blank()).cards);
+            }
+        }
+        let (p95, max) = stack(&cards, e, |c| c[2] < e.z - 3.0);
+        eprintln!("ground stacking at eye level: p95 {p95}, max {max}, {} cards", cards.len() / STRIDE);
+        // Patches don't line up with glyphs, so a glyph's worth can straddle two.
+        assert!(p95 <= 2 * GROUND_STACK as usize, "p95 {p95}");
+        assert!(max <= 4 * GROUND_STACK as usize, "max {max}");
+        // Far ahead, rows (along the view) spread out more than columns.
+        let (sx, sz) = steps(e, Vec3::new(16.0, 0.0, -150.0), 2.0, ASPECT);
+        assert!(sz > sx * 4.0, "rows {sz} m apart, columns {sx} m");
+        // Seen from straight above nothing needs spreading.
+        assert_eq!(steps(Vec3::new(0.0, 100.0, 0.0), Vec3::new(10.0, 0.0, 0.0), 1.0, ASPECT), (ASPECT, 1.0));
+    }
+
+    #[test]
+    fn crowded_objects_keep_only_the_nearest_glyphs_per_patch_of_view() {
+        let mut canvas = Canvas::new(1, false);
+        let mut objects = Vec::new();
+        for k in 0..30 {
+            let (x, z) = (4.0 + (k % 6) as f32 * 5.0, 2.0 + (k / 6) as f32 * 6.0);
+            objects.extend_from_slice(&[code(["tree:oak", "tree:spruce", "tree:birch"][k % 3]), k as f32, x, z, k as f32, 1.0]);
+        }
+        let e = Vec3::new(16.0, 7.0, 60.0);
+        let c = canvas.build_chunk(0, 0, e, ASPECT, ChunkData { tiles: &[], objects: &objects });
+        assert_eq!(c.placed, 30);
+        let is_object = |k: &[f32]| mat_mode(k).0 != Mat::Canvas as u32;
+        let (p95, max) = stack(&c.cards, e, is_object);
+        eprintln!("object stacking: p95 {p95}, max {max}, {} object cards", c.cards.chunks_exact(STRIDE).filter(|k| is_object(k)).count());
+        assert!(max <= 2 * OBJECT_STACK, "max {max}");
+        assert!(p95 <= OBJECT_STACK, "p95 {p95}");
     }
 
     #[test]

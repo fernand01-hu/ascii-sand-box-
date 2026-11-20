@@ -5,8 +5,9 @@
 //     touched, before anything else, so edits show up at once. A build
 //     that finishes after a newer edit is shown, then rebuilt again;
 //   * the viewer has moved enough that its glyph sizes (chosen for the eye
-//     at build time) are off: nearer -> finer, farther -> coarser. Screen
-//     density stays the same at every distance.
+//     at build time) are off: nearer -> finer, farther -> coarser, or looks
+//     at it from a very different height (rows are spread by how low the
+//     view grazes the ground). Screen density stays the same everywhere.
 // Memory stays bounded: only chunks within `radius` (+2 before dropping)
 // are kept; the edits themselves live in MapData, not here.
 
@@ -112,7 +113,12 @@ export class WorldStreamer implements Ground {
         const floor = S * 1.5;
         const ratio = Math.max(dNow, floor) / Math.max(dBuilt, floor);
         const moved = Math.hypot(eye.x - bx, eye.y - by, eye.z - bz);
-        if (ratio > 1.7 || ratio < 0.6 || moved > 0.6 * Math.max(dNow, floor)) want.push({ cx, cz, prio: dNow + 1000 });
+        // ... or the view grazes the ground at a very different angle: the
+        // engine spreads rows by it (glyph stacking), from the build eye.
+        const g = this.info.ground;
+        const graze = (h: number, d: number) => Math.max(h - g, 0.5) / Math.hypot(Math.max(h - g, 0.5), d);
+        const angle = graze(eye.y, Math.max(dNow, floor)) / graze(by, Math.max(dBuilt, floor));
+        if (ratio > 1.7 || ratio < 0.6 || angle > 1.7 || angle < 0.6 || moved > 0.6 * Math.max(dNow, floor)) want.push({ cx, cz, prio: dNow + 1000 });
       }
     }
     // Drop chunks well out of range.

@@ -54,7 +54,8 @@ export function statLines(app: App): string[] {
   const q = app.engine.queue();
   const lines = [
     s.fps > 0 ? `fps     ${s.fps.toFixed(s.fps < 10 ? 1 : 0).padStart(4)}   frame ${s.frameMs.toFixed(1)} ms   draw ${s.drawMs.toFixed(1)} ms` : 'fps     idle (nothing changed, nothing redrawn)',
-    `cards   ${fmt(s.drawn).padStart(6)} drawn / ${fmt(v.cards.cardCount)} loaded`,
+    `cards   ${fmt(s.drawn).padStart(6)} drawn / ${fmt(v.cards.cardCount)} loaded` +
+      (Number.isFinite(v.cards.budget) ? `   budget ${fmt(v.cards.budget)}, ${fmt(v.cards.thinned)} left out` : ''),
   ];
   const w = app.world;
   if (w) {
@@ -94,6 +95,27 @@ const COMMANDS: Command[] = [
     run(_app, [arg], io) {
       if (arg !== undefined && arg !== 'on' && arg !== 'off') throw new CommandError('perf: on or off');
       io.print(`perf overlay ${io.setPerf(arg === undefined ? undefined : arg === 'on') ? 'on' : 'off'}`);
+    },
+  },
+  {
+    name: 'stack', usage: 'stack', help: 'how many glyphs pile up on one spot of the screen (per 16 px cell)',
+    run(app, _x, io) {
+      const s = app.viewer.stacking();
+      io.print(s.cells ? `glyphs per screen cell: mean ${s.mean.toFixed(1)}, 95% under ${s.p95}, max ${s.max} (${s.cells} cells)` : 'no ground or objects in view');
+    },
+  },
+  {
+    name: 'budget', usage: 'budget [cards|off]', help: 'most cards drawn per frame, e.g. 80k (far chunks thinned); off = no limit',
+    run(app, [a], io) {
+      const cards = app.viewer.cards;
+      if (a === 'off') cards.budget = Infinity;
+      else if (a !== undefined) {
+        const m = /^(\d+(?:\.\d+)?)(k?)$/i.exec(a);
+        if (!m) throw new CommandError('budget: a number of cards like 80000 or 80k, or off');
+        cards.budget = Math.max(1000, Number(m[1]) * (m[2] ? 1000 : 1));
+      }
+      app.viewer.requestRender();
+      io.print(Number.isFinite(cards.budget) ? `card budget ${fmt(cards.budget)} per frame` : 'no card budget');
     },
   },
   {
