@@ -521,3 +521,11 @@ Order: 16 → 22. Steps 16-21 need no GPU, and they help the no-GPU target too (
     - a longer view distance, with far ground out to 1 km (an idea from the native branch)
     - more glyphs per patch
   - **Later, optional:** a WebGPU renderer with a WebGL fallback. Ideas from the `grosminet` branches to port by hand: each card evaluated once per frame, the frame-time trace. Never by merging `main`.
+
+## Ruins (from `ruins.py`)
+
+- [x] **Generator ported to Rust** (`engine/src/scenery/ruins/`): church and castle, walls cut into columns with a ground flood fill (nothing floats), smooth stone or individual bricks (courses, toothing, cracks, arch stones, mortar core), windows with stained glass, piers, debris piled with a height map, moss and vines. Built per seed in 25-50 ms.
+- [x] **Objects `ruin:church` and `ruin:castle`** for the object brush, with sliders (damage, bricks, rubble, moss, vines, sizes...) and colliders so the walker can't go through walls.
+- [x] **Four ASCII styles for the bricks** (slider "ASCII style", `gallery ruins` shows A-D side by side): A tiles, B `[==]`, C mortar lines, D shading ramp.
+- [ ] Pick the default style (waiting for the user's choice).
+- [ ] Cost: a church right next to the walker is ~80k glyphs, a 0.4 s worker build and a ~20 ms swap on the main thread per rebuild. Consider cheaper near rebuilds for big objects.

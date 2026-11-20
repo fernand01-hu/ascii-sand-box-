@@ -46,6 +46,19 @@ pub struct Surfel {
     pub mat: Mat,
 }
 
+/// A flat convex polygon of a built structure (ruins), wound by `normal`.
+/// `piece` groups the faces of one brick or stone (0 = a smooth surface);
+/// `unit` faces are drawn as one masonry unit each, in the asset's style.
+#[derive(Clone, Debug)]
+pub struct Facet {
+    pub pts: Vec<Vec3>,
+    pub normal: Vec3,
+    pub color: [f32; 3],
+    pub mat: Mat,
+    pub piece: u32,
+    pub unit: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Asset {
     pub name: String,
@@ -53,6 +66,12 @@ pub struct Asset {
     pub sprites: Vec<Sprite>,
     pub surfels: Vec<Surfel>,
     pub solids: Vec<[Vec3; 3]>,
+    /// Polygons of built structures (ruins), skinned by `face_style`.
+    pub faces: Vec<Facet>,
+    /// How `faces` look in ASCII (see `skin::FaceStyle`).
+    pub face_style: u8,
+    /// What a walker bumps into besides the usual (x, z, radius), local.
+    pub colliders: Vec<[f32; 3]>,
 }
 
 impl Asset {
@@ -93,6 +112,7 @@ impl Asset {
         });
         self.sprites.iter().for_each(|s| add(s.pos));
         self.surfels.iter().for_each(|s| add(s.pos));
+        self.faces.iter().for_each(|f| f.pts.iter().for_each(|&p| add(p)));
         if lo.x > hi.x {
             return (Vec3::ZERO, Vec3::ZERO);
         }
@@ -104,7 +124,7 @@ impl Asset {
     }
 
     pub fn primitive_count(&self) -> usize {
-        self.wood.len() + self.sprites.len() + self.surfels.len()
+        self.wood.len() + self.sprites.len() + self.surfels.len() + self.faces.len()
     }
 
     /// Level of detail for distant copies (port of `geometry.lod`): level 1
@@ -135,6 +155,10 @@ impl Asset {
                 .map(|s| Surfel { spacing: s.spacing * grow, ..*s })
                 .collect(),
             solids: self.solids.clone(),
+            // Built structures keep every face: their skinning follows the distance.
+            faces: self.faces.clone(),
+            face_style: self.face_style,
+            colliders: self.colliders.clone(),
         }
     }
 

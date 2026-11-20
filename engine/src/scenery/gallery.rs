@@ -20,10 +20,12 @@ pub enum Category {
     Plants,
     Bushes,
     Trees,
+    /// The ruins' ASCII styles A-D side by side on one wall sample.
+    Ruins,
 }
 
 impl Category {
-    pub const ALL: [Category; 4] = [Category::Rocks, Category::Plants, Category::Bushes, Category::Trees];
+    pub const ALL: [Category; 5] = [Category::Rocks, Category::Plants, Category::Bushes, Category::Trees, Category::Ruins];
 
     pub fn parse(s: &str) -> Option<Category> {
         match s {
@@ -31,6 +33,7 @@ impl Category {
             "plants" => Some(Category::Plants),
             "bushes" => Some(Category::Bushes),
             "trees" => Some(Category::Trees),
+            "ruins" => Some(Category::Ruins),
             _ => None,
         }
     }
@@ -81,6 +84,11 @@ fn sheet(cat: Category, seed: u32) -> Sheet {
         Category::Trees => {
             let assets = TreeKind::ALL.iter().enumerate().map(|(i, &k)| make_tree(s + i as u32, k)).collect();
             Sheet { assets, rows: 1, gap: 1.0, fov: 45.0, look_down: 0.12, dist_scale: 1.0 }
+        }
+        Category::Ruins => {
+            // the same wall in each style, A B C D from left to right
+            let assets = (0..4).map(|style| super::ruins::wall_sample(seed, style)).collect();
+            Sheet { assets, rows: 1, gap: 1.5, fov: 40.0, look_down: 0.1, dist_scale: 1.0 }
         }
     }
 }

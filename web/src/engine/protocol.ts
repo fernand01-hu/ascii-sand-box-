@@ -116,8 +116,8 @@ export interface SceneEnv {
   rainBox: [number, number, number];
 }
 
-export type GalleryCategory = 'rocks' | 'plants' | 'bushes' | 'trees';
-export const GALLERY_CATEGORIES: GalleryCategory[] = ['rocks', 'plants', 'bushes', 'trees'];
+export type GalleryCategory = 'rocks' | 'plants' | 'bushes' | 'trees' | 'ruins';
+export const GALLERY_CATEGORIES: GalleryCategory[] = ['rocks', 'plants', 'bushes', 'trees', 'ruins'];
 
 /** Test scenes, only available in dev/test builds (see web/src/testbed). */
 export interface TestbedRequest {
