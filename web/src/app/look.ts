@@ -110,6 +110,8 @@ export class Look {
   panes: Features[] | null = null;
   /** Debug arrows for the water's current. */
   arrows = false;
+  /** Side of the sun shadow map in texels (quality presets). */
+  shadowSize = 2048;
   private sun: SunShadow | null = null;
   private sunKey = '';
   readonly shore = new ShoreMap();
@@ -269,7 +271,11 @@ export class Look {
     (v.cards.material.uniforms.uHazeColor!.value as Vector3).copy(now.haze);
     // Sun shadow map: redrawn only when the camera, the sun or the cards changed.
     if (this.uses((x) => x.shadows)) {
-      this.sun ??= new SunShadow(v.cards);
+      if (this.sun && this.sun.size !== this.shadowSize) {
+        this.sun.dispose();
+        this.sun = null;
+      }
+      this.sun ??= new SunShadow(v.cards, this.shadowSize);
       const p = v.camera.position, d = v.camera.getWorldDirection(new Vector3());
       const key = [Math.round(p.x / 2), Math.round(p.z / 2), Math.round(d.x * 8), Math.round(d.z * 8), now.light.sunDir.toArray().map((x) => x.toFixed(3)).join(), v.cards.revision].join('|');
       v.cards.setLighting(now.light);

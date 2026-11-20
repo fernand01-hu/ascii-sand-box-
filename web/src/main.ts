@@ -26,6 +26,7 @@ import { Toolbar } from './ui/toolbar';
 import { Lab } from './app/lab';
 import { Look } from './app/look';
 import { PlayMode } from './app/playmode';
+import { QualityPresets } from './app/quality';
 import { LabPanel } from './ui/labpanel';
 import { Settings } from './app/settings';
 import { Hud } from './ui/hud';
@@ -56,6 +57,7 @@ const presets = new PresetStore();
 const look = new Look(app, settings);
 const lab = new Lab(app, look);
 const play = new PlayMode(app, toolSwitch, editor, lab);
+const quality = new QualityPresets(app, look, settings);
 const terminal = new Terminal(app, { debug, settings, cursor, tools, editor, brush, undo, scenes, objects, select, presets, height, lab });
 const hud = new Hud(app, { debug, settings, terminal, editor, brush, undo, scenes, objects, select, height, look });
 // The options sidebar holds each tool's panel; the toolbar switches tools.
@@ -101,6 +103,7 @@ if (DEVTOOLS) {
 async function start(): Promise<void> {
   await app.showCanvas();
   settings.restore();
+  quality.firstVisit();
   await scenes.restoreAutosave(); // last session's work, if any
   if (location.hash) await settings.applyLink(location.hash, debug);
 }

@@ -15,6 +15,7 @@
 
 import type { EngineClient } from '../engine/client';
 import type { WorldChunkData, WorldInfo } from '../engine/protocol';
+import { Box3, Frustum, Matrix4, Vector3 } from 'three';
 import { glyphAspect } from '../render/atlas';
 import type { Viewer } from '../render/viewer';
 import { chunkKey, type MapData } from './map';
@@ -31,6 +32,8 @@ interface Loaded {
   cards: number;
   reason: BuildReason;
   builtAt: number;
+  /** Glyphs kept, added and removed by this build (the "pop", Phase 5). */
+  pop: { kept: number; added: number; removed: number; groundKept: number; groundRemoved: number };
 }
 
 /** One chunk as the debug tools see it. */
@@ -54,6 +57,7 @@ export class WorldStreamer implements Ground {
   maxInflight: number;
   private loaded = new Map<string, Loaded>();
   private inflight = new Set<string>();
+  private inflightReasons = new Map<string, BuildReason>();
   /** Loaded chunks whose map data changed since they were built. */
   private dirty = new Set<string>();
   private lastCheck = 0;
@@ -70,6 +74,10 @@ export class WorldStreamer implements Ground {
   /** While true, nothing is loaded, rebuilt or dropped. */
   frozen = false;
   private buildListeners = new Set<BuildListener>();
+  /** No rebuilds for moving or looking from another height (new and edited chunks still build). */
+  detailFrozen = false;
+  /** Glyphs kept / added / removed over the rebuilds of loaded chunks (not new ones). */
+  readonly pop = { kept: 0, added: 0, removed: 0, rebuilds: 0, groundKept: 0, groundRemoved: 0 };
 
   constructor(
     private engine: EngineClient,
@@ -157,6 +165,13 @@ export class WorldStreamer implements Ground {
     const S = this.info.chunkSize;
     const ccx = Math.floor(eye.x / S), ccz = Math.floor(eye.z / S);
     const want: { cx: number; cz: number; prio: number; reason: BuildReason }[] = [];
+    // Most important first (Phase 5): what is on screen, and how wrong it looks there.
+    const cam = this.viewer.camera;
+    cam.updateMatrixWorld();
+    const frustum = new Frustum().setFromProjectionMatrix(new Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+    const box = new Box3();
+    const g0 = this.info.ground;
+    const onScreen = (cx: number, cz: number) => frustum.intersectsBox(box.set(new Vector3(cx * S, g0 - 40, cz * S), new Vector3((cx + 1) * S, g0 + 60, (cz + 1) * S)));
     for (let dz = -this.radius; dz <= this.radius; dz++) {
       for (let dx = -this.radius; dx <= this.radius; dx++) {
         if (dx * dx + dz * dz > this.radius * this.radius + 1) continue;
@@ -166,8 +181,10 @@ export class WorldStreamer implements Ground {
         const centre = [(cx + 0.5) * S, (cz + 0.5) * S] as const;
         const dNow = Math.hypot(eye.x - centre[0], eye.z - centre[1]);
         const have = this.loaded.get(k);
+        const seen = onScreen(cx, cz);
         if (!have) {
-          want.push({ cx, cz, prio: dNow, reason: 'new' });
+          // A hole on screen is worse than a coarse patch: nearest holes first.
+          want.push({ cx, cz, prio: seen ? -1e6 + dNow : 1e5 + dNow, reason: 'new' });
           continue;
         }
         if (this.dirty.has(k)) {
@@ -185,8 +202,15 @@ export class WorldStreamer implements Ground {
         const g = this.info.ground;
         const graze = (h: number, d: number) => Math.max(h - g, 0.5) / Math.hypot(Math.max(h - g, 0.5), d);
         const angle = graze(eye.y, Math.max(dNow, floor)) / graze(by, Math.max(dBuilt, floor));
-        const byDistance = ratio > 1.7 || ratio < 0.6 || moved > 0.6 * Math.max(dNow, floor);
-        if (byDistance || angle > 1.7 || angle < 0.6) want.push({ cx, cz, prio: dNow + 1000, reason: byDistance ? 'move' : 'angle' });
+        // Farther than built: the shader thins and grows objects smoothly
+        // (continuous detail), so that rebuild can wait; nearer needs more detail.
+        const byDistance = ratio > 2.6 || ratio < 0.6 || moved > 0.9 * Math.max(dNow, floor);
+        if (!this.detailFrozen && (byDistance || angle > 1.7 || angle < 0.6)) {
+          // How wrong it looks: the detail error times how big it is on screen.
+          const error = Math.abs(Math.log2(ratio)) + Math.abs(Math.log2(angle));
+          const size = S / Math.max(dNow, floor);
+          want.push({ cx, cz, prio: seen ? -1e3 * error * size : 1e6 + dNow, reason: byDistance ? 'move' : 'angle' });
+        }
       }
     }
     // Drop chunks well out of range.
@@ -194,8 +218,13 @@ export class WorldStreamer implements Ground {
       if (Math.hypot(l.data.cx - ccx, l.data.cz - ccz) > this.radius + 2) this.drop(k);
     }
     want.sort((a, b) => a.prio - b.prio);
+    // Detail rebuilds take at most half the workers, so new chunks keep coming.
+    let detail = [...this.inflightReasons.values()].filter((r) => r === 'move' || r === 'angle').length;
     for (const w of want) {
       if (this.inflight.size >= this.maxInflight) break;
+      const isDetail = w.reason === 'move' || w.reason === 'angle';
+      if (isDetail && detail >= Math.max(1, this.maxInflight >> 1)) continue;
+      if (isDetail) detail++;
       this.request(w.cx, w.cz, [eye.x, eye.y, eye.z], w.reason);
     }
   }
@@ -203,27 +232,40 @@ export class WorldStreamer implements Ground {
   private request(cx: number, cz: number, eye: [number, number, number], reason: BuildReason): void {
     const k = this.key(cx, cz);
     this.inflight.add(k);
+    this.inflightReasons.set(k, reason);
     const wasDirty = this.dirty.delete(k);
     const reload = !wasDirty && this.loaded.has(k);
     this.engine.worldChunk(cx, cz, eye, glyphAspect(), this.map.payload(cx, cz)).then(
       (res) => {
         this.inflight.delete(k);
+        this.inflightReasons.delete(k);
         if (!this.alive || !res.chunk) return;
         // Edited again while this was building: show it, then build again.
         if (res.chunk.rev !== this.map.revision(k)) this.dirty.add(k);
         if (wasDirty) this.editBuilds++;
         if (reload) this.viewBuilds++;
         // Replace the old version only now, so nothing flickers out meanwhile.
-        this.viewer.cards.addSet(k, res.cards, res.stride, res.chunks);
+        // Fade between the old and new glyphs (edits quickly, so the brush feels instant).
+        const cards = this.viewer.cards;
+        const pop = cards.replaceSet(k, res.cards, res.stride, res.chunks, reason === 'edit' ? Math.min(0.15, cards.fadeSeconds) : cards.fadeSeconds, res.chunk.eye);
+        if (reload) {
+          this.pop.kept += pop.kept;
+          this.pop.added += pop.added;
+          this.pop.removed += pop.removed;
+          this.pop.groundKept += pop.groundKept;
+          this.pop.groundRemoved += pop.groundRemoved;
+          this.pop.rebuilds++;
+        }
         if (res.mesh) this.viewer.addBody(k, res.mesh.positions, res.mesh.normals);
         const buildMs = res.timings.generateMs;
-        this.loaded.set(k, { data: res.chunk, colliders: new ColliderGrid(res.chunk.colliders), buildMs, cards: res.count, reason, builtAt: performance.now() });
+        this.loaded.set(k, { data: res.chunk, colliders: new ColliderGrid(res.chunk.colliders), buildMs, cards: res.count, reason, builtAt: performance.now(), pop });
         this.built++;
         for (const f of this.buildListeners) f(k, reason, buildMs, res.count);
         this.viewer.requestRender();
       },
       (err) => {
         this.inflight.delete(k);
+        this.inflightReasons.delete(k);
         if (wasDirty) this.dirty.add(k);
         if (this.alive && !(err instanceof Error && err.name === 'SupersededError')) this.onError(err);
       },

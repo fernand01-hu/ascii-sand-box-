@@ -3,6 +3,7 @@
 // for `help`. Dev-only commands (the testbed pine) are added with
 // `registerCommand` from devtools.ts, so they never reach production.
 
+import { gpuName, isSoftware } from './quality';
 import { CLASSIC, STANDARD, SWITCHES } from './look';
 import { landscapeLines, LAB_SCENE, LAB_VIEWS, LAYOUTS, LIGHTS, WATERS, WEATHERS, type Lab, type LabLayout } from './lab';
 import { GALLERY_CATEGORIES, type GalleryCategory } from '../engine/protocol';
@@ -181,6 +182,8 @@ const COMMANDS: Command[] = [
         if (l) {
           io.print(`last built: ${l.reason}, ${l.buildMs.toFixed(0)} ms, ${fmt(l.cards)} cards, ${((performance.now() - l.builtAt) / 1000).toFixed(0)} s ago`);
           io.print(`built for eye (${l.data.eye.map(f1).join(', ')}), from revision ${l.data.rev}, ${l.data.placed} objects drawn`);
+          const p = l.pop, was = p.kept + p.removed;
+          io.print(`detail change: kept ${fmt(p.kept)}, added ${fmt(p.added)}, removed ${fmt(p.removed)} glyphs${was ? ` (${Math.round((p.kept / was) * 100)}% of the old ones kept)` : ''}`);
         }
       }
       const paint = Object.entries(m.paintCounts(cx, cz)).map(([k, n]) => `${k} ${n}`).join(', ');
@@ -1123,6 +1126,34 @@ const COMMANDS: Command[] = [
     },
   },
   {
+    name: 'gpu', group: 'world', usage: 'gpu', help: 'the GPU the browser draws with, and the quality preset',
+    run(app, _x, io, ctx) {
+      const name = gpuName(app);
+      io.print(`${name}${isSoftware(name) ? '  (software: no GPU)' : ''}`);
+      io.print(`quality ${ctx.settings.find('quality')?.get() ?? '?'} · set quality low|medium|high`);
+    },
+  },
+  {
+    name: 'lod', group: 'world', usage: 'lod [stats|fade <seconds>|freeze on|off|reset]',
+    help: 'detail changes (Phase 5): how many glyphs rebuilds keep, how long the fade takes, freeze detail changes',
+    run(app, [a, b], io) {
+      const w = app.world;
+      if (!w) throw new CommandError('lod works on the canvas');
+      if (a === 'fade') {
+        app.viewer.cards.fadeSeconds = num(b, 'fade seconds', 0, 5);
+      } else if (a === 'freeze') {
+        w.detailFrozen = b === 'on' || (b === undefined && !w.detailFrozen);
+      } else if (a === 'reset') {
+        Object.assign(w.pop, { kept: 0, added: 0, removed: 0, rebuilds: 0, groundKept: 0, groundRemoved: 0 });
+      } else if (a !== undefined && a !== 'stats') throw new CommandError('lod [stats|fade <s>|freeze on|off|reset]');
+      const p = w.pop, was = p.kept + p.removed;
+      io.print(`fade ${app.viewer.cards.fadeSeconds} s · detail changes ${w.detailFrozen ? 'frozen' : 'on'}`);
+      io.print(`${p.rebuilds} rebuilds of loaded chunks: kept ${fmt(p.kept)}, added ${fmt(p.added)}, removed ${fmt(p.removed)} glyphs${was ? ` · ${Math.round((p.kept / was) * 100)}% kept` : ''}`);
+      const gw = p.groundKept + p.groundRemoved, ow = was - gw;
+      if (was) io.print(`  ground ${gw ? Math.round((p.groundKept / gw) * 100) : 100}% kept · objects ${ow ? Math.round(((p.kept - p.groundKept) / ow) * 100) : 100}% kept`);
+    },
+  },
+  {
     name: 'repeat', group: 'terminal', usage: 'repeat <n> <command line>', help: 'run a command line n times',
     async run(_app, [ns, ...rest], io, ctx) {
       const n = num(ns, 'n', 1, 1000);
@@ -1189,6 +1220,7 @@ function argWords(app: App, cmd: string, ctx: CommandContext | null): string[] {
     case 'objbrush': return ['on', 'off', 'mode', 'size', 'density', 'spacing', 'variation', 'stroke', ...KIND_MIXES, ...(m?.objectKinds ?? [])];
     case 'select': return ['none'];
     case 'style': return ['standard', 'classic', 'time', 'scene', ...SWITCHES.map(([k]) => k), 'on', 'off'];
+    case 'lod': return ['stats', 'fade', 'freeze', 'on', 'off', 'reset'];
     case 'lab': return ['on', 'off', 'list', 'scene', 'landscape', 'flow', 'strike', 'near', 'far', 'view', ...Object.keys(LAB_VIEWS), 'layout', 'pane', 'all', 'time', ...LAYOUTS, 'light', 'weather', 'water', ...LIGHTS.map((v) => v.id), ...WEATHERS.map((v) => v.id), ...WATERS.map((v) => v.id)];
     case 'param': return ['reset', 'vary', ...(ctx?.objects.paramDescs().map((d) => d.name) ?? [])];
     case 'preset': return ['save', 'load', 'delete'];

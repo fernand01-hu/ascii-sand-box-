@@ -15,6 +15,7 @@ import {
   Matrix4,
   type PerspectiveCamera,
   Sphere,
+  InstancedBufferAttribute,
   InstancedBufferGeometry,
   InstancedInterleavedBuffer,
   InterleavedBufferAttribute,
@@ -187,6 +188,9 @@ attribute vec3 iV;
 attribute vec4 iColor;
 attribute float iGlyph;
 attribute vec2 iLight; // sun, sky visibility
+attribute vec4 iFade;  // Phase 5: transition start time, 1 in / -1 out / 0 resize, size to grow from; distance from the build eye
+uniform float uNow;     // real time, s (fades run on it, not on the weather clock)
+uniform float uFadeDur;
 
 varying vec2 vUv;
 varying vec3 vColor;
@@ -379,6 +383,33 @@ void main() {
     alphaMul *= mix(0.75 + 0.25 * sin(3.14159 * ph), sin(3.14159 * ph), smoothstep(0.3, 0.8, C.y));
   }
 
+  // Detail transitions: new glyphs fade and grow in, glyphs no longer
+  // needed fade out, glyphs that stay ease to their new size.
+  float fadeK = 1.0;
+  if (iFade.x > -1e8) {
+    float ft = clamp((uNow - iFade.x) / max(uFadeDur, 1e-3), 0.0, 1.0);
+    ft = ft * ft * (3.0 - 2.0 * ft);
+    float fs = 1.0;
+    if (iFade.y > 0.5) { fadeK = ft; fs = mix(0.2, 1.0, ft); }
+    else if (iFade.y < -0.5) { fadeK = 1.0 - ft; fs = mix(1.0, 0.7, ft); }
+    else fs = mix(iFade.z, 1.0, ft);
+    U *= fs;
+    V *= fs;
+  }
+  // Continuous detail: seen from farther than its chunk was built for, an
+  // object keeps a share of its glyphs (about 1 / ratio^2, chosen by hash,
+  // so backing away thins it smoothly), and the ones kept grow to cover.
+  if (iFade.w > 0.0 && !lean && !emissive && !rain && !leaf) {
+    float q = length(cameraPosition - center) / iFade.w;
+    if (q > 1.1) {
+      float keep = 1.0 / (q * q / 1.21);
+      fadeK *= 1.0 - smoothstep(keep - 0.04, keep, fract(h * 7.31));
+      float g = min(inversesqrt(max(keep, 0.05)), 2.2);
+      U *= g;
+      V *= g;
+    }
+  }
+
   float baseA = iColor.a;
 
   vec3 world = center + sway + U * position.x + V * position.y;
@@ -542,6 +573,7 @@ void main() {
     float n = vnoise((center.xz - uWind.xy * uTime * 1.2) * 0.04) * 0.7 + vnoise(center.xz * 0.11 + uTime * 0.05) * 0.3;
     vColor = mix(vColor, uHazeColor * 1.08, clamp(low * smoothstep(0.25, 0.75, n) * smoothstep(3.0, 25.0, dist), 0.0, 0.8));
   }
+  vAlpha *= fadeK;
   // Debug views (sky, rain and leaves keep their colour).
   if (uDebugView > 0.5 && !emissive && !rain && !leaf) {
     if (uDebugView > 2.5) {
@@ -665,6 +697,8 @@ export class CardLayer {
         uShoreBox: { value: new Vector3(0, 0, 0) },
         uSkyTint: { value: new Vector3(1, 1, 1) },
         uFlash: { value: 0 },
+        uNow: { value: 0 },
+        uFadeDur: { value: 0.8 },
         uTrees: { value: BLANK },
         uTreeBox: { value: new Vector3(0, 0, 0) },
         uTreeLeaves: { value: 0 },
@@ -894,6 +928,100 @@ export class CardLayer {
     this.material.uniforms.uFlash!.value = flash;
   }
 
+  /** How long a detail transition takes (s); 0 swaps chunks at once (as before Phase 5). */
+  fadeSeconds = 0.8;
+  private now = 0;
+  private outgoing: { key: string; until: number }[] = [];
+  private outSeq = 0;
+  private fadeEnd = 0;
+
+  /** Advance the real-time clock the fades run on; drop outgoing glyphs that have faded. */
+  tick(now: number): void {
+    this.now = now;
+    this.material.uniforms.uNow!.value = now;
+    this.material.uniforms.uFadeDur!.value = Math.max(this.fadeSeconds, 0.15);
+    if (this.outgoing.length && this.outgoing[0]!.until <= now) {
+      const keep: { key: string; until: number }[] = [];
+      for (const o of this.outgoing) if (o.until <= now) this.removeSet(o.key); else keep.push(o);
+      this.outgoing = keep;
+    }
+  }
+
+  /** A transition is under way (keep drawing frames). */
+  get fading(): boolean {
+    return this.now < this.fadeEnd;
+  }
+
+  /**
+   * Replace a card set, fading between the two over `fade` seconds (Phase 5):
+   * glyphs in both (same spot, same glyph) stay and ease to their new size;
+   * new ones fade and grow in, big ones first; the ones that went fade out.
+   * Returns how many glyphs were kept, added and removed (the "pop").
+   */
+  replaceSet(key: string, data: Float32Array, stride: number, chunks: Float32Array | undefined, fade: number, eye?: readonly number[]): { kept: number; added: number; removed: number; groundKept: number; groundRemoved: number } {
+    const isGround = (a: ArrayLike<number>, o: number) => Math.floor(Math.floor(a[o + 13]! / MATERIAL_SHIFT) / MAX_MATERIALS) >= 7;
+    let groundKept = 0, groundRemoved = 0;
+    const n = data.length / stride;
+    const old = this.sets.get(key);
+    // Each card's distance from the eye it was built for (continuous detail).
+    const built = (a: ArrayLike<number>, o: number) => (eye ? Math.max(1, Math.hypot(a[o]! - eye[0]!, a[o + 1]! - eye[1]!, a[o + 2]! - eye[2]!)) : 0);
+    if (!(fade > 0)) {
+      const res = { kept: 0, added: n, removed: 0, groundKept: 0, groundRemoved: 0 };
+      if (old) {
+        const before = new Set<number>();
+        for (const c of old) eachCard(c, (a, o) => before.add(cardKey(a, o)));
+        let kept = 0;
+        for (let j = 0; j < n; j++) if (before.has(cardKey(data, j * stride))) kept++;
+        Object.assign(res, { kept, added: n - kept, removed: Math.max(0, before.size - kept) });
+      }
+      const f = noFades(n);
+      if (eye) for (let j = 0; j < n; j++) f[j * 4 + 3] = built(data, j * stride);
+      this.addSet(key, data, stride, chunks, f);
+      return res;
+    }
+    const now = this.now, fades = new Float32Array(n * 4);
+    const oldSize = new Map<number, number>();
+    if (old) for (const c of old) eachCard(c, (a, o) => oldSize.set(cardKey(a, o), Math.hypot(a[o + 6]!, a[o + 7]!, a[o + 8]!)));
+    let kept = 0, added = 0;
+    for (let j = 0; j < n; j++) {
+      const o = j * stride, k = cardKey(data, o), size = Math.hypot(data[o + 6]!, data[o + 7]!, data[o + 8]!);
+      const was = oldSize.get(k);
+      if (was !== undefined) {
+        kept++;
+        if (isGround(data, o)) groundKept++;
+        oldSize.delete(k);
+        const r = was / Math.max(size, 1e-6);
+        fades.set(Math.abs(r - 1) > 0.02 ? [now, 0, r, built(data, o)] : [-1e9, 0, 1, built(data, o)], j * 4);
+      } else {
+        added++;
+        // Staggered in: bigger glyphs (trunks, the shape) before the small filler.
+        const rank = ((k >>> 8) / 16777216) * (0.45 + 0.55 / (1 + size));
+        fades.set([now + rank * 0.6 * fade, 1, 1, built(data, o)], j * 4);
+      }
+    }
+    let removed = 0;
+    if (old && oldSize.size) {
+      const out: number[] = [], outFades: number[] = [];
+      for (const c of old) eachCard(c, (a, o) => {
+        const k = cardKey(a, o);
+        if (!oldSize.has(k)) return;
+        oldSize.delete(k);
+        for (let q = 0; q < stride; q++) out.push(a[o + q]!);
+        if (isGround(a, o)) groundRemoved++;
+        outFades.push(now + ((k >>> 8) / 16777216) * 0.4 * fade, -1, 1, 0);
+        removed++;
+      });
+      if (removed) {
+        const outKey = `${key}#out${this.outSeq++}`;
+        this.addSet(outKey, new Float32Array(out), stride, undefined, new Float32Array(outFades));
+        this.outgoing.push({ key: outKey, until: now + fade * 1.5 });
+      }
+    }
+    this.addSet(key, data, stride, chunks, fades);
+    this.fadeEnd = Math.max(this.fadeEnd, now + fade * 1.6);
+    return { kept, added, removed, groundKept, groundRemoved };
+  }
+
   /** Show or hide every chunk of one card set (e.g. a lightning bolt in some panes only). */
   setSetVisible(key: string, on: boolean): void {
     for (const c of this.sets.get(key) ?? []) c.mesh.visible = on;
@@ -981,7 +1109,7 @@ export class CardLayer {
   }
 
   /** Add (or replace) a named set of cards, e.g. one streamed world chunk. */
-  addSet(key: string, data: Float32Array, stride: number, chunks?: Float32Array): void {
+  addSet(key: string, data: Float32Array, stride: number, chunks?: Float32Array, fades?: Float32Array): void {
     this.removeSet(key);
     if (stride !== CARD_STRIDE) {
       throw new Error(`card stride mismatch: engine sends ${stride}, renderer expects ${CARD_STRIDE}`);
@@ -1001,6 +1129,7 @@ export class CardLayer {
       geometry.setAttribute('iColor', new InterleavedBufferAttribute(buf, 4, 9));
       geometry.setAttribute('iGlyph', new InterleavedBufferAttribute(buf, 1, 13));
       geometry.setAttribute('iLight', new InterleavedBufferAttribute(buf, 2, 14));
+      geometry.setAttribute('iFade', new InstancedBufferAttribute(fades ? fades.subarray(start * 4, (start + count) * 4) : noFades(count), 4));
       geometry.instanceCount = count;
       const lo = new Vector3(lx, ly, lz);
       const hi = new Vector3(hx, hy, hz);
@@ -1059,6 +1188,32 @@ export class CardLayer {
 }
 
 /** Unit quad centred on the origin: x, y in [-0.5, 0.5]. */
+/** "No transition" for `count` cards. */
+function noFades(count: number): Float32Array {
+  const f = new Float32Array(count * 4);
+  for (let i = 0; i < count; i++) {
+    f[i * 4] = -1e9;
+    f[i * 4 + 2] = 1;
+  }
+  return f;
+}
+
+/** A card's identity for transitions: its spot (to 2 cm) and its glyph, hashed. */
+function cardKey(a: ArrayLike<number>, o: number): number {
+  let h = Math.imul(Math.round(a[o]! * 50) | 0, 0x9e3779b1) ^ Math.imul(Math.round(a[o + 1]! * 50) | 0, 0x85ebca77)
+    ^ Math.imul(Math.round(a[o + 2]! * 50) | 0, 0xc2b2ae3d) ^ Math.imul(a[o + 13]! | 0, 0x27d4eb2f);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x2c1b3c6d);
+  return (h ^ (h >>> 12)) >>> 0;
+}
+
+/** Visit the cards of one render chunk: (array, offset of the card). */
+function eachCard(c: { mesh: Mesh<InstancedBufferGeometry, ShaderMaterial>; count: number }, f: (a: Float32Array, o: number) => void): void {
+  const attr = c.mesh.geometry.getAttribute('iCenter') as InterleavedBufferAttribute;
+  const arr = attr.data.array as Float32Array, st = attr.data.stride;
+  for (let i = 0; i < c.count; i++) f(arr, i * st);
+}
+
 function emptyGeometry(): InstancedBufferGeometry {
   const g = new InstancedBufferGeometry();
   g.setAttribute('position', new BufferAttribute(new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0]), 3));

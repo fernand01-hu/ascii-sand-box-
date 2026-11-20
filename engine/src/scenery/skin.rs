@@ -318,15 +318,14 @@ impl<'a> Skinner<'a> {
         if n <= cap || cap == 0 {
             return;
         }
-        for i in 0..cap {
-            let j = i + self.rng.below((n - i) as u32) as usize;
-            if i != j {
-                for k in 0..STRIDE {
-                    self.cards.swap((start + i) * STRIDE + k, (start + j) * STRIDE + k);
-                }
-            }
-        }
-        self.cards.truncate((start + cap) * STRIDE);
+        // Keep the cards of lowest rank, a hash of where each one is: a fair
+        // sample, the same in every rebuild, and a bigger budget (nearer)
+        // keeps a superset of a smaller one.
+        let mut order: Vec<(u64, usize)> = (0..n).map(|i| (card_rank(&self.cards[(start + i) * STRIDE..]), i)).collect();
+        order.sort_unstable();
+        let kept: Vec<f32> = order[..cap].iter().flat_map(|&(_, i)| self.cards[(start + i) * STRIDE..(start + i + 1) * STRIDE].to_vec()).collect();
+        self.cards.truncate(start * STRIDE);
+        self.cards.extend_from_slice(&kept);
         let r = n as f32 / cap as f32;
         let grow = r.powf(0.25).min(1.6);
         // Foliage keeps the area it covered: half as many leaves, sqrt(2) as big.
@@ -392,6 +391,21 @@ impl<'a> Skinner<'a> {
         unit(a.cross(r))
     }
 
+    /// Seed the random choices for one element of a placed asset (tag: 0
+    /// sprites, 1 surfels, 2 wood; index: the element's place in the asset)
+    /// from the placement and the element alone, never from build order:
+    /// the same element gets the same glyph, jitter and twist in every
+    /// rebuild, and "keep it" compares one fixed number per element against
+    /// a share that grows as the eye comes closer, so finer detail always
+    /// holds the coarser (Phase 5, steps 17-18).
+    fn seed_element(&mut self, pl: Placement, tag: u64, index: usize) {
+        let h = (pl.pos.x.to_bits() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ (pl.pos.z.to_bits() as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+            ^ (pl.yaw.to_bits() as u64).wrapping_mul(0x1656_67B1_9E37_79F9)
+            ^ (pl.scale.to_bits() as u64).rotate_left(17);
+        self.rng = Pcg32::new(h ^ (index as u64).wrapping_mul(0xFF51_AFD7_ED55_8CCD), tag * 2 + 1);
+    }
+
     /// Skin one placed copy of an asset.
     pub fn skin(&mut self, asset: &Asset, pl: Placement) {
         self.skin_sprites(asset, pl);
@@ -405,7 +419,8 @@ impl<'a> Skinner<'a> {
     }
 
     fn skin_sprites(&mut self, asset: &Asset, pl: Placement) {
-        for s in &asset.sprites {
+        for (index, s) in asset.sprites.iter().enumerate() {
+            self.seed_element(pl, 0, index);
             let (pos, axis, nrm, size) = (pl.point(s.pos), pl.dir(s.axis), pl.dir(s.normal), s.size * pl.scale);
             let md = s.mat.def();
             let f = match s.mat {
@@ -454,7 +469,8 @@ impl<'a> Skinner<'a> {
     }
 
     fn skin_surfels(&mut self, asset: &Asset, pl: Placement) {
-        for s in &asset.surfels {
+        for (index, s) in asset.surfels.iter().enumerate() {
+            self.seed_element(pl, 1, index);
             let (pos, nrm, sp) = (pl.point(s.pos), pl.dir(s.normal), s.spacing * pl.scale);
             let md = s.mat.def();
             let w = if matches!(s.mat, Mat::Bigleaf | Mat::BigleafBlue | Mat::BigleafDark | Mat::BigleafEdge | Mat::Midrib | Mat::MidribRed) {
@@ -489,7 +505,8 @@ impl<'a> Skinner<'a> {
         let g = self.g;
         let aspect = self.aspect;
         let y_base = pl.pos.y;
-        for w in &asset.wood {
+        for (index, w) in asset.wood.iter().enumerate() {
+            self.seed_element(pl, 2, index);
             let (p0, p1, r) = (pl.point(w.p0), pl.point(w.p1), w.r * pl.scale);
             let len = (p1 - p0).length();
             if len < 1e-6 {
@@ -603,6 +620,8 @@ impl<'a> Skinner<'a> {
         let foliage = std::mem::take(&mut self.foliage);
         for &i in &foliage {
             let base = i * STRIDE;
+            // Choices per card from where it is, so they hold across rebuilds.
+            self.rng = Pcg32::new(card_rank(&self.cards[base..]), 5);
             if let Some(e) = eye {
                 let c = Vec3::new(self.cards[base], self.cards[base + 1], self.cards[base + 2]);
                 if !self.rng.chance(smoothstep(60.0, 30.0, (c - e).length())) {
@@ -626,6 +645,13 @@ impl<'a> Skinner<'a> {
         }
         self.foliage = foliage;
     }
+}
+
+/// A card's rank: a hash of its centre (to the millimetre).
+fn card_rank(card: &[f32]) -> u64 {
+    let q = |v: f32| (v * 1000.0).round() as i64 as u64;
+    let h = q(card[0]).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ q(card[1]).wrapping_mul(0xC2B2_AE3D_27D4_EB4F) ^ q(card[2]).wrapping_mul(0x1656_67B1_9E37_79F9);
+    (h ^ (h >> 29)).wrapping_mul(0xBF58_476D_1CE4_E5B9) ^ (h >> 32)
 }
 
 /// Skin one placed asset with the glyph size its distance calls for, opaque

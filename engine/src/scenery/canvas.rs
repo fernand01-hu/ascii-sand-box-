@@ -482,7 +482,6 @@ fn ground(sk: &mut Skinner, view: &View, aspect: f32, tiles: &[u8], field: Field
             let dense = if n.y < 0.35 { 4.0 } else if n.y < 0.7 { 2.0 } else { 1.0 };
             step_x /= dense;
             step_z /= dense;
-            let level = ((step_x * 64.0) as i64) * 4096 + (step_z * 64.0) as i64;
             // Grid points (i * step) inside this cell.
             let (i0, i1) = ((ax / step_x).ceil() as i64, ((ax + CELL) / step_x).ceil() as i64);
             let (j0, j1) = ((az / step_z).ceil() as i64, ((az + CELL) / step_z).ceil() as i64);
@@ -498,13 +497,23 @@ fn ground(sk: &mut Skinner, view: &View, aspect: f32, tiles: &[u8], field: Field
                         let u = unit(Vec3::new(1.0, sx_, 0.0)) * sx;
                         let v = unit(Vec3::new(0.0, -sz_, -1.0)) * s;
                         let glyph = sk.glyph(mat);
-                        sk.push(Vec3::new(gx, field.at(gx, gz) + 0.01 * s, gz), u, v, def.albedo, def.alpha.0, glyph, mat, CardMode::GroundLean);
+                        sk.push(Vec3::new(gx, field.at(gx, gz) + 0.02, gz), u, v, def.albedo, def.alpha.0, glyph, mat, CardMode::GroundLean);
                         continue;
                     }
-                    let h = |k: i64| hash_at(i, j, level, k);
-                    // Scattered inside its grid cell (kept in the chunk).
-                    let x = (gx + (h(1) - 0.5) * 0.9 * step_x).clamp(x0, x0 + CHUNK - 1e-3);
-                    let z = (gz + (h(2) - 0.5) * 0.9 * step_z).clamp(z0, z0 + CHUNK - 1e-3);
+                    // The grid point's identity is where it is, not the level of
+                    // detail: every level's grid holds the coarser ones' points,
+                    // and such a point gets the same glyph in the same spot at
+                    // every level (Phase 5: finer detail keeps what was there).
+                    // It scatters by the step of the coarsest grid it is on.
+                    let (bx, bz) = (FINE * aspect / 4.0, FINE / 4.0);
+                    let (pi, pj) = ((gx / bx).round() as i64, (gz / bz).round() as i64);
+                    let native = |v: i64| if v == 0 { 6 } else { v.trailing_zeros().min(6) };
+                    // (at most 0.9 m, so paint doesn't spill far past its edge)
+                    let (ax, az) = ((bx * (1u32 << native(pi)) as f32).min(0.9), (bz * (1u32 << native(pj)) as f32).min(0.9));
+                    let h = |k: i64| hash_at(pi, pj, 0, k);
+                    // Scattered round its grid point (kept in the chunk).
+                    let x = (gx + (h(1) - 0.5) * 0.9 * ax).clamp(x0, x0 + CHUNK - 1e-3);
+                    let z = (gz + (h(2) - 0.5) * 0.9 * az).clamp(z0, z0 + CHUNK - 1e-3);
                     // Borders mix: the material comes from the tile under a nudged point.
                     let mut g = tile((x + (h(3) - 0.5) * 1.1).clamp(x0, x0 + CHUNK - 1e-3), (z + (h(4) - 0.5) * 1.1).clamp(z0, z0 + CHUNK - 1e-3));
                     if g == Ground::Canvas {
@@ -538,9 +547,9 @@ fn ground(sk: &mut Skinner, view: &View, aspect: f32, tiles: &[u8], field: Field
                     let nn = unit(Vec3::new(-sx_, 1.0, -sz_) + tilt);
                     let u = unit(Vec3::new(nn.y, -nn.x, 0.0)) * (size * aspect);
                     let v = unit(nn.cross(u)) * size;
-                    let glyph = sk.glyph_seeded(mat, ((i as u64) << 40) ^ ((j as u64) << 16) ^ level as u64);
+                    let glyph = sk.glyph_seeded(mat, ((pi as u64) << 32) ^ (pj as u64 & 0xffff_ffff));
                     let mode = if g == Ground::Water { CardMode::WaterLean } else { CardMode::GroundLean };
-                    sk.push(Vec3::new(x, field.at(x, z) + 0.01 * s, z), u, v, col, def.alpha.0 + 0.08 * h(11), glyph, mat, mode);
+                    sk.push(Vec3::new(x, field.at(x, z) + 0.02, z), u, v, col, def.alpha.0 + 0.08 * h(11), glyph, mat, mode);
                 }
             }
         }
@@ -713,6 +722,21 @@ mod tests {
     }
 
     #[test]
+    fn coming_closer_the_ground_keeps_its_glyphs_and_adds_finer_ones() {
+        let mut canvas = Canvas::new(1, false);
+        let grass = painted(Ground::Grass);
+        let key = |k: &[f32]| ((k[0] * 100.0).round() as i64, (k[2] * 100.0).round() as i64, k[layout::GLYPH] as u32);
+        let mut set = |eye: Vec3| -> std::collections::HashSet<_> {
+            ground_cards(&canvas.build_chunk(0, -3, eye, ASPECT, ChunkData { tiles: &grass, objects: &[], heights: &[] })).into_iter().map(key).collect()
+        };
+        let far = set(Vec3::new(16.0, 6.0, 40.0));
+        let near = set(Vec3::new(16.0, 6.0, -40.0));
+        let kept = far.intersection(&near).count();
+        assert!(near.len() > far.len(), "nearer is finer: {} vs {}", near.len(), far.len());
+        assert!(kept as f32 > 0.85 * far.len() as f32, "the far glyphs are still there up close: {kept} of {}", far.len());
+    }
+
+    #[test]
     fn steep_slopes_keep_their_glyphs_and_show_rock() {
         let mut canvas = Canvas::new(1, false);
         let grass = painted(Ground::Grass);
@@ -769,6 +793,44 @@ mod tests {
         assert!(tree[3] > 4.0, "as tall as the tree: top {}", tree[3]);
         let rock = c.colliders.iter().find(|k| k[0] == 20.0).expect("the boulder");
         assert!(rock[2] > 0.3, "the rock's size: r {}", rock[2]);
+    }
+
+    fn object_cards(c: &ChunkOut) -> Vec<&[f32]> {
+        c.cards.chunks_exact(STRIDE).filter(|k| matches!(mat_mode(k).1, m if m < CardMode::Emissive as u32 || m == CardMode::Solid as u32)).collect()
+    }
+
+    #[test]
+    fn an_objects_glyphs_do_not_change_when_something_else_changes() {
+        let mut canvas = Canvas::new(1, false);
+        let oak = rec([code("tree:oak"), 3.0, 10.0, 6.0, 0.4, 1.0]);
+        let a = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &[], objects: &oak, heights: &[] });
+        // A rock placed before it in the list, far away: the oak is skinned after other cards now.
+        let both = [rec([code("rock:boulder"), 1.0, 28.0, 28.0, 0.0, 1.0]), oak.clone()].concat();
+        let b = canvas.build_chunk(0, 0, eye(), ASPECT, ChunkData { tiles: &[], objects: &both, heights: &[] });
+        let key = |k: &[f32]| (k[0].to_bits(), k[1].to_bits(), k[2].to_bits(), k[layout::GLYPH] as u32 % MATERIAL_SHIFT);
+        let near_oak = |k: &[f32]| (k[0] - 10.0).hypot(k[2] - 6.0) < 9.0;
+        let sa: std::collections::HashSet<_> = object_cards(&a).into_iter().filter(|k| near_oak(k)).map(key).collect();
+        let sb: std::collections::HashSet<_> = object_cards(&b).into_iter().filter(|k| near_oak(k)).map(key).collect();
+        let same = sa.intersection(&sb).count();
+        assert!(sa.len() > 300 && same as f32 > 0.97 * sa.len() as f32, "the oak keeps its glyphs: {same} of {}", sa.len());
+    }
+
+    #[test]
+    fn coming_closer_keeps_the_glyphs_already_there_and_adds_more() {
+        let mut canvas = Canvas::new(1, false);
+        let oak = rec([code("tree:oak"), 3.0, 16.0, 16.0, 0.0, 1.0]);
+        let at = |d: f32| Vec3::new(16.0, 3.0, 16.0 + d);
+        // Same asset detail (both under 32 m): 28 m, then 20 m away.
+        let far = canvas.build_chunk(0, 0, at(28.0), ASPECT, ChunkData { tiles: &[], objects: &oak, heights: &[] });
+        let near = canvas.build_chunk(0, 0, at(20.0), ASPECT, ChunkData { tiles: &[], objects: &oak, heights: &[] });
+        let pos = |k: &&[f32]| ((k[0] * 100.0).round() as i64, (k[1] * 100.0).round() as i64, (k[2] * 100.0).round() as i64);
+        let leaves = |c: &ChunkOut| -> std::collections::HashSet<(i64, i64, i64)> {
+            c.cards.chunks_exact(STRIDE).filter(|k| Mat::ALL[(mat_mode(k).0) as usize].is_crown_foliage()).map(|k| pos(&k)).collect()
+        };
+        let (lf, ln) = (leaves(&far), leaves(&near));
+        let kept = lf.intersection(&ln).count();
+        assert!(ln.len() > lf.len(), "nearer has more leaves: {} vs {}", ln.len(), lf.len());
+        assert!(kept as f32 > 0.8 * lf.len() as f32, "the far leaves are still there up close: {kept} of {}", lf.len());
     }
 
     #[test]
@@ -832,7 +894,7 @@ mod tests {
             let mut n = 0;
             for card in c.cards.chunks_exact(STRIDE).filter(|k| mat_mode(k).0 == Mat::Canvas as u32) {
                 let s = -card[layout::V + 2].clamp(-100.0, -1e-6);
-                let lift = 0.01 * (card[layout::V] * card[layout::V] + card[layout::V + 1] * card[layout::V + 1] + card[layout::V + 2] * card[layout::V + 2]).sqrt();
+                let lift = 0.02; // a fixed lift, the same at every level of detail
                 assert!((card[1] - slope(card[0], card[2]) - lift).abs() < 2e-3 * s.max(1.0), "glyph at ({}, {}) is at {} not {}", card[0], card[2], card[1], slope(card[0], card[2]));
                 // Tilted with the slope: U x V points up and a little west.
                 let u = Vec3::new(card[layout::U], card[layout::U + 1], card[layout::U + 2]);

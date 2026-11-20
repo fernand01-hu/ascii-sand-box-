@@ -449,20 +449,23 @@ next one.
 
 Order: 16 → 22. Steps 16-21 need no GPU, and they help the no-GPU target too (fewer rebuilds).
 
-- [ ] **16. Measure the pop first (debug tools).**
+- [x] **16. Measure the pop.** Each rebuild matches old and new glyphs (spot + glyph) and counts kept / added / removed, for the ground and objects apart. Shown in `chunk` and `lod`. `lod freeze` stops detail rebuilds; `lod reset` clears the counts. Measured on the lab landscape walking in: ground 87% kept (it was ~0% for painted ground). Objects 12%, because walking in crosses their detail version (32 m / 90 m): those fade (step 19), and keeping them too is a follow-up.
+- (original notes)
   - Per rebuild, match glyphs by world position and count kept / added / removed. Show "kept %" in the chunk inspector and `chunks`. Today it is near 0% for objects.
   - `lod slow <factor>`: transitions in slow motion. `lod freeze`: stop all detail changes.
   - An overlay that colours chunks by how wrong their detail is (their priority), and glyphs by rank (step 18).
   - A short e2e check (a few frames of the camera flying toward a tree) that records the baseline numbers here.
 
-- [ ] **17. Stable glyphs: same place, same glyph.**
+- [x] **17. Stable glyphs.** Ground: hashed by the grid point's world position. Objects: every leaf, surface sample and branch segment seeds its own random choices from the placement and its index, so changing something else in the chunk leaves an object's glyphs alone (Rust-tested).
+- (original notes)
   - A glyph's character, twist and colour come from a hash of its identity, never from build order or detail level:
     - ground: the grid point
     - objects: the object's seed plus the card's index in its full-detail list
   - The ground already does this for colour. Extend it to the character and twist.
   - Unit test: two builds from different eyes give identical glyphs wherever they overlap.
 
-- [ ] **18. Nested detail with ranks ("keep the old, add the new").**
+- [x] **18. Nested detail.** "Keep this element" compares one fixed number per element with a share that grows as you come closer, so finer detail holds the coarser. The per-object budget keeps the lowest ranks (a hash of the spot). Ground points keep their spot at every level: they scatter by the coarsest grid they're on, and the lift above the surface is fixed. Rust-tested: ground keeps over 85%, leaves over 80% when coming closer.
+- (original notes)
   - **Rank:** every glyph gets one. Coarse detail = the lowest ranks only. Finer detail = the same glyphs plus higher ranks. Any detail change then only adds or removes glyphs; the ones in common never move.
   - **Ground:** rank = the coarsest grid level the point is on, plus a small hash to spread glyphs within a level.
   - **Objects:** build each asset once, at full detail, and order its cards by importance:
@@ -476,7 +479,8 @@ Order: 16 → 22. Steps 16-21 need no GPU, and they help the no-GPU target too (
   - **Size:** when fewer glyphs are shown, the kept ones grow to cover the gap (as now), but smoothly with distance instead of in doubling steps.
   - Tests: every level holds the level below it (ground and objects); a rebuild after moving 30% closer keeps at least 95% of its glyphs.
 
-- [ ] **19. Gradual transitions (fade in, fade out).**
+- [x] **19. Gradual transitions.** `CardLayer.replaceSet`: glyphs in both builds stay and ease to their new size. New ones fade and grow in, bigger first, staggered. Removed ones go to a short-lived outgoing set that fades out. Edits take 0.15 s. The `lodfade` setting / `lod fade <s>` (0 = instant). Fades run on real time, not the weather clock.
+- (original notes)
   - **Getting closer:** when a rebuilt chunk arrives, the glyphs it shares with the old one stay put (drawn once, no flicker). The new glyphs fade in over about 0.6-1 s, in rank order (important first, filler last), growing from a dot instead of popping.
   - **Moving away:** glyphs no longer needed fade out in reverse rank order, filler first. Then the old set is freed.
   - **Ground:** glyph size changes ease over the same time.
@@ -484,7 +488,8 @@ Order: 16 → 22. Steps 16-21 need no GPU, and they help the no-GPU target too (
   - **Edits stay instant (or at most 0.15 s):** you need to see your brush at once. Rain, leaves and the sky are unaffected.
   - Setting `lodfade` (seconds, 0 = instant as today); terminal `lod fade 0.8`.
 
-- [ ] **20. Most important first (update priority).**
+- [x] **20. Most important first.** Order: edits, then holes on screen (nearest first), then visible chunks by detail error x screen size, then off-screen. Detail rebuilds take at most half the workers, so new chunks keep coming.
+- (original notes)
   - **One score per chunk, instead of distance only:** how wrong it looks on screen. That is the detail error in pixels (how far its glyph size is from right), times how big the chunk is on screen, times whether it is on screen (off-screen last), times a bonus near the middle of the view and the cursor.
   - **Order:**
     1. edited chunks (as now)
@@ -496,14 +501,19 @@ Order: 16 → 22. Steps 16-21 need no GPU, and they help the no-GPU target too (
   - Inside a chunk, ranks already make the important glyphs come first (step 19).
   - Debug: a priority heat-map overlay, and the build queue in order in the terminal.
 
-- [ ] **21. Continuous detail (fewer rebuilds).**
+- [x] **21. Continuous detail.** Each glyph carries its distance from the build eye. Seen from farther, objects keep about 1/ratio^2 of their glyphs (by hash, smooth) and grow the rest; ground stays as built. So "farther" rebuilds wait until 2.6x the build distance (it was 1.7x). Nearer still rebuilds at 0.6x, with fades.
+- (original notes)
   - **Headroom:** build each chunk with detail for about 30% closer than its build eye. The extra glyphs are ranked last and hidden.
   - **Detail follows the distance:** every frame, the shader shows the right amount for the current distance (a rank cut-off), so moving shows and hides glyphs smoothly. No rebuild until the camera passes the headroom.
   - **Rebuild when:** the nearest part of a chunk is 25% nearer than it was built for, or its centre is 60% farther (the rules the native branch uses).
   - **Cost:** a few more cards per chunk in memory (measure it; cap it with the stacking limits), in exchange for most move rebuilds.
   - The same idea as "continuous detail / prefix culling" on the native branch, done in our three.js shader.
 
-- [ ] **22. GPU integration.**
+- [x] **22. GPU integration.**
+  - Measured on the Radeon iGPU (step 14): 60 FPS.
+  - Quality presets (`set quality low|medium|high`): view distance, glyph budget, live shadows and the shadow-map size, fade time. Chosen on the first visit from the GPU the browser reports (software rendering gets low, a real GPU high). After that your own changes stick. `gpu` shows the renderer.
+  - Later, optional: a WebGPU renderer, far ground out to 1 km, one evaluation per card per frame (ideas from the `grosminet` branches, ported by hand).
+- (original notes)
   - **Measure first:** our version in a real browser (Chrome, WebGL on the integrated Radeon) next to the software test. Record the perf overlay numbers here.
   - **Two quality modes:** keep a "no GPU" mode that holds 30 FPS or more in software, add a "GPU" mode, and pick between them from the measured frame time. Both appear in settings.
   - **GPU mode adds:**

@@ -473,6 +473,8 @@ export class Viewer {
       this.onFrame(dt);
       this.dirty = true;
     }
+    this.cards.tick(now / 1000);
+    if (this.cards.fading) this.dirty = true; // a detail transition is under way
     const moved = this.controls.enabled && this.controls.update(); // keeps damping going
     if (this.animate && this.frozenTime === null) {
       this.cards.setTime(this.clock);
