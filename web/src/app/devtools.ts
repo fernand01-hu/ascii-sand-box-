@@ -1,8 +1,7 @@
 // Developer tools: only loaded in dev and test builds (see main.ts), so none
 // of this ships to the website.
 //
-//   ` or F1       debug terminal (type help); Esc closes it
-//   F3            performance overlay (fps, frame time, cards, chunks, workers)
+//   (the terminal, debug overlays and F1-F4 are in every build: see main.ts)
 //   keys 1-4      switch between the bundled test models
 //   key 5         testbed: the procedural pine
 //   keys 6-9      scenery galleries: rocks, plants, bushes, trees
@@ -16,7 +15,8 @@
 import { GALLERY_CATEGORIES, type GalleryCategory } from '../engine/protocol';
 import { showPine } from '../testbed/pine';
 import type { App, AppState } from './app';
-import { Terminal } from '../ui/terminal';
+import { registerCommand } from './commands';
+import type { Terminal } from '../ui/terminal';
 import { panelOpen } from '../ui/widgets';
 import type { MapData, NewObject, PlacedObject } from './map';
 import { TEST_MODELS } from './models';
@@ -45,6 +45,8 @@ export interface DebugHandle extends AppState {
   stopPlaying(): void;
   /** Run a debug terminal command; resolves with the lines it printed. */
   run(line: string): Promise<string[]>;
+  /** Apply a share link's hash (what opening the link would do). */
+  applyLink(hash: string): Promise<boolean>;
   /** The app itself, for poking at it from the console (dev builds only). */
   app: App;
   /** Fraction of pixels that differ from the background. */
@@ -60,8 +62,14 @@ declare global {
   }
 }
 
-export function installDevtools(app: App): void {
-  const terminal = new Terminal(app);
+export function installDevtools(app: App, terminal: Terminal): void {
+  registerCommand({
+    name: 'pine', group: 'scenes', usage: 'pine', help: 'the testbed pine (dev builds only)',
+    async run(a, _x, io) {
+      await showPine(a);
+      io.print('testbed pine');
+    },
+  });
   const map = (): MapData => {
     if (!app.map) throw new Error('show the canvas first');
     return app.map;
@@ -96,6 +104,7 @@ export function installDevtools(app: App): void {
     stacking: () => app.viewer.stacking(),
     thumbnail: () => app.viewer.thumbnail(),
     run: (line: string) => terminal.run(line),
+    applyLink: (hash: string) => terminal.ctx.settings.applyLink(hash, terminal.ctx.debug),
   }) as DebugHandle;
   // Not enumerable, so JSON snapshots of the state skip it (it links back to the state).
   Object.defineProperty(window.__ascii, 'app', { value: app, enumerable: false });

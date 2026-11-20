@@ -183,6 +183,39 @@ export class MapData {
     return [...this.chunks.values()].flatMap((c) => c.objects);
   }
 
+  /** Whether chunk (cx, cz) holds any paint. */
+  hasPaint(cx: number, cz: number): boolean {
+    return !!this.chunks.get(chunkKey(cx, cz))?.tiles;
+  }
+
+  /** Painted tiles per ground kind in chunk (cx, cz) (canvas included). */
+  paintCounts(cx: number, cz: number): Record<string, number> {
+    const tiles = this.chunks.get(chunkKey(cx, cz))?.tiles;
+    const out: Record<string, number> = {};
+    if (!tiles) return out;
+    for (const v of tiles) {
+      const k = this.info.groundKinds[v] ?? `#${v}`;
+      out[k] = (out[k] ?? 0) + 1;
+    }
+    return out;
+  }
+
+  /** The object with this id, or undefined. */
+  object(id: number): PlacedObject | undefined {
+    for (const c of this.chunks.values()) {
+      const o = c.objects.find((o) => o.id === id);
+      if (o) return o;
+    }
+    return undefined;
+  }
+
+  /** Remove every edit. Returns the keys of the chunks that changed. */
+  clear(): string[] {
+    const keys = [...this.chunks.keys()];
+    this.chunks.clear();
+    return this.changed(keys);
+  }
+
   /** Objects whose base is in chunk (cx, cz). */
   objectsIn(cx: number, cz: number): readonly PlacedObject[] {
     return this.chunks.get(chunkKey(cx, cz))?.objects ?? [];

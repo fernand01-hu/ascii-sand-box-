@@ -121,6 +121,8 @@ export class App {
   viewRadius = 9;
   /** Seed and time of day of the last canvas shown. */
   canvasOptions = { seed: 1, day: false };
+  /** The canvas's weather: kept when you leave the canvas and come back. */
+  canvasWeather = { wind: 0.3, rain: 0, leaves: 0.5 };
   private env: Environment = { ...CALM };
   private atlas: GlyphAtlas;
   // Only the most recent request may update the scene.
@@ -129,6 +131,11 @@ export class App {
   constructor(container: HTMLElement) {
     this.atlas = createGlyphAtlas(DEFAULT_CHARSET);
     this.viewer = new Viewer(container, this.atlas);
+  }
+
+  /** The characters glyph indices refer to right now (glyph inspector). */
+  get charset(): readonly string[] {
+    return this.atlas.chars;
   }
 
   /** The glyph atlas for an engine-normalized charset (rebuilt only when it changes). */
@@ -177,6 +184,7 @@ export class App {
     this.env.rain = clamp(w.rain, this.env.rain);
     this.env.leaves = clamp(w.leaves, this.env.leaves);
     this.state.weather = { wind: this.env.wind, rain: this.env.rain, leaves: this.env.leaves };
+    if (this.world) this.canvasWeather = { ...this.state.weather };
     this.viewer.cards.setEnvironment(this.env);
     this.viewer.requestRender();
   }
@@ -323,7 +331,7 @@ export class App {
       this.world.radius = this.viewRadius;
       this.world.update(v.camera.position, true);
       this.updateFrameHook();
-      this.setEnvironment({ wind: 0.3, rain: 0, leaves: 0.5 });
+      this.setEnvironment({ ...this.canvasWeather });
       Object.assign(this.state, { triangles: 0, dropped: 0, glyphPx: 0 });
       console.info(`[ascii] canvas seed ${seed}: streaming chunks of ${res.world.chunkSize} m round (${sx.toFixed(0)}, ${sz.toFixed(0)})`);
     });

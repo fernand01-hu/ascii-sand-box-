@@ -145,6 +145,7 @@ uniform vec2 uFog;      // e-folding distance, strength
 uniform float uTime;
 uniform vec4 uWind;     // dir x, dir z, strength, -
 uniform float uRain;
+uniform float uDebugView; // 0 normal, 1 light (sun white, sky blue), 2 glyph size
 uniform float uLeaves;
 uniform vec3 uRainBox;
 uniform vec3 uLeafBox;  // min x, min z, size
@@ -339,6 +340,17 @@ void main() {
     float hz = (1.0 - exp(-dist / (uFog.x * (1.0 - 0.55 * uRain)))) * uFog.y;
     vColor = mix(vColor, uHazeColor, hz);
   }
+  // Debug views (sky, rain and leaves keep their colour).
+  if (uDebugView > 0.5 && !emissive && !rain && !leaf) {
+    if (uDebugView < 1.5) {
+      // Baked light: sun visibility as white, sky visibility as blue.
+      vColor = vec3(0.85 * iLight.x) + vec3(0.04, 0.09, 0.32) * iLight.y;
+    } else {
+      // Glyph size: one colour per doubling from 0.25 m.
+      float lv = clamp(log2(max(length(iV), 1e-3) / 0.25), 0.0, 6.0) / 6.0;
+      vColor = 0.55 + 0.45 * cos(6.28318 * (lv * 0.8 + vec3(0.0, 0.33, 0.67)));
+    }
+  }
 
   float row = floor((glyph + 0.5) / uGrid.x);
   float col = glyph - row * uGrid.x;
@@ -374,6 +386,8 @@ interface Chunk {
   global: boolean;
   /** Sky sector: direction of its centre and angular radius (rad), or null. */
   sky: { dir: Vector3; radius: number } | null;
+  /** The card set it belongs to (e.g. a world chunk key). */
+  set: string;
   lo: Vector3;
   hi: Vector3;
 }
@@ -425,6 +439,7 @@ export class CardLayer {
         uTime: { value: 0 },
         uWind: { value: new Vector4(1, 0, 0, 0) },
         uRain: { value: 0 },
+        uDebugView: { value: 0 },
         uLeaves: { value: 0 },
         uRainBox: { value: new Vector3(36, 24, 36) },
         uLeafBox: { value: new Vector3(0, 0, 1) },
@@ -438,6 +453,11 @@ export class CardLayer {
 
   get cardCount(): number {
     return this.count;
+  }
+
+  /** Debug colouring: 'normal', 'light' (baked sun / sky) or 'size' (glyph size). */
+  setDebugView(view: 'normal' | 'light' | 'size'): void {
+    this.material.uniforms.uDebugView!.value = view === 'light' ? 1 : view === 'size' ? 2 : 0;
   }
 
   /**
@@ -499,19 +519,12 @@ export class CardLayer {
     }
   }
 
-  /**
-   * How many glyphs stack on one spot of the screen: projects the centre of
-   * every ground and object card in view (not sky, rain or leaves) and counts
-   * them per square screen cell of `cellPx` CSS px (about one glyph).
-   * Returns the number of occupied cells and the mean, 95th percentile and
-   * maximum count per occupied cell. For tests and the terminal; not per frame.
-   */
-  stacking(camera: PerspectiveCamera, width: number, height: number, cellPx = 16): { cells: number; mean: number; p95: number; max: number } {
+  /** Visit the screen position of every ground / object card in view (not sky, rain, leaves). */
+  private forEachOnScreen(camera: PerspectiveCamera, width: number, height: number,
+    f: (sx: number, sy: number, depth: number, chunk: Chunk, i: number) => void): void {
     camera.updateMatrixWorld();
     const vp = new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     const frustum = new Frustum().setFromProjectionMatrix(vp);
-    const cols = Math.ceil(width / cellPx), rows = Math.ceil(height / cellPx);
-    const counts = new Uint32Array(cols * rows);
     const e = vp.elements;
     for (const c of this.chunks) {
       if (c.global || !c.mesh.visible) continue;
@@ -528,14 +541,60 @@ export class CardLayer {
         const nx = (e[0]! * x + e[4]! * y + e[8]! * z + e[12]!) / w;
         const ny = (e[1]! * x + e[5]! * y + e[9]! * z + e[13]!) / w;
         if (nx < -1 || nx >= 1 || ny < -1 || ny >= 1) continue;
-        const cx = Math.floor(((nx + 1) / 2) * width / cellPx), cy = Math.floor(((1 - ny) / 2) * height / cellPx);
-        counts[cy * cols + cx]!++;
+        f(((nx + 1) / 2) * width, ((1 - ny) / 2) * height, w, c, i);
       }
     }
-    const used = Array.from(counts).filter((v) => v > 0).sort((a, b) => a - b);
+  }
+
+  /** Glyph centres per square screen cell of `cellPx` CSS px (row-major). */
+  stackGrid(camera: PerspectiveCamera, width: number, height: number, cellPx = 16): { cols: number; rows: number; counts: Uint32Array } {
+    const cols = Math.ceil(width / cellPx), rows = Math.ceil(height / cellPx);
+    const counts = new Uint32Array(cols * rows);
+    this.forEachOnScreen(camera, width, height, (sx, sy) => {
+      counts[Math.floor(sy / cellPx) * cols + Math.floor(sx / cellPx)]!++;
+    });
+    return { cols, rows, counts };
+  }
+
+  /**
+   * How many glyphs stack on one spot of the screen: projects the centre of
+   * every ground and object card in view (not sky, rain or leaves) and counts
+   * them per square screen cell of `cellPx` CSS px (about one glyph).
+   * Returns the number of occupied cells and the mean, 95th percentile and
+   * maximum count per occupied cell. For tests and the terminal; not per frame.
+   */
+  stacking(camera: PerspectiveCamera, width: number, height: number, cellPx = 16): { cells: number; mean: number; p95: number; max: number } {
+    const used = Array.from(this.stackGrid(camera, width, height, cellPx).counts).filter((v) => v > 0).sort((a, b) => a - b);
     if (used.length === 0) return { cells: 0, mean: 0, p95: 0, max: 0 };
     const mean = used.reduce((a, b) => a + b, 0) / used.length;
     return { cells: used.length, mean, p95: used[Math.floor(used.length * 0.95)]!, max: used[used.length - 1]! };
+  }
+
+  /**
+   * The frontmost glyph whose centre is within `radiusPx` of screen point
+   * (px, py): its card record (16 floats), the set it belongs to, and its
+   * screen distance. Null if none.
+   */
+  pick(camera: PerspectiveCamera, width: number, height: number, px: number, py: number, radiusPx = 10):
+    { card: Float32Array; set: string; screenDist: number } | null {
+    let best: { chunk: Chunk; i: number; depth: number; d: number } | null = null;
+    this.forEachOnScreen(camera, width, height, (sx, sy, depth, chunk, i) => {
+      const d = Math.hypot(sx - px, sy - py);
+      if (d > radiusPx) return;
+      if (!best || depth < best.depth - 0.05 || (Math.abs(depth - best.depth) <= 0.05 && d < best.d)) best = { chunk, i, depth, d };
+    });
+    if (!best) return null;
+    const b = best as { chunk: Chunk; i: number; depth: number; d: number };
+    const attr = b.chunk.mesh.geometry.getAttribute('iCenter') as InterleavedBufferAttribute;
+    const stride = attr.data.stride;
+    const arr = attr.data.array as Float32Array;
+    return { card: arr.slice(b.i * stride, b.i * stride + stride), set: b.chunk.set, screenDist: b.d };
+  }
+
+
+  /** Bounds of every positioned (non-global) render chunk, for the culling-box overlay. */
+  boxes(): { lo: Vector3; hi: Vector3; set: string }[] {
+    return this.chunks.filter((c) => !c.global).map((c) => ({ lo: c.lo, hi: c.hi, set: c.set }));
   }
 
   /** The chunk meshes (the underpaint pass draws them with its own material). */
@@ -650,7 +709,7 @@ export class CardLayer {
       const sky = global > 1.5
         ? { dir: centre.clone().normalize(), radius: Math.atan2(lo.distanceTo(hi) / 2, Math.max(centre.length(), 1)) }
         : null;
-      const chunk: Chunk = { mesh, count, global: global > 0.5, lo, hi, sky };
+      const chunk: Chunk = { mesh, count, global: global > 0.5, lo, hi, sky, set: key };
       // Global chunks (sky dome, rain round the camera, blown leaves) always draw.
       mesh.frustumCulled = !chunk.global;
       mesh.renderOrder = 1; // after the opaque body

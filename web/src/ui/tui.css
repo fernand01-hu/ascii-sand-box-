@@ -220,8 +220,66 @@
   right: 8px;
   max-width: calc(100vw - 16px);
   white-space: pre;
-  overflow: hidden;
   pointer-events: none;
+}
+
+/* Clip long lines inside the box, never the box itself (that cut the title). */
+.tui-perf > div:last-child {
+  overflow: hidden;
+}
+
+/* ---- debug overlays ------------------------------------------------------------ */
+
+.tui-overlay {
+  pointer-events: none;
+  white-space: pre;
+}
+
+.tui-infobox {
+  top: 14px;
+  left: 8px;
+  max-width: calc(100vw - 16px);
+}
+.tui-overlay-body { overflow: hidden; }
+
+.tui-inspect {
+  z-index: 11;
+  max-width: min(60ch, calc(100vw - 16px));
+}
+
+.tui-labels {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.tui-label-tag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  padding: 0 0.5ch;
+  font-size: 11px;
+  white-space: nowrap;
+  background: rgba(10, 13, 20, 0.8);
+  border: 1px solid var(--tui-border);
+  color: var(--tui-fg);
+}
+.tui-tag-object { color: var(--tui-accent); border-color: var(--tui-accent); }
+.tui-tag-building { color: var(--tui-accent); }
+.tui-tag-dirty { color: var(--tui-err); }
+
+.tui-heat {
+  position: fixed;
+  inset: 0;
+  z-index: 7;
+  pointer-events: none;
+}
+
+.tui-status .tui-warn {
+  color: var(--tui-err);
+  cursor: pointer;
 }
 
 @media (max-width: 640px) {
@@ -229,4 +287,5 @@
   .tui-terminal { left: 4px; right: 4px; bottom: 26px; }
   .tui-status .tui-name { display: none; }
   .tui-perf { top: 12px; right: 4px; }
+  .tui-infobox { top: 12px; left: 4px; }
 }

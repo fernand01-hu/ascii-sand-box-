@@ -276,6 +276,12 @@ pub fn build_gallery(category: &str, seed: u32, glyph_aspect: f32) -> Result<Sce
     })
 }
 
+/// Material names, comma-separated, indexed by material id (for the glyph inspector).
+#[wasm_bindgen(js_name = materialNames)]
+pub fn material_names() -> String {
+    scenery::style::MAT_NAMES.join(",")
+}
+
 /// Every character scenery uses, in atlas order.
 #[wasm_bindgen(js_name = sceneryCharset)]
 pub fn scenery_charset() -> String {
@@ -375,7 +381,15 @@ impl CanvasWorld {
         }
         let c = self.inner.build_chunk(cx, cz, math::Vec3::new(ex, ey, ez), glyph_aspect, ChunkData { tiles, objects });
         let (body, body_normals) = body_buffers(&c.body);
-        Ok(WorldChunk { cards: c.cards, body, body_normals, heights: c.heights, colliders: c.colliders.iter().flatten().copied().collect(), placed: c.placed as u32 })
+        Ok(WorldChunk {
+            cards: c.cards,
+            body,
+            body_normals,
+            heights: c.heights,
+            colliders: c.colliders.iter().flatten().copied().collect(),
+            placed: c.placed as u32,
+            bounds: c.bounds.iter().flatten().copied().collect(),
+        })
     }
 }
 
@@ -387,6 +401,7 @@ pub struct WorldChunk {
     heights: Vec<f32>,
     colliders: Vec<f32>,
     placed: u32,
+    bounds: Vec<f32>,
 }
 
 #[wasm_bindgen]
@@ -394,6 +409,13 @@ impl WorldChunk {
     /// Objects drawn (records with an unknown kind are skipped).
     pub fn placed(&self) -> u32 {
         self.placed
+    }
+
+    /// Per object drawn: record index, then its world box (min x, y, z,
+    /// max x, y, z): 7 floats each.
+    #[wasm_bindgen(js_name = takeBounds)]
+    pub fn take_bounds(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.bounds)
     }
     #[wasm_bindgen(js_name = takeCards)]
     pub fn take_cards(&mut self) -> Vec<f32> {

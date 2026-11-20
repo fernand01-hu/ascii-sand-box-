@@ -150,6 +150,37 @@ next one.
   - [x] The debug terminal is rebuilt from the same panel and text input.
     The brush panel (step 7) and save dialog (step 9) will be too.
 
+- [x] **5b. Debug tools (added on request).** (Done on
+      `step-05b-debug-tools`.) The terminal and every debug tool ship in
+      all builds. One shared list of debug options drives the menu
+      (`Esc` → Debug), the terminal (`debug <option> on|off`) and hotkeys,
+      and choices are remembered between visits.
+  - [x] Info box (`F2`): position, chunk and tile, compass facing, orbit
+    target, world clock and speed, weather, seed and view, map counts, and
+    stats pinned with `watch`.
+  - [x] Overlays: chunk borders coloured by state (`F4`), chunk labels,
+    object labels (`#id kind`), object outlines (box + footprint), paint
+    tile grid round the cursor, culling boxes, origin and axes, hidden
+    solid shapes as wireframe, stacking heat map, performance overlay
+    (`F3`; title no longer cut off).
+  - [x] Light view (baked sun white, sky blue) and glyph-size tint.
+  - [x] Glyph inspector: point at any character to see its material, mode,
+    chunk, object, size, colour and light.
+  - [x] Cursor readout: the ground point under the mouse (chunk, tile,
+    paint). Step 6 will reuse it.
+  - [x] Terminal: `chunk`, `obj`, `here`, `tile`, `goto`, `look`, `cam`,
+    `time`, `speed`, `day`, `dusk`, `stream`, `rebuild`, `fill`,
+    `scatter`, `clearmap`, `debug`, `set`, `watch`, `profile`, `bench`,
+    `verify`, `mem`, `workers`, `link`, `screenshot`, `alias`, `bind`,
+    `repeat`, `copy`, `log save`; `;` chains commands, `!!` repeats;
+    `help` is grouped.
+  - [x] Rebuild log (why each chunk was built, how long it took), freeze
+    streaming, determinism check (`verify`).
+  - [x] Settings remembered between visits. The canvas keeps your weather
+    when you come back to it. A warning counter (`⚠ n`) sits in the
+    status bar. Share links (`link`) bring back seed, camera, settings and
+    debug options.
+
 ## Phase 2: Scene editor
 
 - [ ] **6. (added) Editing camera and ground picking.**

@@ -26,6 +26,9 @@ interface Pending {
 class Slot {
   worker!: Worker;
   pending = new Map<number, Pending>();
+  /** Results received and the engine time they took (ms), for `workers`. */
+  done = 0;
+  busyMs = 0;
 
   constructor(
     private onRestart: (slot: Slot) => void,
@@ -73,6 +76,8 @@ class Slot {
       return;
     }
     const { kind: _k, id: _i, ...result } = msg;
+    this.done++;
+    this.busyMs += result.timings.loadMs + result.timings.generateMs;
     p?.resolve(result);
   }
 
@@ -118,6 +123,11 @@ export class EngineClient {
   /** Requests each worker still owes an answer to: the main worker, then each chunk worker. */
   queue(): { main: number; chunks: number[] } {
     return { main: this.main.load, chunks: this.pool.map((s) => s.load) };
+  }
+
+  /** Per worker: requests waiting, results received, engine time spent (ms). */
+  workerStats(): { name: string; pending: number; done: number; busyMs: number }[] {
+    return [this.main, ...this.pool].map((s, i) => ({ name: i === 0 ? 'main' : `chunk ${i}`, pending: s.load, done: s.done, busyMs: s.busyMs }));
   }
 
   /** Number of workers building world chunks in parallel. */

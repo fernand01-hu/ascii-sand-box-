@@ -53,7 +53,7 @@ try {
   const page = await browser.newPage();
   page.on('console', (m) => {
     const t = m.text();
-    const expected = t.includes('could not load broken.stl') || /GPU stall|Automatic fallback to software WebGL/.test(t);
+    const expected = t.includes('could not load broken.stl') || t.includes('[expected]') || /GPU stall|Automatic fallback to software WebGL/.test(t);
     if ((m.type() === 'error' || m.type() === 'warning') && !expected) problems.push(`[${m.type()}] ${t}`);
     if (t.startsWith('[ascii]')) console.log(`       ${t}`);
   });
@@ -320,6 +320,97 @@ try {
     for (const c of ['canvas 1', 'wind 0.3', 'rain off']) await page.evaluate((c) => window.__ascii.run(c), c);
     await waitSettled('canvas');
     await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+  });
+
+  await step('debug tools: menu panel, overlays, inspector, light view, terminal tools, link, warnings', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    const visible = (sel) => page.evaluate((sel) => [...document.querySelectorAll(sel)].some((e) => !e.hidden), sel);
+    // The menu's Debug panel: its first checkbox is the info box.
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('d');
+    assert.ok(await visible('.tui-debug'), 'menu → Debug opens the debug panel');
+    await page.keyboard.press(' ');
+    assert.ok(await visible('.tui-infobox'), 'the first checkbox shows the info box');
+    assert.match(await page.evaluate(() => document.querySelector('.tui-infobox').textContent), /facing\s+N/);
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    assert.match((await run('debug')).join('\n'), /\[x\] info/, 'the terminal sees what the menu set');
+    // Line overlays.
+    await run('place tree:oak 4 -28 1 3; debug chunks on; debug outlines on; debug axes on; debug culling on');
+    await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+    await new Promise((r) => setTimeout(r, 600));
+    const layers = await page.evaluate(() => window.__ascii.app.viewer.overlay.children.length);
+    assert.ok(layers >= 4, `chunk, outline, axes and culling lines are drawn (${layers} layers)`);
+    // Labels.
+    await run('debug chunkLabels on; debug objects on');
+    await page.waitForFunction(() => [...document.querySelectorAll('.tui-label-tag')].some((t) => !t.hidden && /#\d+ tree:oak/.test(t.textContent)), { timeout: 10_000 });
+    assert.ok(await page.evaluate(() => [...document.querySelectorAll('.tui-label-tag')].some((t) => !t.hidden && /^-?\d+,-?\d+/.test(t.textContent))), 'chunk coordinates are labelled');
+    await page.screenshot({ path: join(outDir, '13e-debug-overlays.png') });
+    // Light view and glyph size tint are one-at-a-time.
+    await run('debug light on');
+    assert.equal(await page.evaluate(() => window.__ascii.app.viewer.cards.material.uniforms.uDebugView.value), 1);
+    await run('debug size on');
+    assert.equal(await page.evaluate(() => window.__ascii.app.viewer.cards.material.uniforms.uDebugView.value), 2);
+    assert.match((await run('debug')).join('\n'), /\[ \] light/, 'turning on the size tint turns the light view off');
+    await run('debug size off');
+    // Glyph inspector: point at the ground in front of the camera.
+    await run('debug inspector on');
+    await page.mouse.move(500, 600);
+    await page.mouse.move(503, 602);
+    await page.waitForFunction(() => { const e = document.querySelector('.tui-inspect'); return e && !e.hidden && /GroundGrass|Canvas|sun/.test(e.textContent); }, { timeout: 10_000 });
+    // Heat map, perf overlay (its title must not be cut off).
+    await run('debug heat on; perf on');
+    assert.ok(await visible('.tui-heat'));
+    const perfTitle = await page.evaluate(() => {
+      const box = document.querySelector('.tui-perf'), t = box.querySelector('.tui-title');
+      return { overflow: getComputedStyle(box).overflow, top: t.getBoundingClientRect().top, height: t.getBoundingClientRect().height };
+    });
+    assert.notEqual(perfTitle.overflow, 'hidden', 'the perf box must not clip its title');
+    assert.ok(perfTitle.top >= 0, 'the perf title is on screen');
+    // Terminal tools.
+    assert.match((await run('set wind 0.7')).join('\n'), /wind = 0.70/);
+    assert.equal((await state()).weather.wind, 0.7);
+    await run('alias storm wind 1');
+    await run('storm');
+    assert.equal((await state()).weather.wind, 1, 'an alias runs its command');
+    await run('wind 0.4; rain 0.5');
+    assert.equal((await state()).weather.rain, 0.5, '; runs several commands');
+    await run('rain 0');
+    await run('!!');
+    assert.equal((await state()).weather.rain, 0);
+    await run('bind k wind 0.2');
+    await page.keyboard.press('k');
+    await page.waitForFunction(() => window.__ascii.weather.wind === 0.2, { timeout: 5000 });
+    assert.match((await run('verify')).join('\n'), /identical/);
+    assert.match((await run('profile 1')).join('\n'), /fps average/);
+    assert.match((await run('clearmap')).join('\n'), /type: clearmap yes/, 'clearmap asks first');
+    assert.match((await run('time 10')).join('\n'), /world clock 10\.\d s/);
+    assert.match((await run('stream off')).join('\n'), /frozen/);
+    await run('stream on');
+    for (const c of ['chunk', 'obj 1', 'here', 'workers', 'mem', 'stats', 'set', 'help debug']) {
+      const out = (await run(c)).join('\n');
+      assert.ok(out.length > 0 && !/unknown command|^error/m.test(out), `${c} answers`);
+    }
+    // A share link brings the camera back.
+    const link = (await run('link'))[0];
+    assert.match(link, /#seed=1&cam=/);
+    await run('cam 50 20 50 60 0 40');
+    assert.equal(await page.evaluate((h) => window.__ascii.applyLink(h), link.split('#')[1]), true);
+    const cam = await page.evaluate(() => window.__ascii.app.viewer.camera.position.toArray());
+    assert.ok(Math.abs(cam[0]) < 0.1 && Math.abs(cam[1] - 7) < 0.1, `the link restored the camera (${cam.map((v) => v.toFixed(1))})`);
+    // Warnings while the terminal is closed show up in the status bar; clicking opens the terminal.
+    await page.evaluate(() => console.warn('[expected] a test warning'));
+    assert.match(await page.evaluate(() => document.querySelector('.tui-warn').textContent), /⚠ 1/);
+    await page.click('.tui-warn');
+    assert.ok(await visible('.tui-terminal'), 'clicking the counter opens the terminal');
+    assert.equal(await page.evaluate(() => document.querySelector('.tui-warn').hidden), true, 'opening the terminal clears it');
+    await page.keyboard.press('Escape');
+    // Back to a clean state for the next steps.
+    for (const c of ['clearmap yes', 'bind k', 'alias storm', 'watch off', 'wind 0.3', 'rain 0', 'time 0', 'canvas 1',
+      ...['info', 'chunks', 'outlines', 'axes', 'culling', 'chunkLabels', 'objects', 'inspector', 'heat', 'perf', 'light', 'size'].map((d) => `debug ${d} off`)]) await run(c);
+    await waitSettled('canvas');
+    await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+    assert.equal(await page.evaluate(() => window.__ascii.app.viewer.overlay.children.length), 0, 'every overlay is gone again');
   });
 
   const models = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];

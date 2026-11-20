@@ -41,10 +41,11 @@ web/
   src/render/      glyph atlas, instanced card shader, viewer (orbit, resize, frame stats)
   src/ui/          TUI look (tui.css), widgets (panel, list, slider, checkbox,
                    text input), the interface (status bar, menu, settings,
-                   help) and the debug terminal + perf overlay
+                   debug, help), the terminal, perf overlay, debug overlays
   src/app/         app core, the edited map (map.ts: paint + objects per
-                   chunk), canvas chunk streaming, terminal commands, dev
-                   tools; player and
+                   chunk), canvas chunk streaming, terminal commands,
+                   settings, debug options and tools, cursor, dev tools;
+                   player and
                    physics are kept for the later play mode (not wired to a key)
   src/main.ts      wiring
   public/models/   test STL files (regenerate: npm run models)
@@ -67,8 +68,13 @@ the menu (settings: canvas seed, day / dusk, view distance, wind, rain,
 leaves, FPS readout, card budget); `?` shows help. Panels work with the
 keyboard (Up/Down, Left/Right, Space, Enter, Esc) or the mouse.
 
-Debug terminal (dev/test builds only): press `` ` `` (the key left of `1`,
-`²` on AZERTY) or `F1`, then type `help`. Try `paint grass 0 -20 6`,
+Terminal (every build): press `` ` `` (the key left of `1`, `²` on AZERTY)
+or `F1`, then type `help`. Debug tools: `Esc` → Debug in the menu, or `F2`
+info box, `F3` performance, `F4` chunk borders. Overlays (chunk borders and
+labels, object labels and outlines, tile grid, culling boxes, axes, solids
+wireframe, heat map), a light view, a glyph-size tint and a glyph
+inspector; `debug` in the terminal lists them. `link` copies a URL that
+brings back the current view. Settings and debug choices are remembered. Try `paint grass 0 -20 6`,
 `place tree:oak 4 -25`, `wind 0.8`, `view 6`, or `perf on` (also `F3`) for
 FPS, frame time, cards and chunks. `stack` shows how many glyphs pile up on
 one spot of the screen; `budget 80k` caps the cards drawn per frame on a slow

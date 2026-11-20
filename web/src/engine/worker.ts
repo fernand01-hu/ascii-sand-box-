@@ -103,7 +103,7 @@ async function handle(req: WorkerRequest): Promise<void> {
           kind: 'result', id: req.id, mesh: null, cards, stride, count: cards.length / stride, charset: wasm.sceneryCharset(),
           timings: { loadMs: 0, generateMs: performance.now() - t0 }, sunDir: [sx, sy, sz], materials, materialFloats: wasm.materialFloats(),
           env: { day: req.day, windDir: [0.89, -0.45], leafBox: [0, 0, 90], rainBox: [36, 24, 36] },
-          world: { chunkSize, grid, ground, spawn, tile, tiles, groundKinds: wasm.groundKinds().split(','), objectKinds: wasm.objectKinds().split(',') },
+          world: { chunkSize, grid, ground, spawn, tile, tiles, groundKinds: wasm.groundKinds().split(','), objectKinds: wasm.objectKinds().split(','), materialNames: wasm.materialNames().split(',') },
         },
         [cards.buffer, materials.buffer],
         // Sky, rain and leaves are global by their card mode; the sky dome is
@@ -122,15 +122,16 @@ async function handle(req: WorkerRequest): Promise<void> {
         const normals = c.takeBodyNormals();
         const heights = c.takeHeights();
         const colliders = c.takeColliders();
+        const bounds = c.takeBounds();
         const stride = wasm.cardStride();
         postResult(
           {
             kind: 'result', id: req.id, cards, stride, count: cards.length / stride, charset: wasm.sceneryCharset(),
             mesh: { positions, normals, triangles: positions.length / 9, dropped: 0 },
             timings: { loadMs: 0, generateMs: performance.now() - t0 },
-            chunk: { cx: req.cx, cz: req.cz, eye: req.eye, rev: req.rev, placed: c.placed(), heights, colliders },
+            chunk: { cx: req.cx, cz: req.cz, eye: req.eye, rev: req.rev, placed: c.placed(), bounds, heights, colliders },
           },
-          [cards.buffer, positions.buffer, normals.buffer, heights.buffer, colliders.buffer],
+          [cards.buffer, positions.buffer, normals.buffer, heights.buffer, colliders.buffer, bounds.buffer],
         );
       } finally {
         c.free();

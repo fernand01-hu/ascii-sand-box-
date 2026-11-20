@@ -4,7 +4,7 @@
 // it. Use it to check the 30 FPS target without a GPU.
 
 import type { App } from '../app/app';
-import { statLines } from '../app/commands';
+import { statLines } from '../app/stats';
 
 export class PerfOverlay {
   readonly el: HTMLDivElement;
