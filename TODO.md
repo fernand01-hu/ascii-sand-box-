@@ -375,6 +375,7 @@ next one.
     - stable glyphs (Phase 5): positions and glyphs come from a hash of the world position, not from a random sequence, so a rebuild doesn't reshuffle them
   - **Borders:** materials mix over about 1 m (dithered) instead of meeting at a tile edge.
   - Compare old and new in the look lab before merging.
+  - **(found 2026-11-20) Steep slopes need more glyphs.** Mountain faces steeper than about 45 degrees get too few ground glyphs and read as black holes in the sky. The ground grid only has points every 0.5 m across the flat plan. Add glyphs in proportion to the real surface area, as the old `ground_region` did with its slope boost.
 
 - [ ] **15. Rework the water.**
   - Better flow, edge foam and shoreline glyphs, and reflections or a
