@@ -56,11 +56,10 @@ export const LIGHTS: LightVariant[] = [
 export const WEATHERS: WeatherVariant[] = [
   { id: 'now', name: 'A  now', help: 'today\'s rain streaks, sway and leaves' },
   { id: 'gusts', name: 'B  gust waves', help: 'patches of strong wind roll across the grass, bending and brightening it', gusts: true },
-  { id: 'clouds', name: 'C  cloud shadows', help: 'big soft shadows drifting over the land with the wind', clouds: true },
+  { id: 'clouds', name: 'C  cloud shadows', help: 'faint soft shadows drifting quickly over the land with the wind', clouds: true },
   { id: 'wet', name: 'D  wet rain', help: 'rain darkens the ground with a sheen; drops splash on it (. o O)', wet: true },
-  { id: 'mist', name: 'E  mist', help: 'fog banks hugging the low ground, drifting', mist: true },
   { id: 'storm', name: 'F  storm', help: 'dark sky, lightning flashes, gusts and wet ground', storm: true, gusts: true, wet: true },
-  { id: 'all', name: 'G  everything', help: 'B to E together', gusts: true, clouds: true, wet: true, mist: true },
+  { id: 'all', name: 'G  everything', help: 'gusts, clouds and wet rain together', gusts: true, clouds: true, wet: true },
 ];
 
 export const WATERS: WaterVariant[] = [

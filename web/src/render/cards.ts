@@ -459,9 +459,9 @@ void main() {
       ts = sunMap(center, length(iV)) * (0.55 + 0.45 * iLight.x);
     }
     if (uFxA.z > 0.5) {
-      // Cloud shadows drifting with the wind.
-      vec2 cp = (center.xz - uWind.xy * uTime * (1.5 + 6.0 * ws)) * 0.011;
-      ts *= mix(1.0, 0.3, smoothstep(0.42, 0.72, vnoise(cp) * 0.65 + vnoise(cp * 2.3) * 0.35));
+      // Cloud shadows drifting with the wind: faint, soft, quick.
+      vec2 cp = (center.xz - uWind.xy * uTime * (5.0 + 16.0 * ws)) * 0.011;
+      ts *= mix(1.0, 0.72, smoothstep(0.38, 0.8, vnoise(cp) * 0.65 + vnoise(cp * 2.3) * 0.35));
     }
     ts *= 1.0 - 0.6 * uRain; // overcast while it rains
     float ndl = dot(Nlight, uSunDir);

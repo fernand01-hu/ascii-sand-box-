@@ -358,6 +358,24 @@ next one.
   - **(added)** Add a light-direction / time-of-day control in the debug
     terminal to test this.
 
+- [ ] **15b. (added 2026-11-20) Organic ground: grass, sand, rock look natural again.**
+  - **Problem:** painted ground looks artificial next to the old procedural landscapes, which looked beautiful.
+    - The canvas puts painted grass, sand and rock on the same neat grid as the blank `#` rows.
+    - Every glyph has the same tilt and nearly the same colour.
+    - Tile borders are hard edges.
+  - **What the old `landscape::ground_region` did, to bring back (from git, before `ef828b5`):**
+    - glyphs scattered at random spots in 4 m cells (not rows), with the count from the view and the slope
+    - each glyph tilted a little off the surface, at a random angle
+    - its own colour variation per glyph, plus dry / lush patches of grass from noise
+    - the material chosen by the land: rock on steep slopes, soil and moss under trees, wet sand at the water
+    - water drawn in small clusters of wave glyphs coloured by the sky
+  - **Keep:**
+    - blank canvas stays neat `#` rows (user's choice); only painted ground goes organic
+    - the stacking limits (step 4), so the cost stays low
+    - stable glyphs (Phase 5): positions and glyphs come from a hash of the world position, not from a random sequence, so a rebuild doesn't reshuffle them
+  - **Borders:** materials mix over about 1 m (dithered) instead of meeting at a tile edge.
+  - Compare old and new in the look lab before merging.
+
 - [ ] **15. Rework the water.**
   - Better flow, edge foam and shoreline glyphs, and reflections or a
     glyph-ripple animation.
