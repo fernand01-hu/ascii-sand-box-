@@ -260,14 +260,25 @@ next one.
   - [x] **(added)** Export the view as PNG or plain-text ASCII
     (`export png|text|print`).
 
-- [ ] **10. Object brush: place over an area.**
-  - Paint trees, bushes, rocks, grass and flowers over an area, with a
-    density setting instead of one-by-one placement.
-  - Use Poisson-disk spacing so objects don't overlap or clump. Spacing must
-    also work across chunk borders.
-  - **(added)** Random variation per object (size ±, rotation, seed).
-  - **(added)** Single-click placement, plus select / move / delete for one
-    object.
+- [x] **10. Object brush: place over an area.** (Done on `step-10-object-brush`.)
+  - [x] Object brush (`O`): spray (`1`) paints trees, bushes, rocks, grass
+    and flowers over an area with a density (objects per 100 m²). Single
+    (`2`) places one per click. Erase (`3`) removes the objects under the
+    brush. One kind or a family mix ("any tree").
+  - [x] Even spacing (dart throwing, `app/spray.ts`): every new object keeps
+    its family's room (trees 4 m, bushes 1.6, rocks 1.4, plants 0.6, times
+    a spacing factor) from every neighbour, across chunk borders too.
+    Painting the same spot again fills gaps, then stops.
+  - [x] **(added)** Random variation per object: seed, rotation, size ±.
+  - [x] **(added)** Select tool (`V`): click to select (outline from the
+    engine's box), drag to move (snapping applies, keeps the id), `R`
+    turns, `[` `]` resize, `Delete` removes, `Esc` lets go. Each is one
+    undoable action.
+  - [x] One editing tool at a time (terrain brush, object brush, select).
+    Panels, menu items, status bar, terminal (`tool`, `objbrush`, `select`,
+    `move`, `rotate`, `resize`), settings remembered.
+  - [x] Unit tests for the spray maths. e2e: real drags, spacing across a
+    chunk border, single, erase, select, move, turn, delete, undo.
 
 - [ ] **11. Generator parameters in the brush.**
   - Expose *every* generator parameter for every object type: tree height,

@@ -56,7 +56,7 @@ export class Editor {
   /** While true the left mouse button paints; the camera uses the other buttons. */
   private leftPaints = false;
 
-  constructor(private app: App, private cursor: Cursor, settings: Settings) {
+  constructor(private app: App, readonly cursor: Cursor, settings: Settings) {
     this.draw = new DebugDraw(app.viewer.overlay);
     const v = app.viewer;
     v.controls.addEventListener('change', () => this.queueGrid());

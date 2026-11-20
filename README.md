@@ -60,7 +60,7 @@ Needs Rust (`rustup target add wasm32-unknown-unknown`), `wasm-pack` and Node.
 npm install
 npm run dev        # build the engine, start the dev server
 npm run build      # production build in dist/ (static files, host anywhere)
-npm test           # Rust tests, unit tests (brush, undo, scene files), typecheck + build, WASM smoke test, headless-Chrome e2e
+npm test           # Rust tests, unit tests (brush, spray, undo, scene files), typecheck + build, WASM smoke test, headless-Chrome e2e
 ```
 
 In the viewer: drag to orbit, wheel to zoom, right-drag to pan. `T` switches
@@ -70,6 +70,9 @@ terminal. `P` turns on the terrain brush: left drag paints, `1`-`4` pick
 grass / sand / water / rock, `E` is the eraser, `[` `]` change the size;
 shape, strength and soft edge are in the brush panel. `Ctrl+Z` / `Ctrl+Y`
 undo and redo any change to the map (`history` in the terminal lists them).
+`O` is the object brush (1 spray evenly spaced trees, bushes, rocks or plants,
+2 place one per click, 3 erase); `V` selects an object (drag to move, `R`
+turn, `Delete` remove).
 `Ctrl+S` saves the scene in the browser; `Esc` → Save / load lists saved
 scenes, downloads or loads `.scene.json` files (or drop one on the page) and
 exports the view as PNG or ASCII text. Your work is autosaved and comes back

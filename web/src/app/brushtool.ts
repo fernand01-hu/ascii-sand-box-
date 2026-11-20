@@ -18,6 +18,7 @@ import { BRUSH_SIZES, dabSpacing, dabTiles, strokePoints, type BrushOptions, typ
 import type { Editor } from './editor';
 import type { TileChange } from './map';
 import type { Settings } from './settings';
+import type { ToolSwitch } from './tools';
 
 /** Paints the number keys pick, in order. */
 export const PAINT_KEYS = ['grass', 'sand', 'water', 'rock'];
@@ -40,6 +41,8 @@ export class BrushTool implements BrushOptions {
   private listeners = new Set<() => void>();
   private strokeListeners = new Set<(s: Stroke) => void>();
   private draw: DebugDraw;
+  /** Set in main: only one editing tool is on at a time. */
+  switch: ToolSwitch | null = null;
   /** Set by the undo history: each stroke becomes one undoable action. */
   group: { begin(label: string): void; end(label?: string): void } | null = null;
 
@@ -120,7 +123,10 @@ export class BrushTool implements BrushOptions {
 
   setActive(on: boolean): void {
     if (on && !this.app.world) return; // only on the canvas
+    if (on === this.active) return;
     this.end();
+    if (on) this.switch?.claim('paint', () => this.setActive(false));
+    else this.switch?.release('paint');
     this.active = on;
     this.editor.setPainting(on);
     this.changed();

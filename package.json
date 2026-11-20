@@ -16,7 +16,7 @@
     "test:e2e": "node scripts/e2e-test.mjs",
     "test:prod": "npm run build && node scripts/check-prod.mjs",
     "test": "npm run test:rust && npm run test:unit && npm run build:test && npm run test:wasm && npm run test:e2e && npm run test:prod",
-    "test:unit": "node --test web/src/app/brush.test.ts web/src/app/history.test.ts web/src/app/scenefile.test.ts"
+    "test:unit": "node --test web/src/app/*.test.ts"
   },
   "dependencies": {
     "three": "^0.187.0"

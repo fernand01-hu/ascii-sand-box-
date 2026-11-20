@@ -332,6 +332,39 @@ export class MapData {
     return this.changed(keys);
   }
 
+  /** Objects whose base is within `r` metres of (x, z), from every chunk that close. */
+  objectsNear(x: number, z: number, r: number): PlacedObject[] {
+    const S = this.info.chunkSize, out: PlacedObject[] = [];
+    for (let cz = Math.floor((z - r) / S); cz <= Math.floor((z + r) / S); cz++) {
+      for (let cx = Math.floor((x - r) / S); cx <= Math.floor((x + r) / S); cx++) {
+        for (const o of this.chunks.get(chunkKey(cx, cz))?.objects ?? []) if (Math.hypot(o.x - x, o.z - z) <= r) out.push(o);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Move / turn / resize an object, keeping its id (it may change chunk).
+   * One edit (removed old + added new), so it undoes in one go.
+   */
+  updateObject(id: number, change: Partial<Pick<PlacedObject, 'x' | 'z' | 'yaw' | 'scale'>>): PlacedObject | null {
+    const old = this.object(id);
+    if (!old) return null;
+    const next: PlacedObject = { ...old, ...change };
+    if (!Number.isFinite(next.x) || !Number.isFinite(next.z)) throw new Error('object position must be finite');
+    const oldKey = chunkKey(...this.chunkOf(old.x, old.z));
+    const c = this.chunks.get(oldKey)!;
+    c.objects.splice(c.objects.indexOf(old), 1);
+    this.tidy(oldKey);
+    const newKey = chunkKey(...this.chunkOf(next.x, next.z));
+    let n = this.chunks.get(newKey);
+    if (!n) this.chunks.set(newKey, (n = { tiles: null, objects: [] }));
+    n.objects.push(next);
+    this.edited({ removed: [{ ...old }], added: [{ ...next }] });
+    this.changed(oldKey === newKey ? [oldKey] : [oldKey, newKey]);
+    return next;
+  }
+
   /** Objects whose base is in chunk (cx, cz). */
   objectsIn(cx: number, cz: number): readonly PlacedObject[] {
     return this.chunks.get(chunkKey(cx, cz))?.objects ?? [];
