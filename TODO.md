@@ -373,7 +373,15 @@ next one.
   - **(added)** Add a light-direction / time-of-day control in the debug
     terminal to test this.
 
-- [ ] **15b. (added 2026-11-20) Organic ground: grass, sand, rock look natural again.**
+- [x] **15b. (added 2026-11-20) Organic ground: grass, sand, rock look natural again.** (Done on `phase3-lab`, `canvas.rs::ground`.)
+  - [x] Painted glyphs are scattered inside their grid cells, not in rows. The count stays the same, so the stacking limits hold.
+  - [x] Borders mix over about 1 m.
+  - [x] Rock shows through on steep slopes; leaf litter lies under trees; sand next to water is darker (wet).
+  - [x] Dry and lush patches of grass; size, tilt and colour vary per glyph.
+  - [x] Every choice comes from a hash of the grid point, so a rebuild keeps glyphs in place (tested).
+  - [x] Steep slopes get 2x / 4x the grid points (powers of two, so the canvas rows stay aligned). Mountain faces stay covered.
+  - The blank canvas keeps its neat `#` rows.
+- (original notes)
   - **Problem:** painted ground looks artificial next to the old procedural landscapes, which looked beautiful.
     - The canvas puts painted grass, sand and rock on the same neat grid as the blank `#` rows.
     - Every glyph has the same tilt and nearly the same colour.

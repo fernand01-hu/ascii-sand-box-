@@ -187,11 +187,10 @@ export class Hud {
     this.settings = new Panel({ title: 'settings', hint: 'Esc back', className: 'tui-center tui-settings', onOpen: sync, movable: 'settings' }, root);
     this.settings.add(
       new Text('world', 'tui-head'), seed, day, view,
-      new Text('weather', 'tui-head'), wind, rain, leaves, storm,
-      new Text('light', 'tui-head'), sceneLight, daytime,
-      new Text('look (all on = standard; `style classic` = before)', 'tui-head'), ...feats.map(([, c]) => c),
+      new Text('weather', 'tui-head'), wind, rain, leaves,
       new Text('editing', 'tui-head'), top, grid, snap,
       new Text('display', 'tui-head'), fps, budget,
+      new Text('light and look (all on = standard; `style classic` = before)', 'tui-head'), storm, sceneLight, daytime, ...feats.map(([, c]) => c),
       new Text('Up/Down move · Left/Right change · Space toggle · Enter apply', 'tui-dim'),
     );
     // ---- debug: one checkbox per debug option, generated from the shared list

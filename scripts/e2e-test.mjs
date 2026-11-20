@@ -459,6 +459,7 @@ try {
     assert.ok(Math.abs(dragged.target[0] - north.target[0]) > 1, 'dragging pans the view');
     assert.ok(dragged.dirY < -0.99, 'still looking straight down after dragging');
     // The wheel changes the height.
+    await page.mouse.move(300, 400); // left of the options sidebar
     await page.mouse.wheel({ deltaY: 400 });
     await settleCam();
     const higher = await cam();

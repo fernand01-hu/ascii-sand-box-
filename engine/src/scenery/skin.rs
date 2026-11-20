@@ -302,6 +302,13 @@ impl<'a> Skinner<'a> {
         self.glyphs.mats[mat as usize].pick(&mut self.rng)
     }
 
+    /// A glyph of `mat` chosen by `seed` alone (not by build order), so the
+    /// same spot gets the same glyph every time its chunk is rebuilt.
+    pub fn glyph_seeded(&self, mat: Mat, seed: u64) -> u32 {
+        let mut r = crate::rng::Pcg32::new(seed, 0x6c79);
+        self.glyphs.mats[mat as usize].pick(&mut r)
+    }
+
     /// Character budget for one object (the original's per-screen-cell
     /// budget, applied per object so it survives orbiting): keep at most
     /// `cap` of the cards added since `start`, a random subset, and grow the
