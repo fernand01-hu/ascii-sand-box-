@@ -11,6 +11,8 @@ import { SNAP_STEPS, type Editor } from '../app/editor';
 import type { BrushTool } from '../app/brushtool';
 import type { Undo } from '../app/undo';
 import type { SceneStore } from '../app/scenes';
+import type { ObjectTool } from '../app/objecttool';
+import type { SelectTool } from '../app/selecttool';
 import type { Settings } from '../app/settings';
 import type { Terminal } from './terminal';
 import { addRootKeys, Checkbox, List, Panel, Slider, Text, TextInput } from './widgets';
@@ -23,6 +25,8 @@ export interface HudDeps {
   brush: BrushTool;
   undo: Undo;
   scenes: SceneStore;
+  objects: ObjectTool;
+  select: SelectTool;
 }
 
 /** Card budget steps: 0 = no budget. */
@@ -39,13 +43,19 @@ export class Hud {
   private warn: HTMLSpanElement;
   private editor: Editor;
   private brush: BrushTool;
+  private objectTool!: ObjectTool;
+  private selectTool!: SelectTool;
   private flashText = '';
   private flashTimer = 0;
   private info: HTMLSpanElement;
   private fps: HTMLSpanElement;
 
   constructor(private app: App, deps: HudDeps, root: HTMLElement = document.body) {
-    const { debug, settings, terminal, editor, brush, undo, scenes } = deps;
+    const { debug, settings, terminal, editor, brush, undo, scenes, objects, select } = deps;
+    this.objectTool = objects;
+    this.selectTool = select;
+    objects.onChange(() => this.refresh());
+    select.onChange(() => this.refresh());
     scenes.onMessage((text) => this.flash(text));
     undo.onApplied((verb, a) => this.flash(`${verb}: ${a.label}`));
     this.editor = editor;
@@ -74,6 +84,8 @@ export class Hud {
     this.menu = new Panel({ title: 'menu', hint: 'Esc close', className: 'tui-center tui-menu' }, root);
     this.menu.add(new List([
       { label: 'Brush (paint the ground)', key: 'b', run: () => { this.menu.close(); brush.setActive(!brush.active); } },
+      { label: 'Object brush (trees, rocks...)', key: 'o', run: () => { this.menu.close(); objects.setActive(!objects.active); } },
+      { label: 'Select objects', key: 'v', run: () => { this.menu.close(); select.setActive(!select.active); } },
       { label: 'Save / load scenes', key: 'f', run: () => this.filePanel.open() },
       { label: 'Undo (Ctrl+Z)', key: 'u', run: () => undo.undo() },
       { label: 'Redo (Ctrl+Y)', key: 'r', run: () => undo.redo() },
@@ -195,6 +207,8 @@ export class Hud {
       ['P', 'brush: left drag paints'],
       ['1-4 / E', 'brush paint: grass sand water rock / eraser'],
       ['[ / ]', 'smaller / bigger brush'],
+      ['O', 'object brush: 1 spray 2 single 3 erase'],
+      ['V', 'select: drag moves, R turns, Delete removes'],
       ['Ctrl+Z / Ctrl+Y', 'undo / redo (also Ctrl+Shift+Z)'],
       ['Ctrl+S', 'save the scene (menu: Save / load)'],
       ['Esc', 'menu / close a panel'],
@@ -271,6 +285,16 @@ export class Hud {
     );
   }
 
+  private toolText(): string {
+    const o = this.objectTool, s = this.selectTool;
+    if (o?.active) return ` · OBJECTS ${o.mode} ${o.kind.endsWith(':*') ? `any ${o.kind.split(':')[0]}` : o.kind} ${o.radius} m`;
+    if (s?.active) {
+      const sel = s.object();
+      return ` · SELECT${sel ? ` #${sel.id} ${sel.kind}` : ''}`;
+    }
+    return '';
+  }
+
   /** Show a short message in the status bar for a few seconds. */
   flash(text: string): void {
     this.flashText = text;
@@ -288,7 +312,7 @@ export class Hud {
     const ed = this.editor;
     const br = this.brush;
     const edit = a.world
-      ? `${ed.mode === 'top' ? ' · TOP' : ''}${ed.grid ? ' · grid' : ''}${ed.snap ? ` · snap ${ed.snap} m` : ''}${br.active ? ` · BRUSH ${br.kind} ${br.radius} m` : ''}`
+      ? `${ed.mode === 'top' ? ' · TOP' : ''}${ed.grid ? ' · grid' : ''}${ed.snap ? ` · snap ${ed.snap} m` : ''}${br.active ? ` · BRUSH ${br.kind} ${br.radius} m` : ''}${this.toolText()}`
       : '';
     const where = a.world ? `canvas ${a.canvasOptions.seed} · ${a.canvasOptions.day ? 'day' : 'dusk'}${edit}` : s.model || '…';
     const status = s.status === 'loading' ? ' · loading' : s.status === 'error' ? ' · error' : '';

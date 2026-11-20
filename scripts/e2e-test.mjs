@@ -720,6 +720,90 @@ try {
     await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
   });
 
+  await step('object brush and select tool: spray evenly (across chunks), single, erase, select, move, turn, delete, undo', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    const count = () => page.evaluate(() => window.__ascii.app.map.objectCount);
+    const trees = () => page.evaluate(() => window.__ascii.app.map.allObjects().filter((o) => o.kind.startsWith('tree:')).map((o) => [o.x, o.z]));
+    const minGap = (pts) => { let m = Infinity; for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) m = Math.min(m, Math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1])); return m; };
+    const ctrlZ = async () => { await page.keyboard.down('Control'); await page.keyboard.press('z'); await page.keyboard.up('Control'); };
+    const screenOf = (x, z) => page.evaluate((x, z) => {
+      const v = window.__ascii.app.viewer, p = v.camera.position.clone().set(x, 0, z).project(v.camera);
+      return { x: ((p.x + 1) / 2) * window.innerWidth, y: ((1 - p.y) / 2) * window.innerHeight };
+    }, x, z);
+    try {
+      await run('clearmap yes');
+      await page.keyboard.press('t');
+      await new Promise((r) => setTimeout(r, 900));
+      await page.keyboard.press('o');
+      assert.ok(await page.evaluate(() => !document.querySelector('.tui-objects').hidden), 'O shows the object panel');
+      await run('objbrush tree:*; objbrush mode spray; objbrush size 10; objbrush density 8; objbrush spacing 1');
+      assert.match(await page.evaluate(() => document.querySelector('.tui-status').textContent), /OBJECTS spray any tree 10 m/);
+      // Spray by dragging.
+      await page.mouse.move(380, 400);
+      await page.mouse.down();
+      await page.mouse.move(620, 400, { steps: 14 });
+      await page.mouse.up();
+      const sprayed = await count();
+      assert.ok(sprayed >= 5, `the drag sprayed trees (${sprayed})`);
+      assert.ok(minGap(await trees()) >= 4 - 1e-6, `trees keep 4 m apart (${minGap(await trees()).toFixed(2)})`);
+      // Spray over a chunk border too: still evenly spaced.
+      await run('objbrush stroke 20 -16 44 -16; objbrush stroke 44 -12 20 -12');
+      assert.ok(minGap(await trees()) >= 4 - 1e-6, 'spacing holds across chunk borders');
+      // Single: one click, one object; Ctrl+Z takes it back.
+      await page.keyboard.press('2');
+      const n0 = await count();
+      const empty = await screenOf(10, -40); // in view, clear of the panels
+      await page.mouse.click(empty.x, empty.y);
+      assert.equal(await count(), n0 + 1, 'single places exactly one');
+      await ctrlZ();
+      assert.equal(await count(), n0, 'Ctrl+Z takes it back');
+      // Erase what the drag sprayed; Ctrl+Z brings it back.
+      await page.keyboard.press('3');
+      const before = await count();
+      await page.mouse.move(380, 400);
+      await page.mouse.down();
+      await page.mouse.move(620, 400, { steps: 14 });
+      await page.mouse.up();
+      assert.ok(await count() < before, 'erasing removes objects');
+      await ctrlZ();
+      assert.equal(await count(), before, 'Ctrl+Z brings them back');
+      // Select tool.
+      await run('clearmap yes');
+      const id = Number((await run('place rock:boulder 0 -30 1.5 2'))[0].match(/#(\d+)/)[1]);
+      await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+      await page.keyboard.press('v');
+      const at = await screenOf(0, -30);
+      await page.mouse.click(at.x, at.y);
+      assert.match(await page.evaluate(() => document.querySelector('.tui-select').textContent), new RegExp(`#${id} rock:boulder`), 'clicking the rock selects it');
+      // Drag it 10 m east.
+      const to = await screenOf(10, -30);
+      await page.mouse.move(at.x, at.y);
+      await page.mouse.down();
+      await page.mouse.move(to.x, to.y, { steps: 10 });
+      await new Promise((r) => setTimeout(r, 200));
+      await page.mouse.move(to.x + 1, to.y, { steps: 2 });
+      await page.mouse.up();
+      const moved = await page.evaluate((id) => window.__ascii.app.map.object(id), id);
+      assert.ok(moved && Math.abs(moved.x - 10) < 1.5 && Math.abs(moved.z + 30) < 1.5, `dragged to about (10, -30): (${moved?.x.toFixed(1)}, ${moved?.z.toFixed(1)})`);
+      await ctrlZ();
+      const back = await page.evaluate((id) => window.__ascii.app.map.object(id), id);
+      assert.ok(back && Math.abs(back.x) < 0.01 && Math.abs(back.z + 30) < 0.01, 'Ctrl+Z puts it back, same id');
+      // Turn, delete, undo.
+      await run(`select ${id}`);
+      await page.keyboard.press('r');
+      assert.ok(Math.abs((await page.evaluate((id) => window.__ascii.app.map.object(id).yaw, id)) - Math.PI / 12) < 1e-6, 'R turns it 15°');
+      await page.keyboard.press('Delete');
+      assert.equal(await page.evaluate((id) => !!window.__ascii.app.map.object(id), id), false, 'Delete removes it');
+      await ctrlZ();
+      assert.equal(await page.evaluate((id) => !!window.__ascii.app.map.object(id), id), true, 'Ctrl+Z restores it');
+      await page.screenshot({ path: join(outDir, '13h-objects.png') });
+    } finally {
+      for (const c of ['tool off', 'objbrush mode spray', 'clearmap yes', 'camera orbit', 'canvas 1']) await run(c);
+    }
+    await waitSettled('canvas');
+    await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+  });
+
   const models = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];
   for (const [i, model] of models.entries()) {
     await step(`model ${model}: renders, readable, matches reference`, async () => {

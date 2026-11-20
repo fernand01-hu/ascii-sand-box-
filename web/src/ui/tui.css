@@ -156,6 +156,8 @@
   bottom: 34px; /* above the status bar */
 }
 
+.tui-choice .tui-arrow { color: var(--tui-accent); cursor: pointer; }
+
 /* ---- status bar ------------------------------------------------------------ */
 
 .tui-status {

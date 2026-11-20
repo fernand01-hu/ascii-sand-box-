@@ -13,6 +13,8 @@ import { SNAP_STEPS, type Editor } from './editor';
 import type { BrushTool } from './brushtool';
 import type { Undo } from './undo';
 import { AUTOSAVE, type SceneStore } from './scenes';
+import { KIND_MIXES, OBJECT_MODES, type ObjectMode, type ObjectTool } from './objecttool';
+import type { SelectTool } from './selecttool';
 import { statLines, statNames, statValue } from './stats';
 import { TEST_MODELS } from './models';
 import { parseCards, type Settings } from './settings';
@@ -36,6 +38,8 @@ export interface CommandContext {
   brush: BrushTool;
   undo: Undo;
   scenes: SceneStore;
+  objects: ObjectTool;
+  select: SelectTool;
   term: {
     aliases: Map<string, string>;
     binds: Map<string, string>;
@@ -508,6 +512,88 @@ const COMMANDS: Command[] = [
     },
   },
   {
+    name: 'tool', group: 'map', usage: 'tool [paint|objects|select|off]', help: 'the editing tool: terrain brush (P), object brush (O), select (V)',
+    run(app, [t], io, ctx) {
+      needWorld(app);
+      if (t === 'paint') ctx.brush.setActive(true);
+      else if (t === 'objects') ctx.objects.setActive(true);
+      else if (t === 'select') ctx.select.setActive(true);
+      else if (t === 'off') {
+        ctx.brush.setActive(false);
+        ctx.objects.setActive(false);
+        ctx.select.setActive(false);
+      } else if (t !== undefined) throw new CommandError('tool paint | objects | select | off');
+      io.print(`tool: ${ctx.brush.active ? 'paint' : ctx.objects.active ? 'objects' : ctx.select.active ? 'select' : 'none'}`);
+    },
+  },
+  {
+    name: 'objbrush', group: 'map', usage: 'objbrush [on|off|<kind>|mode spray|single|erase|size <m>|density <n>|spacing <x>|variation <v>|stroke x0 z0 x1 z1]',
+    help: 'the object brush (also O): switch it, pick a kind or mix (tree:*), set an option, or paint a stroke',
+    run(app, args, io, ctx) {
+      const t = ctx.objects, [a, b] = args;
+      wrap(() => {
+        if (a === undefined) t.setActive(!t.active);
+        else if (a === 'on' || a === 'off') t.setActive(a === 'on');
+        else if (a === 'mode') {
+          if (!OBJECT_MODES.includes(b as ObjectMode)) throw new CommandError(`mode: ${OBJECT_MODES.join(', ')}`);
+          t.setMode(b as ObjectMode);
+        } else if (a === 'size') t.set({ radius: num(b, 'size', 0.5, 64) });
+        else if (a === 'density') t.set({ density: num(b, 'density', 0.1, 200) });
+        else if (a === 'spacing') t.set({ spacing: num(b, 'spacing', 0.2, 5) });
+        else if (a === 'variation') t.set({ variation: num(b, 'variation', 0, 0.8) });
+        else if (a === 'stroke') {
+          needWorld(app);
+          const [x0, z0, x1, z1] = args.slice(1).map((v, i) => num(v, ['x0', 'z0', 'x1', 'z1'][i]!));
+          const n = t.strokeLine({ x: x0!, z: z0! }, { x: x1!, z: z1! });
+          io.print(`${t.mode}: ${n} object${n === 1 ? '' : 's'} ${t.mode === 'erase' ? 'removed' : 'placed'}`);
+        } else t.setKind(a);
+      });
+      io.print(`object brush ${t.active ? 'on' : 'off'}: ${t.mode} ${t.kind}, ${t.radius} m, density ${t.density}/100 m², spacing x${t.spacing}, size ±${Math.round(t.variation * 100)}%`);
+    },
+  },
+  {
+    name: 'select', group: 'map', usage: 'select [<id>|none]', help: 'select an object (select tool, V)',
+    run(app, [id], io, ctx) {
+      needWorld(app);
+      if (id === 'none') ctx.select.select(null);
+      else if (id !== undefined) {
+        ctx.select.setActive(true);
+        const n = num(id, 'id');
+        if (!app.map!.object(n)) throw new CommandError(`no object #${n}`);
+        ctx.select.select(n);
+      }
+      const o = ctx.select.object();
+      io.print(o ? `selected #${o.id} ${o.kind} at (${o.x.toFixed(1)}, ${o.z.toFixed(1)})` : 'nothing selected');
+    },
+  },
+  {
+    name: 'move', group: 'map', usage: 'move <id> <x> <z>', help: 'move an object (undoable; keeps its id)',
+    run(app, [id, xs, zs], io, ctx) {
+      const { map } = needWorld(app);
+      ctx.undo.begin(`move #${id}`);
+      const o = wrap(() => map.updateObject(num(id, 'id'), { x: num(xs, 'x'), z: num(zs, 'z') }));
+      ctx.undo.end();
+      if (!o) throw new CommandError(`no object #${id}`);
+      io.print(`#${o.id} at (${o.x}, ${o.z})`);
+    },
+  },
+  {
+    name: 'rotate', group: 'map', usage: 'rotate <id> <degrees>', help: 'turn an object to an angle (undoable)',
+    run(app, [id, deg], io) {
+      const o = needWorld(app).map.updateObject(num(id, 'id'), { yaw: (num(deg, 'degrees') * Math.PI) / 180 });
+      if (!o) throw new CommandError(`no object #${id}`);
+      io.print(`#${o.id} turned to ${deg}°`);
+    },
+  },
+  {
+    name: 'resize', group: 'map', usage: 'resize <id> <scale>', help: 'set an object\'s size (1 = normal; undoable)',
+    run(app, [id, sc], io) {
+      const o = needWorld(app).map.updateObject(num(id, 'id'), { scale: num(sc, 'scale', 0.05, 20) });
+      if (!o) throw new CommandError(`no object #${id}`);
+      io.print(`#${o.id} size x${o.scale}`);
+    },
+  },
+  {
     name: 'dab', group: 'map', usage: 'dab <x> <z>', help: 'one dab of the current brush at a point',
     run(app, [xs, zs], io, ctx) {
       needWorld(app);
@@ -948,6 +1034,9 @@ function argWords(app: App, cmd: string, ctx: CommandContext | null): string[] {
     case 'help': return [...commandNames(), ...GROUPS];
     case 'paint': case 'fill': return m?.groundKinds ?? [];
     case 'brush': return ['on', 'off', 'size', 'shape', 'strength', 'soft', ...(m?.groundKinds ?? [])];
+    case 'tool': return ['paint', 'objects', 'select', 'off'];
+    case 'objbrush': return ['on', 'off', 'mode', 'size', 'density', 'spacing', 'variation', 'stroke', ...KIND_MIXES, ...(m?.objectKinds ?? [])];
+    case 'select': return ['none'];
     case 'place': return m?.objectKinds ?? [];
     case 'scatter': return [...Object.keys(KIND_GROUPS), ...(m?.objectKinds ?? [])];
     case 'gallery': return GALLERY_CATEGORIES;

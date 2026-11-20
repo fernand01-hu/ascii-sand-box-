@@ -490,3 +490,80 @@ export class TextInput implements Widget {
     return false;
   }
 }
+
+export interface ChoiceOptions {
+  label: string;
+  options: readonly string[];
+  value: string;
+  labelWidth?: number;
+  /** How an option is shown (default: as is). */
+  format?: (v: string) => string;
+  onChange: (v: string) => void;
+}
+
+/** `kind      ‹ tree:* ›`: one of a list; Left / Right or a click on an arrow cycles. */
+export class Choice implements Widget {
+  readonly el: HTMLDivElement;
+  readonly focusable = true;
+  private text: HTMLSpanElement;
+  private options: string[];
+  private i: number;
+
+  constructor(private o: ChoiceOptions) {
+    this.options = [...o.options];
+    this.i = Math.max(0, this.options.indexOf(o.value));
+    this.el = div('tui-row tui-choice');
+    const label = document.createElement('span');
+    label.className = 'tui-label';
+    label.textContent = o.label.padEnd(o.labelWidth ?? 10);
+    const prev = document.createElement('span'), next = document.createElement('span');
+    prev.className = next.className = 'tui-arrow';
+    prev.textContent = '‹ ';
+    next.textContent = ' ›';
+    this.text = document.createElement('span');
+    this.text.className = 'tui-value';
+    prev.addEventListener('click', () => this.step(-1));
+    next.addEventListener('click', () => this.step(1));
+    this.el.append(label, prev, this.text, next);
+    this.paint();
+  }
+
+  get value(): string {
+    return this.options[this.i] ?? '';
+  }
+
+  /** Change the list (keeps the value if it is still there). */
+  setOptions(options: readonly string[]): void {
+    const v = this.value;
+    this.options = [...options];
+    this.i = Math.max(0, this.options.indexOf(v));
+    this.paint();
+  }
+
+  set(v: string): void {
+    const i = this.options.indexOf(v);
+    if (i >= 0) this.i = i;
+    this.paint();
+  }
+
+  step(dir: 1 | -1): void {
+    if (!this.options.length) return;
+    this.i = (this.i + dir + this.options.length) % this.options.length;
+    this.paint();
+    this.o.onChange(this.value);
+  }
+
+  setFocus(on: boolean): void {
+    this.el.classList.toggle('tui-sel', on);
+  }
+
+  private paint(): void {
+    this.text.textContent = (this.o.format ?? ((v: string) => v))(this.value);
+  }
+
+  key(e: KeyboardEvent): boolean {
+    if (e.key === 'ArrowRight') return this.step(1), true;
+    if (e.key === 'ArrowLeft') return this.step(-1), true;
+    return false;
+  }
+}
