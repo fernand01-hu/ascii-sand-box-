@@ -571,6 +571,25 @@ export class CardLayer {
   }
 
   /**
+   * The view as a grid of `cols` x `rows` text cells: per cell, the glyph
+   * slot of the nearest card whose centre falls in it (-1 for none). Ground
+   * and objects only, not sky, rain or leaves. For the plain-text export.
+   */
+  textGrid(camera: PerspectiveCamera, width: number, height: number, cols: number, rows: number): Int32Array {
+    const slots = new Int32Array(cols * rows).fill(-1);
+    const depth = new Float32Array(cols * rows).fill(Infinity);
+    this.forEachOnScreen(camera, width, height, (sx, sy, d, chunk, i) => {
+      const c = Math.min(cols - 1, Math.floor((sx / width) * cols)), r = Math.min(rows - 1, Math.floor((sy / height) * rows));
+      const k = r * cols + c;
+      if (d >= depth[k]!) return;
+      depth[k] = d;
+      const attr = chunk.mesh.geometry.getAttribute('iCenter') as InterleavedBufferAttribute;
+      slots[k] = Math.round((attr.data.array as Float32Array)[i * attr.data.stride + 13]!);
+    });
+    return slots;
+  }
+
+  /**
    * The frontmost glyph whose centre is within `radiusPx` of screen point
    * (px, py): its card record (16 floats), the set it belongs to, and its
    * screen distance. Null if none.

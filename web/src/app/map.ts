@@ -248,6 +248,39 @@ export class MapData {
     return false;
   }
 
+  /** Everything the map holds, for saving: painted chunks (tile codes, copied) and objects. */
+  exportData(): { chunks: { cx: number; cz: number; tiles: Uint8Array }[]; objects: PlacedObject[] } {
+    const chunks: { cx: number; cz: number; tiles: Uint8Array }[] = [];
+    const objects: PlacedObject[] = [];
+    for (const [key, c] of this.chunks) {
+      const m = /^w(-?\d+),(-?\d+)$/.exec(key);
+      if (c.tiles && m) chunks.push({ cx: Number(m[1]), cz: Number(m[2]), tiles: c.tiles.slice() });
+      objects.push(...c.objects.map((o) => ({ ...o })));
+    }
+    return { chunks, objects };
+  }
+
+  /**
+   * Replace everything with saved content (tile codes already in this map's
+   * ground list). Reported as edits like any change, so it can be undone.
+   */
+  replaceWith(chunks: readonly { cx: number; cz: number; tiles: Uint8Array }[], objects: readonly PlacedObject[]): void {
+    this.clear();
+    const n = this.info.tiles;
+    const list: { gi: number; gj: number; code: number }[] = [];
+    for (const k of chunks) {
+      if (k.tiles.length !== n * n) throw new Error(`chunk ${k.cx},${k.cz}: ${k.tiles.length} tiles, expected ${n * n}`);
+      k.tiles.forEach((code, at) => {
+        if (code) list.push({ gi: k.cx * n + (at % n), gj: k.cz * n + Math.floor(at / n), code });
+      });
+    }
+    if (list.length) this.setTiles(list);
+    for (const o of objects) {
+      if (!this.info.objectKinds.includes(o.kind)) throw new Error(`unknown object ${JSON.stringify(o.kind)}`);
+      this.restoreObject(o);
+    }
+  }
+
   /** Every placed object, in no particular order. */
   allObjects(): PlacedObject[] {
     return [...this.chunks.values()].flatMap((c) => c.objects);

@@ -10,7 +10,7 @@
 //
 // Screenshots go to test-results/, reference thumbnails live in tests/golden/.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
@@ -631,6 +631,93 @@ try {
     }
     await waitSettled('canvas');
     await settled();
+  });
+
+  await step('save / load: browser slots, Ctrl+S, file download and upload, broken files, text export, autosave across a reload', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    const ground = (x, z) => page.evaluate((x, z) => window.__ascii.app.map.groundAt(x, z), x, z);
+    const objects = () => page.evaluate(() => window.__ascii.app.map.allObjects().map((o) => `${o.kind}@${o.x},${o.z}`));
+    const statusText = () => page.evaluate(() => document.querySelector('.tui-status').textContent);
+    const downloads = join(outDir, 'downloads');
+    rmSync(downloads, { recursive: true, force: true });
+    mkdirSync(downloads, { recursive: true });
+    const cdp = await page.createCDPSession();
+    await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads });
+    const waitFile = async (re) => {
+      for (let k = 0; k < 100; k++) {
+        const f = readdirSync(downloads).find((n) => re.test(n) && !n.endsWith('.crdownload'));
+        if (f) return join(downloads, f);
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      throw new Error(`no download matching ${re}`);
+    };
+    try {
+      await run('clearmap yes; fill sand -10 -40 10 -30; place tree:oak 4 -35 1 3; wind 0.6');
+      assert.match((await run('save test scene')).join('\n'), /saved "test scene"/);
+      assert.match((await run('scenes')).join('\n'), /test scene .*<- current/);
+      // Clear, change the weather, load it back.
+      await run('clearmap yes; wind 0.2');
+      assert.equal(await ground(0, -35), 'canvas');
+      assert.match((await run('load test scene')).join('\n'), /loaded "test scene"/);
+      assert.equal(await ground(0, -35), 'sand', 'the paint is back');
+      assert.deepEqual(await objects(), ['tree:oak@4,-35'], 'the objects are back');
+      assert.equal((await state()).weather.wind, 0.6, 'the weather comes with the scene');
+      // Loading can be undone.
+      await page.keyboard.down('Control');
+      await page.keyboard.press('z');
+      await page.keyboard.up('Control');
+      assert.equal(await ground(0, -35), 'canvas', 'Ctrl+Z undoes the load');
+      await run('redo');
+      assert.equal(await ground(0, -35), 'sand');
+      // Ctrl+S saves the current scene.
+      await page.keyboard.down('Control');
+      await page.keyboard.press('s');
+      await page.keyboard.up('Control');
+      assert.match(await statusText(), /saved "test scene"/);
+      // The menu panel lists it.
+      await page.keyboard.press('Escape');
+      await page.keyboard.press('f');
+      assert.match(await page.evaluate(() => document.querySelector('.tui-file').textContent), /test scene/);
+      await page.keyboard.press('Escape');
+      await page.keyboard.press('Escape');
+      // Download a scene file, check it, load it back through the file picker.
+      await run('download');
+      const file = await waitFile(/\.scene\.json$/);
+      const saved = JSON.parse(readFileSync(file, 'utf8'));
+      assert.equal(saved.format, 'ascii-sandbox-scene');
+      assert.equal(saved.version, 1);
+      assert.equal(saved.objects.length, 1);
+      // fill -10..10 x -40..-30 crosses chunk borders both ways: 4 painted chunks, nothing else.
+      assert.equal(saved.chunks.length, 4, 'only the painted chunks are stored');
+      await run('clearmap yes');
+      const input = await page.$('input[type=file]');
+      await input.uploadFile(file);
+      await page.waitForFunction(() => window.__ascii.app.map.groundAt(0, -35) === 'sand', { timeout: 30_000 });
+      assert.deepEqual(await objects(), ['tree:oak@4,-35'], 'the file loads the same scene');
+      // A broken file is refused with a message, and changes nothing.
+      const bad = join(downloads, 'broken.scene.json');
+      writeFileSync(bad, JSON.stringify({ format: 'something-else', version: 1 }));
+      await input.uploadFile(bad);
+      await page.waitForFunction(() => /could not load broken/.test(document.querySelector('.tui-status').textContent), { timeout: 10_000 });
+      assert.match(await statusText(), /not an ASCII Sandbox scene file/);
+      assert.equal(await ground(0, -35), 'sand', 'a refused file changes nothing');
+      // The view as ASCII text.
+      const text = (await run('export print 60')).join('\n');
+      assert.ok(text.split('\n').length > 10 && /#/.test(text), 'the text export shows the canvas');
+      await run('export text');
+      assert.match(readFileSync(await waitFile(/\.txt$/), 'utf8'), /#/);
+      // Autosave survives a reload.
+      assert.match((await run('autosave now')).join('\n'), /autosaved/);
+      await page.reload({ waitUntil: 'load' });
+      await waitSettled('canvas');
+      await page.waitForFunction(() => window.__ascii.app.map?.groundAt(0, -35) === 'sand', { timeout: 60_000 });
+      assert.deepEqual(await objects(), ['tree:oak@4,-35'], 'the reload brought the work back');
+    } finally {
+      await cdp.detach().catch(() => {});
+      for (const c of ['delete test scene', 'delete (autosave)', 'clearmap yes', 'wind 0.3', 'canvas 1']) await run(c).catch(() => {});
+    }
+    await waitSettled('canvas');
+    await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
   });
 
   const models = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];
