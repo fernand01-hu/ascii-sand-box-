@@ -981,7 +981,28 @@ export class CardLayer {
     }
     const now = this.now, fades = new Float32Array(n * 4);
     const oldSize = new Map<number, number>();
-    if (old) for (const c of old) eachCard(c, (a, o) => oldSize.set(cardKey(a, o), Math.hypot(a[o + 6]!, a[o + 7]!, a[o + 8]!)));
+    // Where the old object glyphs were (1 m cells): a new object glyph with
+    // none of them near filled an empty face (one that faced away from the
+    // old build eye, now seen): it shows at once, no fade to wait for.
+    const CELL = 1;
+    const cell = (x: number, y: number, z: number) => (Math.floor(x / CELL) & 1023) * 1048576 + (Math.floor(y / CELL) & 1023) * 1024 + (Math.floor(z / CELL) & 1023);
+    const oldObjects = new Map<number, number[]>();
+    if (old) for (const c of old) eachCard(c, (a, o) => {
+      oldSize.set(cardKey(a, o), Math.hypot(a[o + 6]!, a[o + 7]!, a[o + 8]!));
+      if (isGround(a, o)) return;
+      const id = cell(a[o]!, a[o + 1]!, a[o + 2]!);
+      const list = oldObjects.get(id);
+      if (list) list.push(a[o]!, a[o + 1]!, a[o + 2]!);
+      else oldObjects.set(id, [a[o]!, a[o + 1]!, a[o + 2]!]);
+    });
+    const covered = (x: number, y: number, z: number, r: number) => {
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+        const list = oldObjects.get(cell(x + dx * CELL, y + dy * CELL, z + dz * CELL));
+        if (!list) continue;
+        for (let i = 0; i < list.length; i += 3) if (Math.hypot(list[i]! - x, list[i + 1]! - y, list[i + 2]! - z) < r) return true;
+      }
+      return false;
+    };
     let kept = 0, added = 0;
     for (let j = 0; j < n; j++) {
       const o = j * stride, k = cardKey(data, o), size = Math.hypot(data[o + 6]!, data[o + 7]!, data[o + 8]!);
@@ -994,6 +1015,10 @@ export class CardLayer {
         fades.set(Math.abs(r - 1) > 0.02 ? [now, 0, r, built(data, o)] : [-1e9, 0, 1, built(data, o)], j * 4);
       } else {
         added++;
+        if (old && !isGround(data, o) && !covered(data[o]!, data[o + 1]!, data[o + 2]!, Math.min(Math.max(size, 0.25), 1))) {
+          fades.set([-1e9, 0, 1, built(data, o)], j * 4); // an empty face: show it now
+          continue;
+        }
         // Staggered in: bigger glyphs (trunks, the shape) before the small filler.
         const rank = ((k >>> 8) / 16777216) * (0.45 + 0.55 / (1 + size));
         fades.set([now + rank * 0.6 * fade, 1, 1, built(data, o)], j * 4);
