@@ -76,6 +76,7 @@ try {
       // Never leave play mode or the terminal on (they swallow the keys the
       // next steps press), nor a card budget.
       await page.evaluate(() => window.__ascii?.stopPlaying?.()).catch(() => {});
+      await page.evaluate(() => window.__ascii?.app?.world && window.__ascii.run('camera orbit')).catch(() => {});
       await page.evaluate(() => {
         // Close every open panel (terminal, menu, settings...), top first.
         for (let k = 0; k < 6 && document.querySelector('.tui-panel:not([hidden])'); k++) {
@@ -466,9 +467,9 @@ try {
     const status = await page.evaluate(() => document.querySelector('.tui-status').textContent);
     assert.match(status, /TOP · grid · snap 1 m/);
     await page.screenshot({ path: join(outDir, '13f-top-view.png') });
-    // The menu agrees.
+    // The menu agrees (s: Settings, whatever the menu last had selected).
     await page.keyboard.press('Escape');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('s');
     assert.match(await page.evaluate(() => document.querySelector('.tui-settings').textContent), /\[x\] top-down view/);
     await page.keyboard.press('Escape');
     await page.keyboard.press('Escape');
@@ -479,7 +480,7 @@ try {
     const backOffset = Math.hypot(back.pos[0] - back.target[0], back.pos[1] - back.target[1], back.pos[2] - back.target[2]);
     assert.ok(back.dirY > -0.9, 'orbiting again');
     assert.ok(Math.abs(backOffset - offset) < 0.5, `the orbit distance comes back (${backOffset.toFixed(1)} vs ${offset.toFixed(1)})`);
-    await run('snap off; grid off; canvas 1');
+    await run('snap off; grid off; camera orbit; canvas 1');
     await waitSettled('canvas');
     await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
   });

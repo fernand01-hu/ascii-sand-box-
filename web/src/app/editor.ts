@@ -64,6 +64,9 @@ export class Editor {
       // A new scene resets the camera: keep the top view on the canvas, drop it elsewhere.
       if (name === 'canvas') this.enterTop(false);
       else {
+        // The new scene placed its own camera: give back rotation and the
+        // normal mouse buttons, but keep its distances and position.
+        this.restoreControls(false);
         this.mode = 'orbit';
         this.saved = null;
         this.changed();
@@ -194,24 +197,28 @@ export class Editor {
     this.changed();
   }
 
+  /** Undo what the top view changed on the controls (and, with `distances`, their zoom limits). */
+  private restoreControls(distances: boolean): void {
+    const c = this.app.viewer.controls, s = this.saved;
+    c.minPolarAngle = s?.minPolar ?? 0;
+    c.maxPolarAngle = s?.maxPolar ?? Math.PI * 0.495;
+    c.enableRotate = s?.rotate ?? true;
+    c.mouseButtons = s?.buttons ?? { LEFT: MOUSE.ROTATE, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.PAN };
+    c.screenSpacePanning = s?.screenSpace ?? true;
+    if (distances && s) {
+      c.minDistance = s.minDistance;
+      c.maxDistance = s.maxDistance;
+    }
+  }
+
   /** Back to orbiting from where the view now is. */
   private leaveTop(): void {
     const v = this.app.viewer, c = v.controls, s = this.saved;
+    this.restoreControls(true);
     if (s) {
-      c.minPolarAngle = s.minPolar;
-      c.maxPolarAngle = s.maxPolar;
-      c.minDistance = s.minDistance;
-      c.maxDistance = s.maxDistance;
-      c.enableRotate = s.rotate;
-      c.mouseButtons = s.buttons;
-      c.screenSpacePanning = s.screenSpace;
       c.target.y = s.targetY;
       v.camera.position.copy(c.target).add(s.offset);
     } else {
-      c.minPolarAngle = 0;
-      c.maxPolarAngle = Math.PI * 0.495;
-      c.enableRotate = true;
-      c.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.PAN };
       v.camera.position.copy(c.target).add(new Vector3(0, 6, 30));
     }
     this.saved = null;
