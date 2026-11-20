@@ -37,13 +37,14 @@ void main() {
 export class SunShadow {
   /** Half the side of the square it covers (m). */
   readonly half = 70;
-  readonly size = 2048;
+  readonly size: number;
   readonly rt: WebGLRenderTarget;
   private cam: OrthographicCamera;
   private material: ShaderMaterial;
   private readonly depth = 600;
 
-  constructor(cards: CardLayer) {
+  constructor(cards: CardLayer, size = 2048) {
+    this.size = size;
     this.rt = new WebGLRenderTarget(this.size, this.size, { depthBuffer: true });
     this.rt.depthTexture = new DepthTexture(this.size, this.size, UnsignedIntType);
     this.rt.depthTexture.minFilter = NearestFilter;

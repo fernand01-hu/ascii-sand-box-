@@ -54,6 +54,15 @@ export class Settings {
       w('rain', 'rain 0-1'),
       w('leaves', 'blowing leaves 0-1'),
       {
+        name: 'lodfade', help: 'seconds a detail change takes to fade in (0 = swap at once)', persist: true,
+        get: () => String(app.viewer.cards.fadeSeconds),
+        set: (v) => {
+          const n = Number(v);
+          if (!Number.isFinite(n) || n < 0 || n > 5) throw new Error('lodfade: seconds, 0-5');
+          app.viewer.cards.fadeSeconds = n;
+        },
+      },
+      {
         name: 'view', help: 'view distance in chunks, 1-16', persist: true,
         get: () => String(app.viewRadius),
         set: (v) => {

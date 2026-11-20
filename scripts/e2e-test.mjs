@@ -128,6 +128,10 @@ try {
   };
 
   await page.goto(url, { waitUntil: 'load' });
+  // Reference images need still frames: no detail fades (the smooth-detail step turns them on for itself).
+  // (Set directly: going through `set` would save every setting before the canvas is up.)
+  await page.waitForFunction(() => !!window.__ascii?.app?.viewer, { timeout: 120_000 });
+  await page.evaluate(() => { window.__ascii.app.viewer.cards.fadeSeconds = 0; });
   if (only) {
     console.log(`  quick mode: only steps matching /${only.source}/i`);
     await page.waitForFunction(() => window.__ascii && window.__ascii.model === 'canvas' && window.__ascii.status === 'ready', { timeout: 120_000 });
@@ -1065,6 +1069,54 @@ try {
     } finally {
       await page.evaluate(() => window.__ascii.app.stopPlaying());
       for (const c of ['clearmap yes', 'canvas 1']) await run(c).catch(() => {});
+    }
+    await waitSettled('canvas');
+  });
+
+  await step('smooth detail: rebuilds keep most glyphs and fade the rest, continuous detail, freeze, quality presets', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    const settled = () => page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+    try {
+      await run('clearmap yes; fill grass -40 -60 40 0; scatter trees 10 0 -30 16; lod fade 0.8; lod reset; cam 0 6 40 0 2 -30');
+      await settled();
+      // Glyphs know how far they were built from (continuous detail).
+      assert.ok(await page.evaluate(() => {
+        for (const m of window.__ascii.app.viewer.cards.chunkMeshes) {
+          const f = m.geometry.getAttribute('iFade')?.array ?? [];
+          for (let i = 3; i < f.length; i += 4) if (f[i] > 0) return true;
+        }
+        return false;
+      }), 'cards carry their build distance');
+      // Walk in close: detail rebuilds keep most of what was there, and fade the rest out.
+      await run('cam 0 4 -8 0 2 -30');
+      await page.waitForFunction(() => window.__ascii.app.world.pop.rebuilds > 0, { timeout: 120_000, polling: 300 });
+      const fading = await page.evaluate(() => window.__ascii.app.viewer.cards.outgoing.length);
+      await settled();
+      const pop = await page.evaluate(() => ({ ...window.__ascii.app.world.pop }));
+      const keptShare = pop.kept / Math.max(1, pop.kept + pop.removed);
+      console.log(`       ground: kept ${pop.groundKept}, removed ${pop.groundRemoved}; objects: kept ${pop.kept - pop.groundKept}, removed ${pop.removed - pop.groundRemoved}`);
+      console.log(`       pop: ${pop.rebuilds} rebuilds, kept ${pop.kept}, added ${pop.added}, removed ${pop.removed} (${Math.round(keptShare * 100)}% kept)`);
+      // The ground keeps its glyphs; objects keep theirs too unless their detail
+      // version changes (this walk crosses one), and those fade instead.
+      const groundShare = pop.groundKept / Math.max(1, pop.groundKept + pop.groundRemoved);
+      assert.ok(groundShare > 0.75, `rebuilt ground keeps its glyphs (${Math.round(groundShare * 100)}%)`);
+      assert.ok(fading > 0 || pop.removed === 0, 'removed glyphs fade out instead of vanishing');
+      await new Promise((r) => setTimeout(r, 2500));
+      assert.equal(await page.evaluate(() => window.__ascii.app.viewer.cards.outgoing.length), 0, 'faded glyphs are freed');
+      assert.match((await run('lod')).join('\n'), /kept/);
+      // Freeze: moving no longer rebuilds for detail.
+      await run('lod freeze on; lod reset; cam 0 6 60 0 2 -30');
+      await new Promise((r) => setTimeout(r, 2500));
+      assert.equal(await page.evaluate(() => window.__ascii.app.world.pop.rebuilds), 0, 'frozen: no detail rebuilds');
+      await run('lod freeze off');
+      // Quality presets.
+      await run('set quality low');
+      assert.deepEqual(await page.evaluate(() => [window.__ascii.app.viewRadius, window.__ascii.lab.look.features.shadows]), [6, false], 'low: short view, baked shadows');
+      await run('set quality high');
+      assert.deepEqual(await page.evaluate(() => [window.__ascii.app.viewRadius, window.__ascii.lab.look.features.shadows]), [12, true], 'high: long view, live shadows');
+      assert.match((await run('gpu')).join('\n'), /quality high/);
+    } finally {
+      for (const c of ['lod freeze off', 'set view 9', 'set budget off', 'style shadows on', 'lod fade 0', 'clearmap yes', 'canvas 1']) await run(c).catch(() => {});
     }
     await waitSettled('canvas');
   });
