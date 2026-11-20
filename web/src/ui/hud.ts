@@ -10,6 +10,7 @@ import { DEBUG_OPTIONS, type DebugState } from '../app/debug';
 import { SNAP_STEPS, type Editor } from '../app/editor';
 import type { BrushTool } from '../app/brushtool';
 import type { Undo } from '../app/undo';
+import type { SceneStore } from '../app/scenes';
 import type { Settings } from '../app/settings';
 import type { Terminal } from './terminal';
 import { addRootKeys, Checkbox, List, Panel, Slider, Text, TextInput } from './widgets';
@@ -21,6 +22,7 @@ export interface HudDeps {
   editor: Editor;
   brush: BrushTool;
   undo: Undo;
+  scenes: SceneStore;
 }
 
 /** Card budget steps: 0 = no budget. */
@@ -32,6 +34,7 @@ export class Hud {
   readonly settings: Panel;
   readonly help: Panel;
   readonly debugPanel: Panel;
+  readonly filePanel: Panel;
   private showFps = false;
   private warn: HTMLSpanElement;
   private editor: Editor;
@@ -42,7 +45,8 @@ export class Hud {
   private fps: HTMLSpanElement;
 
   constructor(private app: App, deps: HudDeps, root: HTMLElement = document.body) {
-    const { debug, settings, terminal, editor, brush, undo } = deps;
+    const { debug, settings, terminal, editor, brush, undo, scenes } = deps;
+    scenes.onMessage((text) => this.flash(text));
     undo.onApplied((verb, a) => this.flash(`${verb}: ${a.label}`));
     this.editor = editor;
     this.brush = brush;
@@ -70,6 +74,7 @@ export class Hud {
     this.menu = new Panel({ title: 'menu', hint: 'Esc close', className: 'tui-center tui-menu' }, root);
     this.menu.add(new List([
       { label: 'Brush (paint the ground)', key: 'b', run: () => { this.menu.close(); brush.setActive(!brush.active); } },
+      { label: 'Save / load scenes', key: 'f', run: () => this.filePanel.open() },
       { label: 'Undo (Ctrl+Z)', key: 'u', run: () => undo.undo() },
       { label: 'Redo (Ctrl+Y)', key: 'r', run: () => undo.redo() },
       { label: 'Settings', key: 's', run: () => this.settings.open() },
@@ -175,6 +180,9 @@ export class Hud {
       new Text('all of these also work from the terminal: debug, set, help', 'tui-dim'));
     debug.onChange(() => { if (this.debugPanel.isOpen) syncDebug(); });
 
+    // ---- save / load: rebuilt each time it opens (the list of scenes changes)
+    this.filePanel = new Panel({ title: 'scenes', hint: 'Esc back', className: 'tui-center tui-file', onOpen: () => this.fillFilePanel(scenes) }, root);
+
     // ---- help
     this.help = new Panel({ title: 'help', hint: 'Esc back', className: 'tui-center tui-help' }, root);
     for (const [k, v] of [
@@ -188,6 +196,7 @@ export class Hud {
       ['1-4 / E', 'brush paint: grass sand water rock / eraser'],
       ['[ / ]', 'smaller / bigger brush'],
       ['Ctrl+Z / Ctrl+Y', 'undo / redo (also Ctrl+Shift+Z)'],
+      ['Ctrl+S', 'save the scene (menu: Save / load)'],
       ['Esc', 'menu / close a panel'],
       ['Up / Down', 'move in a panel'],
       ['Left / Right', 'change a slider'],
@@ -205,6 +214,61 @@ export class Hud {
     });
     this.refresh();
     window.setInterval(() => this.refresh(), 500);
+  }
+
+  private fillFilePanel(scenes: SceneStore): void {
+    const p = this.filePanel, run = (f: () => unknown, ok: (r: never) => string) => {
+      try {
+        this.flash(ok(f() as never));
+      } catch (e) {
+        this.flash(e instanceof Error ? e.message : String(e));
+      }
+    };
+    p.clear();
+    p.add(
+      new Text('save', 'tui-head'),
+      new TextInput({
+        label: 'name', labelWidth: 6, value: scenes.current,
+        onSubmit: (v) => {
+          try {
+            const r = scenes.save(v);
+            this.flash(`saved "${r.name}"`);
+            this.fillFilePanel(scenes); // show it in the list
+            return;
+          } catch (e) {
+            return e instanceof Error ? e.message : String(e);
+          }
+        },
+      }),
+      new Text('Enter saves · Ctrl+S saves the current scene any time', 'tui-dim'),
+      new Text('load', 'tui-head'),
+    );
+    const list = scenes.list(true);
+    if (list.length) {
+      p.add(new List(list.map((s) => ({
+        label: `${s.name.slice(0, 24).padEnd(24)} ${s.saved.slice(0, 16).replace('T', ' ')}`,
+        run: () => {
+          void scenes.load(s.name).then(
+            () => {
+              this.flash(`loaded "${s.name}" (Ctrl+Z goes back)`);
+              p.close();
+              this.menu.close();
+            },
+            (e: unknown) => this.flash(e instanceof Error ? e.message : String(e)),
+          );
+        },
+      }))));
+    } else p.add(new Text('no saved scenes yet', 'tui-dim'));
+    p.add(
+      new Text('files', 'tui-head'),
+      new List([
+        { label: 'Download the scene (.scene.json)', run: () => run(() => scenes.download(), (f) => `downloaded ${f}`) },
+        { label: 'Load a scene file...', run: () => scenes.pickFile() },
+        { label: 'Export the view as PNG', run: () => run(() => scenes.exportPng(), (f) => `exported ${f}`) },
+        { label: 'Export the view as text (.txt)', run: () => run(() => scenes.exportText(), (f) => `exported ${f}`) },
+        { label: 'New empty scene (Ctrl+Z undoes)', run: () => run(() => scenes.newScene(), () => 'new empty scene') },
+      ]),
+    );
   }
 
   /** Show a short message in the status bar for a few seconds. */

@@ -12,6 +12,7 @@ import { Editor } from './app/editor';
 import { BrushTool } from './app/brushtool';
 import { BrushPanel } from './ui/brushpanel';
 import { Undo } from './app/undo';
+import { SceneStore } from './app/scenes';
 import { Settings } from './app/settings';
 import { Hud } from './ui/hud';
 import { Terminal } from './ui/terminal';
@@ -31,8 +32,9 @@ const editor = new Editor(app, cursor, settings);
 tools.editor = editor;
 const brush = new BrushTool(app, editor, settings);
 const undo = new Undo(app, brush);
-const terminal = new Terminal(app, { debug, settings, cursor, tools, editor, brush, undo });
-new Hud(app, { debug, settings, terminal, editor, brush, undo });
+const scenes = new SceneStore(app, undo, settings);
+const terminal = new Terminal(app, { debug, settings, cursor, tools, editor, brush, undo, scenes });
+new Hud(app, { debug, settings, terminal, editor, brush, undo, scenes });
 new BrushPanel(app, brush);
 if (DEVTOOLS) {
   void import('./app/devtools').then((m) => m.installDevtools(app, terminal));
@@ -41,6 +43,7 @@ if (DEVTOOLS) {
 async function start(): Promise<void> {
   await app.showCanvas();
   settings.restore();
+  await scenes.restoreAutosave(); // last session's work, if any
   if (location.hash) await settings.applyLink(location.hash, debug);
 }
 void start();

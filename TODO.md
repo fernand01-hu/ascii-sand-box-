@@ -233,16 +233,27 @@ next one.
   - [x] Unit tests for the history and the map's edit records
     (`npm run test:unit`).
 
-- [ ] **9. Save / load scenes.**
-  - Save the recipe, not the generated cards: terrain tiles plus a list of
-    objects (kind, params, seed, position). Files stay tiny, and the
-    generators are deterministic, so loading rebuilds the same scene.
-  - **(added)** Save only the chunks that were edited.
-  - **(added)** Put a format `version` field in the file from day one.
-  - **(added)** Autosave.
-  - **(added)** Save to a downloadable file as well as localStorage.
-  - **(added)** A save → load round-trip test in `npm test`.
-  - **(added)** Export a scene as PNG or as plain-text ASCII.
+- [x] **9. Save / load scenes.** (Done on `step-09-save-load`. This
+      completes milestone 1: "I can paint and save a scene".)
+  - [x] Save the recipe, not the cards (`app/scenefile.ts`): canvas seed and
+    time of day, weather, camera, the paint of chunks that hold any
+    (run-length coded), and the objects (kind, position, yaw, scale, seed).
+    Paints are stored by name, so files survive new paints.
+  - [x] **(added)** Only edited chunks are saved.
+  - [x] **(added)** A `format` and a `version` field from day one. Newer
+    files are refused with a clear message, and broken ones say what's
+    wrong.
+  - [x] **(added)** Autosave every 30 s when something changed and when the
+    page closes, restored on reload (Settings / `autosave on|off`).
+  - [x] **(added)** Named scenes in the browser (`Ctrl+S`, the menu's Save /
+    load panel, `save` / `load` / `scenes` / `delete`), plus download and
+    upload of `.scene.json` files (or drop one on the page).
+  - [x] Loading is one undoable change. `new` starts an empty scene (also
+    undoable).
+  - [x] **(added)** A save → load round-trip test in `npm test` (unit), plus
+    an e2e test with a real file download, upload and page reload.
+  - [x] **(added)** Export the view as PNG or plain-text ASCII
+    (`export png|text|print`).
 
 - [ ] **10. Object brush: place over an area.**
   - Paint trees, bushes, rocks, grass and flowers over an area, with a

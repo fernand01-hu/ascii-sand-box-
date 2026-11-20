@@ -118,6 +118,14 @@ export class Panel {
     return !this.el.hidden;
   }
 
+  /** Remove every row (to rebuild the panel's content). */
+  clear(): void {
+    this.widgets[this.focusIndex]?.setFocus(false);
+    this.widgets = [];
+    this.focusIndex = -1;
+    this.body.replaceChildren();
+  }
+
   /** Append widgets (rows). */
   add(...ws: Widget[]): this {
     for (const w of ws) {

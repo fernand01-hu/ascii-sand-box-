@@ -12,10 +12,12 @@ import type { DebugTools } from './debugtools';
 import { SNAP_STEPS, type Editor } from './editor';
 import type { BrushTool } from './brushtool';
 import type { Undo } from './undo';
+import { AUTOSAVE, type SceneStore } from './scenes';
 import { statLines, statNames, statValue } from './stats';
 import { TEST_MODELS } from './models';
 import { parseCards, type Settings } from './settings';
 import { glyphAspect } from '../render/atlas';
+import { download } from './download';
 
 export type LineKind = 'out' | 'info' | 'err';
 
@@ -33,6 +35,7 @@ export interface CommandContext {
   editor: Editor;
   brush: BrushTool;
   undo: Undo;
+  scenes: SceneStore;
   term: {
     aliases: Map<string, string>;
     binds: Map<string, string>;
@@ -46,8 +49,8 @@ export interface CommandContext {
   };
 }
 
-type Group = 'info' | 'camera' | 'world' | 'map' | 'debug' | 'terminal' | 'scenes';
-const GROUPS: Group[] = ['info', 'camera', 'world', 'map', 'debug', 'terminal', 'scenes'];
+type Group = 'info' | 'camera' | 'world' | 'map' | 'file' | 'debug' | 'terminal' | 'scenes';
+const GROUPS: Group[] = ['info', 'camera', 'world', 'map', 'file', 'debug', 'terminal', 'scenes'];
 
 export interface Command {
   name: string;
@@ -82,14 +85,6 @@ function needWorld(app: App) {
 const fmt = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e4 ? `${(n / 1e3).toFixed(0)}k` : `${Math.round(n)}`);
 const f1 = (n: number) => n.toFixed(1);
 
-function download(name: string, url: string): void {
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
 
 async function copyText(text: string): Promise<boolean> {
   try {
@@ -109,6 +104,15 @@ async function settle(app: App, timeoutMs = 120_000): Promise<void> {
     w.update(app.viewer.camera.position, true);
     quiet = w.pending === 0 && w.dirtyCount === 0 ? quiet + 1 : 0;
     await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+/** Run f; turn its errors into user-facing command errors. */
+function wrap<T>(f: () => T): T {
+  try {
+    return f();
+  } catch (e) {
+    throw new CommandError(e instanceof Error ? e.message : String(e));
   }
 }
 
@@ -612,6 +616,86 @@ const COMMANDS: Command[] = [
     },
   },
 
+  // ---- file
+  {
+    name: 'save', group: 'file', usage: 'save [name]', help: 'save the scene in the browser (default: the current name); also Ctrl+S',
+    run(_app, args, io, ctx) {
+      const name = args.length ? args.join(' ') : undefined;
+      const r = wrap(() => ctx.scenes.save(name));
+      io.print(`saved "${r.name}" (${(r.bytes / 1024).toFixed(1)} KB)`);
+    },
+  },
+  {
+    name: 'load', group: 'file', usage: 'load <name>', help: 'load a scene saved in the browser (undoable)',
+    async run(_app, args, io, ctx) {
+      if (!args.length) throw new CommandError('load <name> (see: scenes)');
+      const name = args.join(' ');
+      try {
+        await ctx.scenes.load(name);
+      } catch (e) {
+        throw new CommandError(e instanceof Error ? e.message : String(e));
+      }
+      io.print(`loaded "${name}" (Ctrl+Z goes back)`);
+    },
+  },
+  {
+    name: 'scenes', group: 'file', usage: 'scenes', help: 'scenes saved in the browser',
+    run(_app, _x, io, ctx) {
+      const list = ctx.scenes.list(true);
+      if (!list.length) return io.print('no saved scenes yet (save <name>)');
+      for (const s of list) io.print(`${s.name.padEnd(24)} ${s.saved.slice(0, 16).replace('T', ' ')}  ${(s.bytes / 1024).toFixed(1).padStart(6)} KB${s.name === ctx.scenes.current ? '  <- current' : ''}`);
+      io.print(`${AUTOSAVE} is written every 30 s and on closing (autosave ${ctx.scenes.autosave ? 'on' : 'off'})`, 'dim');
+    },
+  },
+  {
+    name: 'delete', group: 'file', usage: 'delete <name>', help: 'delete a scene saved in the browser',
+    run(_app, args, io, ctx) {
+      if (!args.length) throw new CommandError('delete <name>');
+      const name = args.join(' ');
+      if (!ctx.scenes.delete(name)) throw new CommandError(`no scene called "${name}"`);
+      io.print(`deleted "${name}"`);
+    },
+  },
+  {
+    name: 'download', group: 'file', usage: 'download [name]', help: 'download the scene (or a saved one) as a .scene.json file',
+    run(_app, args, io, ctx) {
+      io.print(`downloaded ${wrap(() => ctx.scenes.download(args.length ? args.join(' ') : undefined))}`);
+    },
+  },
+  {
+    name: 'upload', group: 'file', usage: 'upload', help: 'load a .scene.json file from your computer (or drop it on the page)',
+    run(_app, _x, io, ctx) {
+      ctx.scenes.pickFile();
+      io.print('pick a .scene.json file', 'dim');
+    },
+  },
+  {
+    name: 'export', group: 'file', usage: 'export png | text [columns] | print [columns]', help: 'the view as a PNG, as a .txt of ASCII, or printed here',
+    run(_app, [what, cols], io, ctx) {
+      const n = cols === undefined ? 120 : num(cols, 'columns', 20, 400);
+      if (what === 'png') io.print(`exported ${wrap(() => ctx.scenes.exportPng())}`);
+      else if (what === 'text') io.print(`exported ${wrap(() => ctx.scenes.exportText(n))}`);
+      else if (what === 'print') ctx.scenes.viewText(n).split('\n').forEach((l) => io.print(l));
+      else throw new CommandError('export png | text [columns] | print [columns]');
+    },
+  },
+  {
+    name: 'autosave', group: 'file', usage: 'autosave [on|off|now]', help: 'autosave every 30 s and on closing (restored on reload)',
+    run(_app, [a], io, ctx) {
+      if (a === 'on' || a === 'off') ctx.settings.set('autosave', a);
+      else if (a === 'now') io.print(ctx.scenes.autosaveNow() ? 'autosaved' : 'nothing to autosave (show the canvas)');
+      else if (a !== undefined) throw new CommandError('autosave on | off | now');
+      io.print(`autosave ${ctx.scenes.autosave ? 'on' : 'off'}`);
+    },
+  },
+  {
+    name: 'new', group: 'file', usage: 'new', help: 'start an empty scene (the old one: Ctrl+Z, or save it first)',
+    run(_app, _x, io, ctx) {
+      wrap(() => ctx.scenes.newScene());
+      io.print('new empty scene (Ctrl+Z brings the old one back)');
+    },
+  },
+
   // ---- debug
   {
     name: 'debug', group: 'debug', usage: 'debug [option [on|off]]', help: 'list the debug overlays, or switch one (same as the menu)',
@@ -823,9 +907,7 @@ const COMMANDS: Command[] = [
     name: 'log', group: 'terminal', usage: 'log save', help: 'download the terminal log as a text file',
     run(_app, [a], io, ctx) {
       if (a !== 'save') throw new CommandError('log save');
-      const url = URL.createObjectURL(new Blob([ctx.term.logText()], { type: 'text/plain' }));
-      download('ascii-sandbox-log.txt', url);
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      download('ascii-sandbox-log.txt', new Blob([ctx.term.logText()], { type: 'text/plain' }));
       io.print('saved ascii-sandbox-log.txt');
     },
   },
@@ -879,6 +961,9 @@ function argWords(app: App, cmd: string, ctx: CommandContext | null): string[] {
     case 'set': return ctx?.settings.list.map((s) => s.name) ?? [];
     case 'watch': return [...statNames(), 'off'];
     case 'log': return ['save'];
+    case 'load': case 'delete': case 'download': return ctx?.scenes.list(true).map((s) => s.name) ?? [];
+    case 'export': return ['png', 'text', 'print'];
+    case 'autosave': return ['on', 'off', 'now'];
     case 'clearmap': return ['yes'];
     default: return [];
   }

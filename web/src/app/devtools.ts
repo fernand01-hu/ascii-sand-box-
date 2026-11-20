@@ -132,10 +132,11 @@ export function installDevtools(app: App, terminal: Terminal): void {
     if (Number.isInteger(i) && i >= 0 && i < TEST_MODELS.length) void loadModel(i);
   });
 
-  window.addEventListener('dragover', (e) => e.preventDefault());
+  // Drop an .stl to load it (scene files are handled by the scene store).
   window.addEventListener('drop', (e) => {
-    e.preventDefault();
     const file = e.dataTransfer?.files[0];
-    if (file) void file.arrayBuffer().then((b) => app.loadBytes(b, file.name));
+    if (!file || !/\.stl$/i.test(file.name)) return;
+    e.preventDefault();
+    void file.arrayBuffer().then((b) => app.loadBytes(b, file.name));
   });
 }
