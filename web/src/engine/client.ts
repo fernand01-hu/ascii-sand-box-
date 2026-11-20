@@ -115,6 +115,11 @@ export class EngineClient {
     this.main = new Slot(() => {}, () => this.disposed);
   }
 
+  /** Requests each worker still owes an answer to: the main worker, then each chunk worker. */
+  queue(): { main: number; chunks: number[] } {
+    return { main: this.main.load, chunks: this.pool.map((s) => s.load) };
+  }
+
   /** Number of workers building world chunks in parallel. */
   get chunkWorkers(): number {
     return poolSize();

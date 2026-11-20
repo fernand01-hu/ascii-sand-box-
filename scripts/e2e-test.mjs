@@ -173,6 +173,66 @@ try {
     await page.evaluate(() => window.__ascii.freezeTime(null));
   });
 
+  await step('debug terminal: opens with `, runs commands, keeps keys away from hotkeys, perf overlay', async () => {
+    const logText = () => page.evaluate(() => document.querySelector('.tui-terminal .tui-log').textContent);
+    const type = async (line) => {
+      await page.keyboard.type(line);
+      await page.keyboard.press('Enter');
+      await page.waitForFunction((l) => document.querySelector('.tui-terminal .tui-log').textContent.includes(`> ${l}`), {}, line);
+      await new Promise((r) => setTimeout(r, 100));
+    };
+    await page.keyboard.press('Backquote');
+    assert.equal(await page.evaluate(() => !document.querySelector('.tui-terminal').hidden), true, 'terminal opens');
+    assert.equal(await page.evaluate(() => document.activeElement?.closest('.tui-terminal') !== null), true, 'prompt has focus');
+    await type('help');
+    assert.match(await logText(), /paint <ground> <x> <z> <radius>/);
+    // Typing 9 (a gallery hotkey) and c must stay in the terminal.
+    await type('view 4');
+    assert.equal(await page.evaluate(() => window.__ascii.app.viewRadius), 4);
+    assert.equal((await state()).model, 'canvas', 'hotkeys did not fire while typing');
+    await type('wind 0.6');
+    assert.equal((await state()).weather.wind, 0.6);
+    await type('paint grass 0 -20 4');
+    await type('place tree:oak 0 -25 1 7');
+    let s = await page.evaluate(() => window.__ascii.worldStats());
+    assert.equal(s.objects, 1);
+    assert.ok(s.edited >= 1);
+    await type('bogus');
+    assert.match(await logText(), /unknown command "bogus"/);
+    await type('place tree:palm 0 0');
+    assert.match(await logText(), /unknown kind "tree:palm"/);
+    // Tab completes command names and kinds.
+    await page.keyboard.type('pla');
+    await page.keyboard.press('Tab');
+    await page.keyboard.type('tree:o');
+    await page.keyboard.press('Tab');
+    assert.equal(await page.evaluate(() => document.querySelector('.tui-terminal input').value), 'place tree:oak ');
+    await page.evaluate(() => { document.querySelector('.tui-terminal input').value = ''; });
+    // Console output shows up in the log.
+    await page.evaluate(() => console.info('[ascii] hello from the console'));
+    assert.match(await logText(), /hello from the console/);
+    await type('perf on');
+    await page.waitForFunction(() => /cards .* drawn/.test(document.querySelector('.tui-perf').textContent));
+    const perf = await page.evaluate(() => document.querySelector('.tui-perf').textContent);
+    console.log(`       perf: ${perf.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 3).join(' | ')}`);
+    assert.match(perf, /chunks\s+\d+ loaded/);
+    await page.screenshot({ path: join(outDir, '13c-terminal.png') });
+    await type('perf off');
+    // Clean up through the terminal too, then close with Esc.
+    const id = (await page.evaluate(() => window.__ascii.app.map.allObjects()[0].id));
+    await type(`remove ${id}`);
+    await type('paint canvas 0 -20 4');
+    await type('view 9');
+    await type('wind 0.3');
+    s = await page.evaluate(() => window.__ascii.worldStats());
+    assert.equal(s.objects, 0);
+    assert.equal(s.edited, 0);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(() => document.querySelector('.tui-terminal').hidden), true, 'Esc closes it');
+    assert.deepEqual(await page.evaluate(() => window.__ascii.run('pos')).then((l) => l.length), 1, 'run() returns the printed lines');
+    await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+  });
+
   const models = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];
   for (const [i, model] of models.entries()) {
     await step(`model ${model}: renders, readable, matches reference`, async () => {

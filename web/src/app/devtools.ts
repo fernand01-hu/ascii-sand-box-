@@ -1,6 +1,8 @@
 // Developer tools: only loaded in dev and test builds (see main.ts), so none
 // of this ships to the website.
 //
+//   ` or F1       debug terminal (type help); Esc closes it
+//   F3            performance overlay (fps, frame time, cards, chunks, workers)
 //   keys 1-4      switch between the bundled test models
 //   key 5         testbed: the procedural pine
 //   keys 6-9      scenery galleries: rocks, plants, bushes, trees
@@ -14,9 +16,9 @@
 import { GALLERY_CATEGORIES, type GalleryCategory } from '../engine/protocol';
 import { showPine } from '../testbed/pine';
 import type { App, AppState } from './app';
-import type { NewObject, PlacedObject } from './map';
-
-export const TEST_MODELS = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];
+import { Terminal } from '../ui/terminal';
+import type { MapData, NewObject, PlacedObject } from './map';
+import { TEST_MODELS } from './models';
 
 export interface DebugHandle extends AppState {
   loadBytes(bytes: ArrayBuffer, name: string): Promise<void>;
@@ -40,6 +42,8 @@ export interface DebugHandle extends AppState {
   removeObject(id: number): boolean;
   setViewRadius(chunks: number): void;
   stopPlaying(): void;
+  /** Run a debug terminal command; resolves with the lines it printed. */
+  run(line: string): Promise<string[]>;
   /** The app itself, for poking at it from the console (dev builds only). */
   app: App;
   /** Fraction of pixels that differ from the background. */
@@ -54,6 +58,11 @@ declare global {
 }
 
 export function installDevtools(app: App): void {
+  const terminal = new Terminal(app);
+  const map = (): MapData => {
+    if (!app.map) throw new Error('show the canvas first');
+    return app.map;
+  };
   const loadModel = (i: number) => {
     const name = TEST_MODELS[i];
     return name ? app.loadUrl(`${import.meta.env.BASE_URL}models/${name}`, name) : Promise.resolve();
@@ -74,20 +83,23 @@ export function installDevtools(app: App): void {
         dirty: app.world.dirtyCount, edited: app.world.map.editedChunks, objects: app.world.map.objectCount,
       }
       : null),
-    paintRect: (x0: number, z0: number, x1: number, z1: number, kind: string) => (() => { if (!app.map) throw new Error('show the canvas first'); return app.map; })().paintRect(x0, z0, x1, z1, kind),
-    paintCircle: (x: number, z: number, r: number, kind: string) => (() => { if (!app.map) throw new Error('show the canvas first'); return app.map; })().paintCircle(x, z, r, kind),
-    addObject: (o: NewObject) => (() => { if (!app.map) throw new Error('show the canvas first'); return app.map; })().addObject(o),
-    removeObject: (id: number) => (() => { if (!app.map) throw new Error('show the canvas first'); return app.map; })().removeObject(id),
+    paintRect: (x0: number, z0: number, x1: number, z1: number, kind: string) => map().paintRect(x0, z0, x1, z1, kind),
+    paintCircle: (x: number, z: number, r: number, kind: string) => map().paintCircle(x, z, r, kind),
+    addObject: (o: NewObject) => map().addObject(o),
+    removeObject: (id: number) => map().removeObject(id),
     setViewRadius: (n: number) => app.setViewRadius(n),
     stopPlaying: () => app.stopPlaying(),
     coverage: () => app.viewer.coverage(),
     thumbnail: () => app.viewer.thumbnail(),
+    run: (line: string) => terminal.run(line),
   }) as DebugHandle;
   // Not enumerable, so JSON snapshots of the state skip it (it links back to the state).
   Object.defineProperty(window.__ascii, 'app', { value: app, enumerable: false });
 
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // Keys typed into the terminal (or any text field) are not hotkeys.
+    if (terminal.isOpen || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     if (e.key === '5') return void showPine(app);
     const k = e.key.toLowerCase();
     if (k === 'c') return void app.showCanvas();

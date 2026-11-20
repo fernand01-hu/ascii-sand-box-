@@ -119,6 +119,8 @@ export class App {
   map: MapData | null = null;
   /** How many chunks round the camera are shown (see `setViewRadius`). */
   viewRadius = 9;
+  /** Seed and time of day of the last canvas shown. */
+  canvasOptions = { seed: 1, day: false };
   private env: Environment = { ...CALM };
   private atlas: GlyphAtlas;
   // Only the most recent request may update the scene.
@@ -299,6 +301,7 @@ export class App {
    * round the camera, under the sky and the weather. Detail follows you.
    */
   showCanvas(seed = 1, day = false): Promise<void> {
+    this.canvasOptions = { seed, day };
     return this.run('canvas', () => this.engine.worldInit(seed, day, glyphAspect()), (res) => {
       if (!res.world || !res.materials || !res.sunDir || !res.env) throw new Error('world result is incomplete');
       this.leaveScene();

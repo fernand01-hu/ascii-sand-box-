@@ -90,16 +90,23 @@ next one.
   - Dev hooks until the brush exists: `__ascii.paintRect`, `paintCircle`,
     `addObject`, `removeObject`, `setViewRadius`, `worldStats`.
 
-- [ ] **3. Debug terminal.**
-  - An in-app console (toggle with `` ` ``) with commands such as `help`,
-    `tp x z`, `seed`, `stats`, `chunks`, `view 6`, `wind 0.5`, `rain on`,
-    `clear`.
-  - It shows the log, FPS, card count, loaded/dirty chunks and worker queue.
-  - **(added)** A performance overlay: frame time and cards per chunk, to
-    check the 30 FPS target.
-  - It replaces most of the scattered dev hotkeys in `web/src/app/devtools.ts`.
-  - Build it early, because it helps you debug every step after it. It is
-    also the first piece of the TUI look (step 5).
+- [x] **3. Debug terminal.** (Done on `step-03-terminal`.)
+  - [x] An in-app console: `` ` `` (the key left of 1, `²` on AZERTY) or
+    `F1` opens and closes it, `Esc` closes it, Up/Down walk the history,
+    Tab completes commands and kinds.
+  - [x] Commands: `help`, `clear`, `stats`, `perf`, `chunks`, `view`,
+    `pos`, `tp`, `canvas`, `seed`, `weather`, `wind`, `rain`, `leaves`,
+    `freeze`, `kinds`, `paint`, `place`, `objects`, `remove`, `model`,
+    `gallery`, `pine`.
+  - [x] Its log shows command output and everything written to the
+    browser console.
+  - [x] **(added)** A performance overlay (`F3` or `perf on`): FPS (green
+    at 30 or more), frame and draw time, cards drawn / loaded, cards per
+    chunk, chunks loaded / building / dirty, worker queues.
+  - [x] The old hotkeys still work while the terminal is closed. Every one
+    of them now has a command too.
+  - [x] It is the first TUI piece (`web/src/ui/tui.css`: palette, double-line
+    boxes with titles in the border). Dev/test builds only.
 
 - [ ] **4. Limit overlapping characters on screen.** (Moved up from Phase 3:
       on a CPU-only machine the number of characters is the main cost, and

@@ -168,14 +168,37 @@ export class Viewer {
 
   /** Draw one frame: background (or underpaint wash), then the glyphs. */
   private draw(): void {
-    this.cards.drawn = 0;
     if (this.underpaint.enabled) {
       this.underpaint.render(this.renderer, this.scene, this.camera, this.cards, this.background);
     } else {
       this.renderer.setRenderTarget(null);
       this.renderer.clear();
     }
+    this.cards.drawn = 0; // count the glyph pass only, not the underpaint
     this.renderer.render(this.scene, this.camera);
+  }
+
+  /**
+   * Frame statistics, refreshed twice a second: frames drawn per second
+   * (0 while nothing changes, so nothing is redrawn), average time between
+   * them, CPU time spent submitting a frame, and glyph cards drawn in the
+   * last frame after culling.
+   */
+  readonly stats = { fps: 0, frameMs: 0, drawMs: 0, drawn: 0 };
+  private statFrames = 0;
+  private statDrawMs = 0;
+  private statSince = performance.now();
+
+  private updateStats(now: number): void {
+    const span = now - this.statSince;
+    if (span < 500) return;
+    const s = this.stats;
+    s.fps = (this.statFrames * 1000) / span;
+    s.frameMs = this.statFrames ? span / this.statFrames : 0;
+    s.drawMs = this.statFrames ? this.statDrawMs / this.statFrames : 0;
+    this.statFrames = 0;
+    this.statDrawMs = 0;
+    this.statSince = now;
   }
 
   /**
@@ -316,8 +339,13 @@ export class Viewer {
     }
     if (moved || this.dirty) {
       this.dirty = false;
+      const t0 = performance.now();
       this.draw();
+      this.statDrawMs += performance.now() - t0;
+      this.statFrames++;
+      this.stats.drawn = this.cards.drawn;
     }
+    this.updateStats(now);
   };
 
   private onContextLost = (e: Event): void => {
