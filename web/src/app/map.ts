@@ -55,6 +55,14 @@ export interface ChunkPayload {
 
 export const OBJECT_FLOATS = 6;
 
+/** One tile repainted: global tile index, old and new ground code. */
+export interface TileChange {
+  gi: number;
+  gj: number;
+  from: number;
+  to: number;
+}
+
 export function chunkKey(cx: number, cz: number): string {
   return `w${cx},${cz}`;
 }
@@ -128,26 +136,49 @@ export class MapData {
 
   /** Paint global tiles [gi0, gi1) x [gj0, gj1) that pass `inside`. */
   private paintTiles(gi0: number, gj0: number, gi1: number, gj1: number, kind: string, inside: (gi: number, gj: number) => boolean): string[] {
+    const tiles: [number, number][] = [];
+    for (let gj = gj0; gj < gj1; gj++) for (let gi = gi0; gi < gi1; gi++) if (inside(gi, gj)) tiles.push([gi, gj]);
+    return this.paintTileList(tiles, kind).keys;
+  }
+
+  /**
+   * Paint these global tiles (index i covers [i * tile, (i + 1) * tile))
+   * with `kind`. Returns the chunks that changed and, per tile that really
+   * changed, its old and new code: everything undo needs.
+   */
+  paintTileList(tiles: readonly (readonly [number, number])[], kind: string): { keys: string[]; changes: TileChange[] } {
     const code = this.info.groundKinds.indexOf(kind);
     if (code < 0) throw new Error(`unknown ground ${JSON.stringify(kind)} (${this.info.groundKinds.join(', ')})`);
+    return this.setTiles(tiles.map(([gi, gj]) => ({ gi, gj, code })));
+  }
+
+  /** Set tiles to codes (undo / redo use this with a change list). */
+  setTiles(list: readonly { gi: number; gj: number; code: number }[]): { keys: string[]; changes: TileChange[] } {
     const n = this.info.tiles;
     const changed = new Set<string>();
-    for (let gj = gj0; gj < gj1; gj++) {
-      for (let gi = gi0; gi < gi1; gi++) {
-        if (!inside(gi, gj)) continue;
-        const cx = Math.floor(gi / n), cz = Math.floor(gj / n);
-        const key = chunkKey(cx, cz);
-        let c = this.chunks.get(key);
-        const old = c?.tiles?.[(gj - cz * n) * n + (gi - cx * n)] ?? 0;
-        if (old === code) continue;
-        if (!c) this.chunks.set(key, (c = { tiles: null, objects: [] }));
-        c.tiles ??= new Uint8Array(n * n);
-        c.tiles[(gj - cz * n) * n + (gi - cx * n)] = code;
-        changed.add(key);
-      }
+    const changes: TileChange[] = [];
+    for (const { gi, gj, code } of list) {
+      if (!Number.isInteger(code) || code < 0 || code >= this.info.groundKinds.length) throw new Error(`bad ground code ${code}`);
+      const cx = Math.floor(gi / n), cz = Math.floor(gj / n);
+      const key = chunkKey(cx, cz);
+      let c = this.chunks.get(key);
+      const at = (gj - cz * n) * n + (gi - cx * n);
+      const old = c?.tiles?.[at] ?? 0;
+      if (old === code) continue;
+      if (!c) this.chunks.set(key, (c = { tiles: null, objects: [] }));
+      c.tiles ??= new Uint8Array(n * n);
+      c.tiles[at] = code;
+      changes.push({ gi, gj, from: old, to: code });
+      changed.add(key);
     }
     for (const key of changed) this.tidy(key);
-    return this.changed([...changed]);
+    return { keys: this.changed([...changed]), changes };
+  }
+
+  /** The ground code of global tile (gi, gj). */
+  tileCode(gi: number, gj: number): number {
+    const n = this.info.tiles, cx = Math.floor(gi / n), cz = Math.floor(gj / n);
+    return this.chunks.get(chunkKey(cx, cz))?.tiles?.[(gj - cz * n) * n + (gi - cx * n)] ?? 0;
   }
 
   /** Place an object; it belongs to the chunk holding (x, z). */

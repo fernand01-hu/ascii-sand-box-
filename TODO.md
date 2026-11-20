@@ -199,13 +199,23 @@ next one.
   - [x] In the menu (Settings → editing), the terminal (`camera`, `grid`,
     `snap`, `set`) and the status bar. Remembered between visits.
 
-- [ ] **7. Terrain brush on the 2D plane.**
-  - Paint grass, sand, water and rock onto the `#` canvas.
-  - Brush size, shape (circle / square) and strength.
-  - **(added)** An eraser that paints the `#` canvas back.
-  - **(added)** Soft edges, so sand fades into grass instead of making hard
-    tile borders.
-  - **(added)** Unit tests for the brush, run by `npm test`.
+- [x] **7. Terrain brush on the 2D plane.** (Done on `step-07-terrain-brush`.)
+  - [x] Paint grass, sand, water and rock onto the `#` canvas: `P` turns the
+    brush on, the left button paints, `1`–`4` pick the paint. In the orbit
+    view the middle button rotates; right drag pans in both views.
+  - [x] Brush size (`[` / `]`, 0.25–32 m), shape (circle / square) and
+    strength (share of tiles each dab paints).
+  - [x] **(added)** An eraser (`E`) that paints the `#` canvas back.
+  - [x] **(added)** Soft edges: tiles near the rim are painted with a chance
+    that falls off toward the edge, so sand fades into grass. The dice are
+    a hash of tile and stroke, so passing back and forth doesn't flicker.
+  - [x] Strokes follow the snapped cursor, with dabs evenly spaced along the
+    path. Each finished stroke carries every tile change (old → new) for
+    step 8's undo.
+  - [x] Brush panel (docked, from the widgets), menu item, status bar,
+    terminal (`brush`, `dab`, `stroke`), settings remembered.
+  - [x] **(added)** Unit tests for the brush maths (`npm run test:unit`,
+    part of `npm test`).
 
 - [ ] **8. (added) Undo / redo.**
   - An editor without undo is painful to use. Record each brush stroke as one

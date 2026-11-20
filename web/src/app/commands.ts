@@ -10,6 +10,7 @@ import type { DebugState } from './debug';
 import { DEBUG_OPTIONS } from './debug';
 import type { DebugTools } from './debugtools';
 import { SNAP_STEPS, type Editor } from './editor';
+import type { BrushTool } from './brushtool';
 import { statLines, statNames, statValue } from './stats';
 import { TEST_MODELS } from './models';
 import { parseCards, type Settings } from './settings';
@@ -29,6 +30,7 @@ export interface CommandContext {
   cursor: Cursor;
   tools: DebugTools;
   editor: Editor;
+  brush: BrushTool;
   term: {
     aliases: Map<string, string>;
     binds: Map<string, string>;
@@ -477,6 +479,45 @@ const COMMANDS: Command[] = [
 
   // ---- map
   {
+    name: 'brush', group: 'map', usage: 'brush [on|off|<ground>|size <m>|shape circle|square|strength <0-1>|soft <0-1>]',
+    help: 'the terrain brush (also P): switch it, pick a paint, or set an option',
+    run(app, [a, b], io, ctx) {
+      const br = ctx.brush;
+      const err = (e: unknown) => new CommandError(e instanceof Error ? e.message : String(e));
+      try {
+        if (a === undefined) br.setActive(!br.active);
+        else if (a === 'on' || a === 'off') br.setActive(a === 'on');
+        else if (a === 'size') br.setSize(num(b, 'size', 0.25, 32));
+        else if (a === 'shape') {
+          if (b !== 'circle' && b !== 'square') throw new CommandError('shape: circle or square');
+          br.setShape(b);
+        } else if (a === 'strength') br.setStrength(num(b, 'strength', 0.05, 1));
+        else if (a === 'soft') br.setSoft(num(b, 'soft', 0, 1));
+        else br.setKind(a);
+      } catch (e) {
+        throw e instanceof CommandError ? e : err(e);
+      }
+      if (br.active === false && !app.world && (a === undefined || a === 'on')) io.print('the brush is for the canvas (command: canvas)', 'err');
+      io.print(`brush ${br.active ? 'on' : 'off'}: ${br.kind}, ${br.shape} ${br.radius} m, strength ${br.strength}, soft ${br.soft}`);
+    },
+  },
+  {
+    name: 'dab', group: 'map', usage: 'dab <x> <z>', help: 'one dab of the current brush at a point',
+    run(app, [xs, zs], io, ctx) {
+      needWorld(app);
+      const n = ctx.brush.strokeLine({ x: num(xs, 'x'), z: num(zs, 'z') }, { x: num(xs, 'x'), z: num(zs, 'z') });
+      io.print(`${ctx.brush.kind}: ${n} tile${n === 1 ? '' : 's'} changed`);
+    },
+  },
+  {
+    name: 'stroke', group: 'map', usage: 'stroke <x0> <z0> <x1> <z1>', help: 'a brush stroke along a line',
+    run(app, [a, b, c, d], io, ctx) {
+      needWorld(app);
+      const n = ctx.brush.strokeLine({ x: num(a, 'x0'), z: num(b, 'z0') }, { x: num(c, 'x1'), z: num(d, 'z1') });
+      io.print(`${ctx.brush.kind}: ${n} tile${n === 1 ? '' : 's'} changed`);
+    },
+  },
+  {
     name: 'paint', group: 'map', usage: 'paint <ground> <x> <z> <radius>', help: 'paint a disc of ground (canvas erases)',
     run(app, [kind, xs, zs, rs], io) {
       const { map: m } = needWorld(app);
@@ -794,6 +835,7 @@ function argWords(app: App, cmd: string, ctx: CommandContext | null): string[] {
   switch (cmd) {
     case 'help': return [...commandNames(), ...GROUPS];
     case 'paint': case 'fill': return m?.groundKinds ?? [];
+    case 'brush': return ['on', 'off', 'size', 'shape', 'strength', 'soft', ...(m?.groundKinds ?? [])];
     case 'place': return m?.objectKinds ?? [];
     case 'scatter': return [...Object.keys(KIND_GROUPS), ...(m?.objectKinds ?? [])];
     case 'gallery': return GALLERY_CATEGORIES;

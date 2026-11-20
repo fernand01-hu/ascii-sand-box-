@@ -283,8 +283,8 @@ try {
     assert.ok(await visible('.tui-menu'), 'Esc opens the menu');
     await page.keyboard.press('9'); // a gallery hotkey: must not fire under the menu
     assert.equal((await state()).model, 'canvas');
-    await page.keyboard.press('Enter'); // first item: Settings
-    assert.ok(await visible('.tui-settings'), 'Enter opens settings');
+    await page.keyboard.press('s'); // Settings, by its letter
+    assert.ok(await visible('.tui-settings'), 's opens settings');
     // Rows: seed, daytime, view, wind, rain, leaves, top-down, grid, snap, fps, budget.
     for (let k = 0; k < 3; k++) await page.keyboard.press('ArrowDown');
     await page.keyboard.press('ArrowRight');
@@ -483,6 +483,78 @@ try {
     await run('snap off; grid off; camera orbit; canvas 1');
     await waitSettled('canvas');
     await page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s && s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+  });
+
+  await step('terrain brush: P, paint by dragging, keys, size, soft edge, square, eraser, panel, stroke record', async () => {
+    const run = (line) => page.evaluate((l) => window.__ascii.run(l), line);
+    const ground = (x, z) => page.evaluate((x, z) => window.__ascii.app.map.groundAt(x, z), x, z);
+    const settled = () => page.waitForFunction(() => { const s = window.__ascii.worldStats(); return s.dirty === 0 && s.pending === 0; }, { timeout: 300_000, polling: 500 });
+    try {
+      await page.keyboard.press('t'); // top-down: easiest to paint in
+      await new Promise((r) => setTimeout(r, 900));
+      await page.keyboard.press('p');
+      assert.ok(await page.evaluate(() => !document.querySelector('.tui-brush').hidden), 'P shows the brush panel');
+      assert.match(await page.evaluate(() => document.querySelector('.tui-status').textContent), /BRUSH grass/);
+      await page.keyboard.press('2'); // sand
+      const before = await page.evaluate(() => window.__ascii.app.viewer.controls.target.toArray());
+      // Paint a line by dragging with the left button.
+      await page.mouse.move(420, 380);
+      const a = await page.evaluate(() => window.__ascii.cursorPoint());
+      await page.mouse.down();
+      await page.mouse.move(580, 380, { steps: 12 });
+      const b = await page.evaluate(() => window.__ascii.cursorPoint());
+      await page.mouse.up();
+      assert.ok(a && b, 'the mouse is over the ground');
+      const mid = { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 };
+      assert.equal(await ground(mid.x, mid.z), 'sand', 'dragging paints sand along the way');
+      assert.equal(await ground(a.x, a.z), 'sand', 'and where it started');
+      const after = await page.evaluate(() => window.__ascii.app.viewer.controls.target.toArray());
+      assert.ok(Math.hypot(after[0] - before[0], after[2] - before[2]) < 0.01, 'painting does not move the camera');
+      await settled();
+      await page.screenshot({ path: join(outDir, '13g-brush.png') });
+      // Size keys: ] one size up (2 -> 3 m), [ back down.
+      await page.keyboard.press(']');
+      assert.match((await run('brush grass')).join('\n'), /brush on: grass, circle 3 m/, '] makes the brush bigger');
+      await page.keyboard.press('[');
+      assert.match((await run('brush grass')).join('\n'), /circle 2 m/, '[ makes it smaller again');
+      // Soft edge: a big soft dab is solid in the middle and patchy near the rim.
+      await run('brush size 8; brush soft 0.6; brush strength 1');
+      await run('dab 40 -60');
+      assert.equal(await ground(40.2, -60.2), 'grass', 'solid in the middle');
+      const rim = await page.evaluate(() => {
+        const m = window.__ascii.app.map;
+        let painted = 0, n = 0;
+        for (let k = 0; k < 72; k++) {
+          const ang = (k / 72) * Math.PI * 2;
+          n++;
+          if (m.groundAt(40 + 7.3 * Math.cos(ang), -60 + 7.3 * Math.sin(ang)) === 'grass') painted++;
+        }
+        return painted / n;
+      });
+      assert.ok(rim > 0.02 && rim < 0.9, `near the rim only some tiles are painted (${(rim * 100).toFixed(0)}%)`);
+      // A square brush paints its corners (a circle of the same size would not).
+      await run('brush rock; brush shape square; brush soft 0; brush size 2; dab 20.25 -20.25');
+      assert.equal(await ground(21.9, -21.9), 'rock', 'square corner painted');
+      // Eraser.
+      await page.keyboard.press('e');
+      assert.match((await run('set')).join('\n'), /^paint\s+canvas/m, 'E switches to the eraser');
+      await run('dab 20.25 -20.25');
+      assert.equal(await ground(20.25, -20.25), 'canvas', 'the eraser paints the canvas back');
+      // The panel works with the mouse: click "water".
+      const waterRow = await page.evaluateHandle(() => [...document.querySelectorAll('.tui-brush .tui-check')].find((r) => /water/.test(r.textContent)));
+      await waterRow.click();
+      assert.match((await run('set')).join('\n'), /^paint\s+water/m, 'clicking a paint in the panel picks it');
+      // A stroke along a line, from the terminal.
+      const out = (await run('stroke -30 -45 -20 -45'))[0];
+      assert.match(out, /water: \d+ tiles changed/);
+      assert.equal(await ground(-25, -45), 'water');
+      await page.keyboard.press('p');
+      assert.ok(await page.evaluate(() => document.querySelector('.tui-brush').hidden), 'P hides the brush panel');
+    } finally {
+      for (const c of ['brush off', 'brush grass', 'brush size 2', 'brush shape circle', 'brush strength 1', 'brush soft 0.3', 'clearmap yes', 'camera orbit', 'canvas 1']) await run(c);
+    }
+    await waitSettled('canvas');
+    await settled();
   });
 
   const models = ['torus-knot.stl', 'sphere.stl', 'ziggurat.stl', 'pine.stl'];

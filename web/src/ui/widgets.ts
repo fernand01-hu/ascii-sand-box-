@@ -84,6 +84,12 @@ export interface PanelOptions {
   onClose?: () => void;
   /** Esc closes the panel (default true). */
   escCloses?: boolean;
+  /**
+   * Default true: the panel takes the keyboard while open (it joins the
+   * stack). A tool panel (false) is only shown and clicked; its keys stay
+   * with whatever handles them (e.g. the brush's root keys).
+   */
+  modal?: boolean;
 }
 
 /** A box with a title in its top border and rows of widgets. */
@@ -117,7 +123,7 @@ export class Panel {
     for (const w of ws) {
       this.widgets.push(w);
       this.body.append(w.el);
-      if (w.focusable) w.el.addEventListener('pointerdown', () => this.focus(this.widgets.indexOf(w)));
+      if (w.focusable && this.opts.modal !== false) w.el.addEventListener('pointerdown', () => this.focus(this.widgets.indexOf(w)));
     }
     return this;
   }
@@ -126,6 +132,7 @@ export class Panel {
     if (this.isOpen) return;
     this.opts.onOpen?.();
     this.el.hidden = false;
+    if (this.opts.modal === false) return;
     stack.push(this);
     if (this.focusIndex < 0) this.focusIndex = this.widgets.findIndex((w) => w.focusable);
     this.focus(this.focusIndex);

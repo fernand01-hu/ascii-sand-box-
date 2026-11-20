@@ -143,6 +143,7 @@ export class Viewer {
     eye: Vector3,
     opts: { fov?: number; far?: number; body?: { positions: Float32Array; normals: Float32Array } } = {},
   ): void {
+    this.stopMotion();
     if (opts.body && opts.body.positions.length > 0) {
       this.setBody(opts.body.positions, opts.body.normals);
       this.cards.setMode('coverage', 0.75); // cards must win against the body they sit on
@@ -296,7 +297,20 @@ export class Viewer {
     canvas.remove();
   }
 
+  /**
+   * Drop the camera's leftover momentum (damping keeps it gliding after a
+   * drag or a wheel turn). Call before placing the camera, or the old glide
+   * carries on into the new view.
+   */
+  stopMotion(): void {
+    const damping = this.controls.enableDamping;
+    this.controls.enableDamping = false;
+    this.controls.update(); // applies what was left, all at once
+    this.controls.enableDamping = damping;
+  }
+
   private frame(bounds: Sphere): void {
+    this.stopMotion();
     const r = Math.max(bounds.radius, 1e-3);
     const fov = (this.camera.fov * Math.PI) / 180;
     const fit = Math.min(fov, 2 * Math.atan(Math.tan(fov / 2) * this.camera.aspect));

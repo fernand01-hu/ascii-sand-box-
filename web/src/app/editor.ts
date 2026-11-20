@@ -53,6 +53,8 @@ export class Editor {
   private listeners = new Set<() => void>();
   private gridQueued = false;
   private lastGridKey = '';
+  /** While true the left mouse button paints; the camera uses the other buttons. */
+  private leftPaints = false;
 
   constructor(private app: App, private cursor: Cursor, settings: Settings) {
     this.draw = new DebugDraw(app.viewer.overlay);
@@ -155,6 +157,28 @@ export class Editor {
     this.changed();
   }
 
+  /** Give the left mouse button to a tool (true) or back to the camera (false). */
+  setPainting(on: boolean): void {
+    this.leftPaints = on;
+    this.applyButtons();
+  }
+
+  get painting(): boolean {
+    return this.leftPaints;
+  }
+
+  /**
+   * Mouse buttons for the current camera mode and tool. Top view: drag
+   * pans. Orbit: left rotates. While a tool paints, left is the tool's and
+   * the camera moves with the others (orbit: middle rotates; right pans).
+   */
+  private applyButtons(): void {
+    const c = this.app.viewer.controls, p = this.leftPaints;
+    c.mouseButtons = this.mode === 'top'
+      ? { LEFT: p ? null : MOUSE.PAN, MIDDLE: p ? MOUSE.PAN : MOUSE.DOLLY, RIGHT: MOUSE.PAN }
+      : { LEFT: p ? null : MOUSE.ROTATE, MIDDLE: p ? MOUSE.ROTATE : MOUSE.DOLLY, RIGHT: MOUSE.PAN };
+  }
+
   /** Move camera and target together over the ground. */
   pan(dx: number, dz: number): void {
     const v = this.app.viewer;
@@ -169,6 +193,7 @@ export class Editor {
   /** Look straight down at the orbit target; `save` remembers the orbit setup to come back to. */
   private enterTop(save: boolean): void {
     const v = this.app.viewer, c = v.controls, g = this.app.world?.info.ground ?? 0;
+    v.stopMotion();
     if (save || !this.saved) {
       this.saved = {
         offset: v.camera.position.clone().sub(c.target),
@@ -186,12 +211,12 @@ export class Editor {
     c.minPolarAngle = 0;
     c.maxPolarAngle = 0;
     c.enableRotate = false;
-    c.mouseButtons = { LEFT: MOUSE.PAN, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.PAN };
     c.screenSpacePanning = true;
     c.minDistance = 5;
     c.maxDistance = 400;
-    c.update();
     this.mode = 'top';
+    this.applyButtons();
+    c.update();
     this.app.world?.update(v.camera.position, true);
     v.requestRender();
     this.changed();
@@ -205,6 +230,8 @@ export class Editor {
     c.enableRotate = s?.rotate ?? true;
     c.mouseButtons = s?.buttons ?? { LEFT: MOUSE.ROTATE, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.PAN };
     c.screenSpacePanning = s?.screenSpace ?? true;
+    this.mode = 'orbit';
+    if (this.leftPaints) this.applyButtons();
     if (distances && s) {
       c.minDistance = s.minDistance;
       c.maxDistance = s.maxDistance;
@@ -214,6 +241,7 @@ export class Editor {
   /** Back to orbiting from where the view now is. */
   private leaveTop(): void {
     const v = this.app.viewer, c = v.controls, s = this.saved;
+    v.stopMotion();
     this.restoreControls(true);
     if (s) {
       c.target.y = s.targetY;

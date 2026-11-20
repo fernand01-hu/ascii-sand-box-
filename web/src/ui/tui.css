@@ -149,6 +149,13 @@
 }
 .tui-sel input { border-bottom-color: var(--tui-bg); }
 
+/* ---- tool panels ------------------------------------------------------------ */
+
+.tui-brush {
+  left: 8px;
+  bottom: 34px; /* above the status bar */
+}
+
 /* ---- status bar ------------------------------------------------------------ */
 
 .tui-status {

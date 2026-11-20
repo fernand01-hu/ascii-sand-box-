@@ -8,6 +8,7 @@
 import type { App } from '../app/app';
 import { DEBUG_OPTIONS, type DebugState } from '../app/debug';
 import { SNAP_STEPS, type Editor } from '../app/editor';
+import type { BrushTool } from '../app/brushtool';
 import type { Settings } from '../app/settings';
 import type { Terminal } from './terminal';
 import { addRootKeys, Checkbox, List, Panel, Slider, Text, TextInput } from './widgets';
@@ -17,6 +18,7 @@ export interface HudDeps {
   settings: Settings;
   terminal: Terminal;
   editor: Editor;
+  brush: BrushTool;
 }
 
 /** Card budget steps: 0 = no budget. */
@@ -31,12 +33,15 @@ export class Hud {
   private showFps = false;
   private warn: HTMLSpanElement;
   private editor: Editor;
+  private brush: BrushTool;
   private info: HTMLSpanElement;
   private fps: HTMLSpanElement;
 
   constructor(private app: App, deps: HudDeps, root: HTMLElement = document.body) {
-    const { debug, settings, terminal, editor } = deps;
+    const { debug, settings, terminal, editor, brush } = deps;
     this.editor = editor;
+    this.brush = brush;
+    brush.onChange(() => this.refresh());
     // ---- status bar
     this.status = document.createElement('div');
     this.status.className = 'tui tui-status';
@@ -59,6 +64,7 @@ export class Hud {
     // ---- menu
     this.menu = new Panel({ title: 'menu', hint: 'Esc close', className: 'tui-center tui-menu' }, root);
     this.menu.add(new List([
+      { label: 'Brush (paint the ground)', key: 'b', run: () => { this.menu.close(); brush.setActive(!brush.active); } },
       { label: 'Settings', key: 's', run: () => this.settings.open() },
       { label: 'Debug', key: 'd', run: () => this.debugPanel.open() },
       { label: 'Terminal', key: 't', run: () => { this.menu.close(); terminal.open(); } },
@@ -171,6 +177,9 @@ export class Hud {
       ['T', 'top-down view (drag pans, wheel height)'],
       ['arrows', 'pan in the top-down view (Shift: faster)'],
       ['G', 'grid on the ground'],
+      ['P', 'brush: left drag paints'],
+      ['1-4 / E', 'brush paint: grass sand water rock / eraser'],
+      ['[ / ]', 'smaller / bigger brush'],
       ['Esc', 'menu / close a panel'],
       ['Up / Down', 'move in a panel'],
       ['Left / Right', 'change a slider'],
@@ -194,7 +203,10 @@ export class Hud {
   refresh(): void {
     const a = this.app, s = a.state, w = s.weather;
     const ed = this.editor;
-    const edit = a.world ? `${ed.mode === 'top' ? ' · TOP' : ''}${ed.grid ? ' · grid' : ''}${ed.snap ? ` · snap ${ed.snap} m` : ''}` : '';
+    const br = this.brush;
+    const edit = a.world
+      ? `${ed.mode === 'top' ? ' · TOP' : ''}${ed.grid ? ' · grid' : ''}${ed.snap ? ` · snap ${ed.snap} m` : ''}${br.active ? ` · BRUSH ${br.kind} ${br.radius} m` : ''}`
+      : '';
     const where = a.world ? `canvas ${a.canvasOptions.seed} · ${a.canvasOptions.day ? 'day' : 'dusk'}${edit}` : s.model || '…';
     const status = s.status === 'loading' ? ' · loading' : s.status === 'error' ? ' · error' : '';
     this.info.textContent = `${where}${status} │ wind ${w.wind.toFixed(2)} rain ${w.rain > 0 ? w.rain.toFixed(2) : 'off'} leaves ${w.leaves.toFixed(2)}`;
